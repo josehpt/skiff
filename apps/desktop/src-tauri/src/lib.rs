@@ -64,6 +64,7 @@ pub fn run() {
             commands::rename_session,
             commands::set_session_theme,
             config::list_projects,
+            config::get_project,
             config::add_worktree,
             config::remove_worktree,
             config::add_project,

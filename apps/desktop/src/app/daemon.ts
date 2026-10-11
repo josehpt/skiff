@@ -198,9 +198,10 @@ let staleTimer: number | undefined;
 let stale: Set<string> | null = new Set();
 
 /**
- * Reads worktrees again, and the changed files of `paths`, once a burst of
- * calls settles. Both change outside Skiff: an agent's `git worktree add`, an
- * editor's save. Without `paths`, every known worktree is read.
+ * Reads the worktrees of the projects that hold `paths` again, and the
+ * changed files of `paths`, once a burst of calls settles. Both change
+ * outside Skiff: an agent's `git worktree add`, an editor's save. Without
+ * `paths`, every project and every known worktree is read.
  */
 export function reposStale(paths?: Iterable<string>) {
   if (!paths) stale = null;
@@ -209,9 +210,34 @@ export function reposStale(paths?: Iterable<string>) {
   staleTimer = window.setTimeout(() => {
     const only = stale;
     stale = new Set();
-    void loadProjects();
+    if (only) void reloadProjectsOf(only);
+    else void loadProjects();
     reloadChanges(only ?? undefined);
   }, 400);
+}
+
+/**
+ * Reads again only the projects that hold `paths`: an agent that stops in
+ * one project runs git in that project alone. A project that reads the same
+ * keeps its object, so place() keeps its cache.
+ */
+async function reloadProjectsOf(paths: Set<string>) {
+  const names = S.projects.filter((p) => p.worktrees.some((w) => paths.has(w.path))).map((p) => p.name);
+  if (!names.length) return;
+  const seq = projectsSeq;
+  const fresh = await Promise.all(names.map((name) => invoke<Project>("get_project", { name }).catch(() => null)));
+  // A full read started meanwhile: its answer is newer.
+  if (seq !== projectsSeq) return;
+  let next = S.projects;
+  for (const p of fresh) {
+    const i = p ? next.findIndex((o) => o.name === p.name) : -1;
+    if (!p || p.closed || i < 0 || JSON.stringify(next[i]) === JSON.stringify(p)) continue;
+    if (next === S.projects) next = [...next];
+    next[i] = p;
+  }
+  if (next === S.projects) return;
+  S.projects = next;
+  render();
 }
 
 /** The worktrees the session works in: its own, and the ones its processes ran in. */

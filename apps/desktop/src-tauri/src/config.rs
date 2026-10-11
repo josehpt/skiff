@@ -37,6 +37,12 @@ pub(crate) async fn list_projects() -> Result<Vec<Project>, String> {
     blocking(project::list).await
 }
 
+/// One project read again: git runs in it only, not in every project.
+#[tauri::command]
+pub(crate) async fn get_project(name: String) -> Result<Project, String> {
+    blocking(move || Ok(Project::from_config(&project::find(&name)?))).await
+}
+
 #[tauri::command]
 pub(crate) async fn add_worktree(
     handle: AppHandle,

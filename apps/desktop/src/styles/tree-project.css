@@ -55,7 +55,22 @@ body.kbd #sidebar-scroll .project-row:has(> .project-pick.current:focus) { outli
 .roll-working { color: var(--state-working); }
 .roll-unread { color: var(--diff-add); }
 
-/* Sessions of a project with one plain worktree sit under the project, a step in. */
-.tree-bare { padding-bottom: calc(8 * var(--u)); }
-.tree-project .wt { padding-bottom: calc(8 * var(--u)); }
-.tree-project .wt, .tree-project .wt.selected { box-shadow: none; }
+/* One indent grid. A project's rows start under its name (--in); a worktree's rows one step further.
+   Changes and Files put their glyph on the same line as the session icons. Projects part with space. */
+.tree-project { --in: 58; padding-bottom: calc(8 * var(--u)); }
+.tree-project .wt { --in: 78; padding-bottom: calc(4 * var(--u)); box-shadow: none; }
+.tree-project .wt.selected { box-shadow: none; }
+.tree-project .wt-row, .tree-project .files-head { background: transparent; }
+.tree-project .wt-pick { padding-left: calc(38 * var(--u)); }
+.tree-project .sessions-block { height: auto !important; }
+.tree-project .session-row { padding-left: calc(var(--in) * var(--u)); }
+.tree-project .session-row.nested { padding-left: calc((var(--in) + 20) * var(--u)); }
+.tree-project .sessions-block .group-pick { padding-left: calc(var(--in) * var(--u)); }
+.tree-project .sessions-block .group-row > .glyph { margin-left: calc(var(--in) * var(--u)); }
+.tree-project .sessions-block .group-row.has-previous::before,
+.tree-project .sessions-block .group-row.has-next::after,
+.tree-project .session-row.group-rail::before { left: calc((var(--in) + 7) * var(--u)); }
+.tree-project .files-head { padding-left: calc((var(--in) - 24) * var(--u)); }
+.tree-project .file-row, .tree-project .file-note { padding-left: calc((var(--in) + 6 + var(--depth, 0) * 12) * var(--u)); }
+.tree-project .file-note { padding-left: calc((var(--in) + 22 + var(--depth, 0) * 12) * var(--u)); }
+.tree-project .file-row::before, .tree-project .file-note::before { left: calc((var(--in) + 12) * var(--u)); }

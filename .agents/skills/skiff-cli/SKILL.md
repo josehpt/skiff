@@ -1,6 +1,6 @@
 ---
 name: skiff-cli
-description: Drive Skiff from the shell with the `skiff` CLI. Use when the user asks to start, list, name, group, split, message, watch or stop Skiff sessions or agents, for example "open a codex next to me", "start two claude sessions in a group", "send this to the other pane", "wait for it to finish", "what is the other agent doing", or anything else about Skiff panes and groups.
+description: Manage Skiff sessions and coordinate agent tasks with the skiff CLI. Use to list or report sessions, start agents, arrange panes, send tasks, monitor work, collect results, or stop requested sessions. Works from Skiff panes and external shells such as Termius.
 ---
 
 # Skiff CLI
@@ -16,6 +16,79 @@ Do these steps before the first command in a task.
 1. Run `skiff status`. If the command is not found, stop. Tell the user to run Help › Install skiff command… in Skiff. The app ships the CLI and keeps it up to date. If it says skiffd is not running, stop and tell the user to open Skiff.
 2. Check `$SKIFF_SESSION`. If it is set, you run inside a Skiff pane, and `.` means your own session. `--group .` means the group your pane is in.
 3. Run `skiff ls --json` and `skiff group ls --json` to see what exists. Read JSON, not the tables.
+
+Run this sequence once per task. Refresh the session list before a later send if its state may have changed.
+From an external shell, use session and group IDs. Do not use `.` or `--group .` when `$SKIFF_SESSION` is unset.
+
+## Session report
+
+For a terminal report of all sessions, run the bundled tool:
+
+```sh
+python3 ~/.agents/skills/skiff-cli/scripts/session_report.py
+```
+
+If that installation path is absent, use `scripts/session_report.py` relative to this
+skill's directory. The script reads session and group JSON from the local daemon.
+It uses Python 3 and Rich to draw a table for each project, with session names,
+states, unread output and titles. Rich must be available to that Python interpreter.
+Use `--details` to include full paths, IDs, programs and groups, including empty groups.
+Output wraps to the terminal width. Use `--width 80` for a fixed layout.
+For a phone or mobile chat, use `--mobile`. This uses a single-column table at
+most 38 characters wide. Do not paste the desktop table into a mobile chat.
+If terminal width is unavailable, the report defaults to 38 columns.
+The script does not send messages or mark output as seen.
+
+Use the report when the user asks what is open or wants a session overview.
+Use the JSON commands for selecting a target or making a state decision.
+
+## Coordinate agent tasks
+
+Keep task handoffs and result collection in this skill. No separate orchestration
+skill is needed. The calling agent can run in Termius or any shell that can reach
+the same `skiffd`.
+
+### Send a task
+
+1. Find the requested pane in the JSON list. Use its ID and confirm its working directory.
+2. Read `skiff peek S -n 40` before sending. Check the current result and input box.
+   If the requested task is already running or complete, report that state instead of sending it again.
+   If the input box holds a draft, do not append to it or submit it. Report the draft
+   and pane to the user so they can clear or send it.
+3. Send a clear task: the requested result, scope, relevant context, authorized actions,
+   and what the agent must report. An investigation request authorizes an investigation.
+   Pass on existing permission to fix or deploy when the user has given it.
+4. For long prompts, write a temporary file and use `skiff send S - --enter < prompt.md`.
+   Keep shell syntax and user text separate.
+
+Skiff has no message queue in this workflow. A refused send is not queued.
+If the pane is working, report that the task was not delivered. Do not wait for it
+and retry the send. Do not interrupt the pane to make room for the message.
+
+### Monitor and collect the result
+
+When the user asks for the result or says to report when the agent is done, keep
+monitoring after a successful send. A request only to deliver a message can end
+after delivery is confirmed.
+
+- Use one `skiff wait S --for idle --timeout 45` at a time. Keep each wait below
+  the shell tool's time limit and at most 60 seconds. Resume an outstanding shell
+  call before starting another wait. Give a short progress update when needed.
+- After a successful wait, read the screen. `idle` can occur before the agent
+  starts, during a tool call, or while it thinks. If the task still runs, wait again.
+- On timeout, read the screen and state. Continue when the task is still running.
+  On `waiting`, report the pane and requested approval. Follow the approval rules below.
+- Collect the task result, checks, and any remaining blocker. For a deployment,
+  require the agent's deployment result before reporting it as live. Distinguish
+  local checks from checks on production and state any material limitation.
+- A child should leave its result on screen. Use a result file only when the
+  report is too long for `peek`; tell the child where to write it. Do not claim
+  completion from the pane state alone.
+
+If the user asks for multiple agents, give each a distinct task and working
+directory. State which files each can change when they share a repository.
+Collect each result before work that depends on it. Start agents only within
+the user's requested scope; a named existing pane can handle a single task.
 
 ## Names
 
@@ -87,10 +160,11 @@ With `--for idle`, `done` or `any-not-working`, `wait` stops at once with exit 3
 Hand a task to a new agent and collect the result:
 
 ```sh
-id=$(skiff new --agent claude --name reviewer --group . --split down)
-skiff wait "$id" --for idle --timeout 60     # let it boot
+id=$(skiff new --agent claude --name reviewer --cwd /path/to/repo)
+skiff wait "$id" --for idle --timeout 45     # let it boot
+skiff peek "$id" -n 40                     # check the agent and input box
 skiff send "$id" "Review the diff on this branch. List bugs only." --enter
-skiff wait "$id" --for idle --timeout 540    # shorter than the shell tool's limit
+skiff wait "$id" --for idle --timeout 45
 skiff peek "$id" -n 80
 ```
 

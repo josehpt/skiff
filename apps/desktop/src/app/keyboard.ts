@@ -315,6 +315,8 @@ $("sidebar-scroll").addEventListener("keydown", (e) => {
     render();
     keepRow(key);
   } else if ((el.classList.contains("project-pick") || el.classList.contains("fleet-pick")) && (e.key === "Enter" || e.key === " " || e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+    // A project with nothing under it does not open or fold.
+    if (!el.hasAttribute("aria-expanded")) return e.preventDefault();
     // A project or fleet row: Enter or Space opens or folds it, Right opens, Left folds.
     // A project's menu is the menu key or Ctrl+Shift+M, as on every row.
     const key = el.dataset.key!;

@@ -97,3 +97,6 @@ body.kbd #sidebar-scroll .project-row:has(> .project-pick.current:focus) { outli
 .tree-project .wt-row { height: calc(20 * var(--u)); background: transparent; }
 .tree-project .wt-pick { font-size: calc(12px * var(--zoom, 1)); }
 .tree-project .wt-row .wt-plus { height: calc(20 * var(--u)); }
+/* A project with nothing under it: no chevron, and its row does not light on hover. */
+.project-row.empty:hover { background: transparent; }
+.project-row.empty .project-pick { cursor: default; }

@@ -252,23 +252,27 @@ function projectBlock(p: Project): HTMLElement {
   const key = projectKey(p.name);
   const open = isOpen(key);
   const bare = bareWorktree(p);
+  // Nothing under the project: no chevron, no fold, no hover.
+  // changesBlock reads the worktree's changes the first time, so a project folded since the start still learns of them.
+  const changes = bare && showsChanges(p) ? changesBlock(bare) : null;
+  const empty = !!bare && !p.error && !worktreeLines(bare).length && !changes && !showsFiles(p);
   const block = h("div", "tree-project" + (p.name === S.selectedProject ? " selected" : ""));
   block.style.setProperty("--pc", color);
 
-  const head = h("div", "project-row");
+  const head = h("div", "project-row" + (empty ? " empty" : ""));
   const pick = h("button", "project-pick");
   pick.type = "button";
   pick.dataset.key = pick.dataset.fold = key;
   pick.tabIndex = -1;
-  pick.setAttribute("aria-expanded", String(open));
+  if (!empty) pick.setAttribute("aria-expanded", String(open));
   const fold = h("span", "tree-fold");
-  fold.appendChild(chevron(open));
+  if (!empty) fold.appendChild(chevron(open));
   pick.append(fold, projectBadge(p), h("span", "project-name", p.name));
   if (p.error) pick.appendChild(h("span", "project-meta", "error"));
   const roll = open ? null : rollup([p]);
   if (roll) pick.appendChild(roll);
   // A click opens or folds the project, as on a fleet head. Its sessions open from their rows.
-  pick.addEventListener("click", () => toggleRow(key, render));
+  if (!empty) pick.addEventListener("click", () => toggleRow(key, render));
   head.appendChild(pick);
   if (bare) {
     const plus = button("wt-plus", "", () => launchMenu.open(plus, p, bare));
@@ -291,7 +295,7 @@ function projectBlock(p: Project): HTMLElement {
     projectMenu(p, e.clientX, e.clientY);
   });
   block.appendChild(head);
-  if (!open) return block;
+  if (!open || empty) return block;
 
   const kids = h("div", "tree-kids");
   kids.dataset.kids = key;
@@ -301,7 +305,6 @@ function projectBlock(p: Project): HTMLElement {
   else if (bare) {
     const body = h("div", "wt-body tree-bare");
     body.appendChild(sessionBlock(worktreeLines(bare), color));
-    const changes = showsChanges(p) ? changesBlock(bare) : null;
     if (changes) body.appendChild(changes);
     if (showsFiles(p)) body.appendChild(filesBlock(bare));
     kids.appendChild(body);

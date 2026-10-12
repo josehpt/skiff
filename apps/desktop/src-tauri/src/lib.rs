@@ -16,17 +16,33 @@ mod header_bar;
 use connection::App;
 use tauri::{Emitter, Manager};
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    // WebKitGTK paints a blank window on NVIDIA under Wayland when it renders
-    // through DMA-BUF. Turn that path off there, unless the user chose
-    // otherwise. Intel and AMD keep it: it is the faster path.
-    #[cfg(target_os = "linux")]
-    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none()
+/// The renderer switch Skiff sets for its own webview. Sessions must not
+/// inherit it: it slows every WebKitGTK app started from a Skiff shell.
+pub(crate) const WEBKIT_DMABUF_VAR: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
+
+/// True when Skiff set `WEBKIT_DMABUF_VAR` itself, not the user.
+pub(crate) static SET_WEBKIT_DMABUF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// WebKitGTK paints a blank window on NVIDIA under Wayland when it renders
+/// through DMA-BUF. Turn that path off there, unless the user chose
+/// otherwise. X11, Intel and AMD keep it: it is the faster path.
+#[cfg(target_os = "linux")]
+fn disable_dmabuf_where_broken() {
+    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some()
+        && std::env::var("GDK_BACKEND").map_or(true, |b| !b.starts_with("x11"));
+    if std::env::var_os(WEBKIT_DMABUF_VAR).is_none()
+        && wayland
         && std::path::Path::new("/proc/driver/nvidia").exists()
     {
-        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        std::env::set_var(WEBKIT_DMABUF_VAR, "1");
+        SET_WEBKIT_DMABUF.store(true, std::sync::atomic::Ordering::Relaxed);
     }
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    #[cfg(target_os = "linux")]
+    disable_dmabuf_where_broken();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())

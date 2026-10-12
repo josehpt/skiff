@@ -82,6 +82,10 @@ fn spawn_daemon() -> anyhow::Result<()> {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::from(log));
+    // The daemon passes its environment to every session it starts.
+    if crate::SET_WEBKIT_DMABUF.load(std::sync::atomic::Ordering::Relaxed) {
+        cmd.env_remove(crate::WEBKIT_DMABUF_VAR);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;

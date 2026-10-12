@@ -126,6 +126,12 @@ export function renderRail() {
   ]);
   if (rail.dataset.sig === sig) return;
   rail.dataset.sig = sig;
+  const openNow = rows.flatMap((r) => (r.kind === "fleet" && r.open ? [r.f.name] : []))[0] ?? null;
+  const oldBlock = rail.querySelector<HTMLElement>(".rail-fleet-open:not(.rail-fleet-closing)");
+  const closing = openNow !== shownOpen && shownOpen !== undefined && oldBlock ? foldOut(oldBlock) : null;
+  const opening = openNow !== shownOpen && shownOpen !== undefined;
+  const wasOpen = shownOpen;
+  shownOpen = openNow;
   rail.replaceChildren();
   // One ring tells the state. It turns, dashed and blue, while an agent works.
   // It stops as a solid circle: amber when an agent waits, green when output is unread.
@@ -165,7 +171,7 @@ export function renderRail() {
       if (ring) item.appendChild(railRing(ring));
       if (!r.open && (waiting || unread)) b.classList.add("attention");
       if (r.open) {
-        block = h("div", "rail-fleet-open");
+        block = h("div", "rail-fleet-open" + (opening ? " opening" : ""));
         block.appendChild(item);
         rail.appendChild(block);
       } else {
@@ -200,6 +206,9 @@ export function renderRail() {
     if (waiting || unread) b.classList.add("attention");
     ((r.inFleet && block) || rail).appendChild(item);
   });
+  // The fleet that folded keeps its old chips for one animation under its tile.
+  const tile = closing && wasOpen ? rail.querySelector<HTMLElement>(`.rail-item[data-fleet="${CSS.escape(wasOpen)}"]`) : null;
+  if (closing && tile?.parentElement === rail) tile.after(closing);
   if (hasOther) {
     const item = h("div", "rail-item");
     const on = S.selectedProject === OTHER;
@@ -259,6 +268,34 @@ function applyDrop(moving: Project[], d: Drop): string | null {
   render();
   invoke("reorder_projects", { order: order.map((x) => x.name), fleets }).catch(showError);
   return made;
+}
+
+/** The fleet the rail shows open. Undefined before the first render, which does not animate. */
+let shownOpen: string | null | undefined;
+
+/**
+ * A copy of an open fleet's project chips that shrinks to nothing. It stands
+ * for the fleet while it folds, takes no input, and goes when it ends.
+ */
+function foldOut(block: HTMLElement): HTMLElement {
+  const out = h("div", "rail-fleet-open rail-fleet-closing");
+  const members = [...block.children].slice(1) as HTMLElement[];
+  out.style.setProperty("--h", `${members.reduce((n, el) => n + el.offsetHeight, 0)}px`);
+  for (const el of members) {
+    const c = el.cloneNode(true) as HTMLElement;
+    for (const x of [c, ...c.querySelectorAll<HTMLElement>("*")]) {
+      x.removeAttribute("data-project");
+      x.removeAttribute("aria-current");
+      x.classList.remove("active");
+    }
+    out.appendChild(c);
+  }
+  out.inert = true;
+  out.setAttribute("aria-hidden", "true");
+  out.addEventListener("animationend", (e) => {
+    if (e.target === out) out.remove();
+  });
+  return out;
 }
 
 /** True while a chip is in the air. The rail does not rebuild under it. */

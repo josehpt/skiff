@@ -101,3 +101,18 @@ body.kbd #sidebar-scroll .project-row:has(> .project-pick.current:focus) { outli
 /* A project with nothing under it: no chevron, and its row does not light on hover. */
 .project-row.empty:hover, .project-row.empty:has(> .project-pick:active) { background-image: none; }
 .project-row.empty .project-pick { cursor: default; }
+
+/* Drag a project or a fleet: a 2px line where it lands, or a frame around the row it joins. */
+body.dragging-tree, body.dragging-tree * { cursor: grabbing !important; user-select: none; }
+#sidebar-scroll .dragging { opacity: 0.4; }
+#sidebar-scroll .drop-before { box-shadow: inset 0 2px 0 var(--text); }
+#sidebar-scroll .drop-after { box-shadow: inset 0 -2px 0 var(--text); }
+#sidebar-scroll .drop-into { background: var(--bg-raised); box-shadow: inset 0 0 0 2px var(--text); }
+.tree-ghost { position: fixed; z-index: 20; display: flex; align-items: center; gap: calc(8 * var(--u)); pointer-events: none; }
+.tree-ghost-name, .tree-ghost-label {
+  height: calc(24 * var(--u)); padding: 0 calc(8 * var(--u)); display: flex; align-items: center;
+  background: var(--bg-raised); border: 1px solid var(--rule-strong); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  font-size: calc(12px * var(--zoom, 1)); color: var(--text); white-space: nowrap;
+}
+.tree-ghost-name { font-weight: 600; }
+.tree-ghost-label[hidden] { display: none; }

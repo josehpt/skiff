@@ -103,3 +103,6 @@ export function toggleRow(key: string, render: () => void, want = !isOpen(key)) 
     render();
   });
 }
+
+/** True while a project or fleet is in the air. The tree does not rebuild under it. */
+export const treeDrag = { active: false };

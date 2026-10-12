@@ -248,7 +248,7 @@ export function renderRail() {
 }
 
 /** What a drop does: where the moved projects land, and the fleet each project ends in. */
-interface Drop {
+export interface Drop {
   /** The project the moved ones land next to. */
   anchor: Project;
   side: "before" | "after";
@@ -263,7 +263,7 @@ interface Drop {
 }
 
 /** The first "Fleet N" no fleet uses. */
-function freeFleetName(): string {
+export function freeFleetName(): string {
   const used = new Set(S.projects.map((p) => p.fleet));
   let n = 1;
   while (used.has(`Fleet ${n}`)) n++;
@@ -271,7 +271,7 @@ function freeFleetName(): string {
 }
 
 /** The fleets and the rail order after the drop, saved in one write. A fleet left with one project goes away. */
-function applyDrop(moving: Project[], d: Drop): string | null {
+export function applyDrop(moving: Project[], d: Drop): string | null {
   const order = railProjects().filter((p) => !moving.includes(p));
   order.splice(order.indexOf(d.anchor) + (d.side === "after" ? 1 : 0), 0, ...moving);
   const made = d.make ? freeFleetName() : null;
@@ -478,8 +478,9 @@ function dragRail(down: MouseEvent, item: HTMLElement, moving: Project[], fleet:
  * A name field next to a new fleet's tile. The fleet has its "Fleet N" name
  * already: Enter, Esc or a click away keeps what the field holds.
  */
-function nameFleet(name: string) {
-  const tile = document.querySelector<HTMLElement>(`#rail .rail-fleet[data-fleet="${CSS.escape(name)}"]`);
+export function nameFleet(name: string) {
+  const head = () => document.querySelector<HTMLElement>(`#sidebar-scroll .fleet-pick[data-key="${CSS.escape(`fleet:${name}`)}"]`);
+  const tile = head();
   if (!tile) return;
   const box = h("div", "fleet-name");
   const label = h("label", "fleet-name-label", "Fleet name");
@@ -491,8 +492,8 @@ function nameFleet(name: string) {
   const hint = h("div", "fleet-name-hint", "Enter or a click away keeps it.");
   box.append(label, input, hint);
   const r = tile.getBoundingClientRect();
-  box.style.left = `${r.right}px`;
-  box.style.top = `${r.top}px`;
+  box.style.left = `${r.left + 16}px`;
+  box.style.top = `${r.bottom}px`;
   document.body.appendChild(box);
   input.focus();
   input.select();
@@ -506,7 +507,7 @@ function nameFleet(name: string) {
     }
     done = true;
     box.remove();
-    document.querySelector<HTMLElement>(`#rail .rail-fleet[data-fleet="${CSS.escape(name)}"]`)?.focus();
+    head()?.focus();
     if (!keep || taken || !next || next === name) return;
     const members = S.projects.filter((p) => p.fleet === name);
     for (const p of members) p.fleet = next;

@@ -31,7 +31,8 @@ import { accent, awayPlaces, currentWorktree, place } from "../app/stateQueries"
 import { dragSessions, revealSession, selectWorktree, showGroup } from "./view";
 import { addProject } from "../app/panels";
 import { animateFold, growOpened } from "../ui/fold";
-import { fleetKey, folded, isOpen, openToFocused, projectBadge, projectKey, rollup, toggleRow, treeSections, type Section } from "./tree";
+import { dragTree } from "./treeDrag";
+import { fleetKey, folded, isOpen, openToFocused, projectBadge, projectKey, rollup, toggleRow, treeDrag, treeSections, type Section } from "./tree";
 import { render } from "../app/renderRequest";
 
 /** 20px lines, flush against whatever follows. */
@@ -169,6 +170,7 @@ function sidebarSig(): string {
 
 export function renderSidebar() {
   const side = $<HTMLElement>("sidebar-scroll");
+  if (treeDrag.active) return;
   openToFocused();
   const sig = sidebarSig();
   if (side.dataset.sig === sig) return;
@@ -235,6 +237,7 @@ function sectionHead(sec: Section): HTMLElement {
     e.preventDefault();
     fleetMenu({ name, projects: sec.projects }, e.clientX, e.clientY);
   });
+  head.addEventListener("mousedown", (e) => dragTree(e, head, sec.projects, name));
   return head;
 }
 
@@ -260,6 +263,8 @@ function projectBlock(p: Project): HTMLElement {
   block.style.setProperty("--pc", color);
 
   const head = h("div", "project-row" + (empty ? " empty" : ""));
+  head.dataset.project = p.name;
+  head.addEventListener("mousedown", (e) => dragTree(e, block, [p], null));
   const pick = h("button", "project-pick");
   pick.type = "button";
   pick.dataset.key = pick.dataset.fold = key;

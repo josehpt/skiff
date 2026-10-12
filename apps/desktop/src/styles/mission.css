@@ -1,4 +1,4 @@
-/* Mission control (#88): the whole window, one lane per fleet, one screen per session. */
+/* Mission control (#88): the whole window, one lane per fleet, one screen per session. Four lanes fit; more scroll sideways. */
 .mission { transform: translateZ(0); isolation: isolate; position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column; background: var(--bg); outline: none; animation: mission-in 120ms ease-out; }
 .mission[hidden] { display: none; }
 @keyframes mission-in { from { opacity: 0; } }
@@ -9,7 +9,7 @@
 .mission-waiting { color: var(--state-waiting-text); }
 
 .mission-lanes { flex: 1; min-height: 0; display: flex; overflow-x: auto; }
-.mission-lane { flex: 1 0 calc(300 * var(--u)); min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--rule); overflow-y: auto; }
+.mission-lane { flex: 0 0 max(25%, calc(300 * var(--u))); min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--rule); overflow-y: auto; }
 .mission-lane-head { height: calc(40 * var(--u)); flex-shrink: 0; position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: calc(10 * var(--u)); padding: 0 calc(12 * var(--u)); border-bottom: 1px solid var(--rule); background: var(--bg-panel); }
 .mission-lane-name { flex-grow: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(11px * var(--zoom, 1)); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-2); }
 .mission-project { height: calc(40 * var(--u)); flex-shrink: 0; display: flex; align-items: center; gap: calc(8 * var(--u)); padding: 0 calc(12 * var(--u)); border-bottom: 1px solid var(--rule); }

@@ -1,12 +1,12 @@
 /** The side panel's tree: fleets as section heads, projects as rows, each folded or open (#87). */
 
-import type { Project, SessionInfo } from "../platform/types";
+import type { Project, SessionInfo, Worktree } from "../platform/types";
 
 import { isUnread } from "./model";
 import { BELL, SKIFF } from "../appearance/stateIcon";
 import { projectIcon } from "../appearance/projectIcon";
 import { storedSet } from "../app/stored";
-import { S, sessions } from "../app/state";
+import { removeErrors, removing, S, sessions } from "../app/state";
 import { place } from "../app/stateQueries";
 import { h } from "../ui/dom";
 import { icon } from "../ui/icons";
@@ -106,3 +106,18 @@ export function toggleRow(key: string, render: () => void, want = !isOpen(key)) 
 
 /** True while a project or fleet is in the air. The tree does not rebuild under it. */
 export const treeDrag = { active: false };
+
+/** A worktree that needs no row of its own: the only one, on its usual branch. Its sessions sit under the project. */
+export function bareWorktree(p: Project): Worktree | null {
+  if (p.worktrees.length !== 1) return null;
+  const w = p.worktrees[0];
+  const usual = p.default_branch ? w.branch === p.default_branch : ["main", "master"].includes(w.branch ?? "");
+  return w.is_main && usual && !w.locked && !w.prunable && !removing.has(w.path) && !removeErrors.has(w.path) ? w : null;
+}
+
+/** The list row for a worktree: its own row, or the project's row when it has none. Opens its fleet and project. */
+export function worktreeRowKey(p: Project, w: Worktree): string {
+  folded.delete(projectKey(p.name));
+  if (p.fleet) folded.delete(fleetKey(p.fleet));
+  return bareWorktree(p) === w ? projectKey(p.name) : w.path;
+}

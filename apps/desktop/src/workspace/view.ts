@@ -17,6 +17,7 @@ import { activeGroupObj, currentLayout, groupOf, inShownGroup, place, shownIds, 
 import { panes } from "../terminal/terminalState";
 import { previewOnScreen } from "../terminal/peek";
 import { currentRow, listItems } from "../app/keyboard";
+import { worktreeRowKey } from "./tree";
 import { view } from "../terminal/terminal";
 
 let background = 0;
@@ -441,6 +442,10 @@ export function selectWorktree(project: Project, w: Worktree) {
   noteFocus();
   S.selectedProject = project.name;
   selectedWorktree.set(project.name, w.path);
+  // The worktree's row is where we are, until a session it shows takes the row.
+  S.roveKey = worktreeRowKey(project, w);
+  S.groupPicked = null;
+  requestAnimationFrame(() => currentRow()?.scrollIntoView({ block: "nearest" }));
   const here = worktreeSessions(w);
   if (here.some((x) => shownIds().includes(x.id))) return render();
   const last = lastFocus.get(w.path);

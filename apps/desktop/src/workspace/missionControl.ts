@@ -233,6 +233,21 @@ root.addEventListener("mouseover", (e) => {
   const t = (e.target as Element).closest<HTMLElement>(".mission-tile");
   if (t?.dataset.session && t.dataset.session !== lit) light(t.dataset.session);
 });
+// A plain wheel scrolls the lanes sideways where it cannot scroll a lane:
+// over a lane head, or over a lane that fits. Shift+wheel always does.
+root.addEventListener(
+  "wheel",
+  (e) => {
+    const board = root.querySelector<HTMLElement>(".mission-lanes");
+    if (!board || e.shiftKey || e.deltaX || board.scrollWidth <= board.clientWidth) return;
+    const lane = (e.target as Element).closest<HTMLElement>(".mission-lane");
+    const head = (e.target as Element).closest(".mission-lane-head, .mission-bar");
+    if (lane && !head && lane.scrollHeight > lane.clientHeight) return;
+    board.scrollLeft += e.deltaY;
+    e.preventDefault();
+  },
+  { passive: false },
+);
 root.addEventListener("keydown", (e) => {
   if (e.key === "Escape" || actionFor(e) === "mission-control") closeMission();
   else if (e.key === "Enter" && lit) closeMission(lit);

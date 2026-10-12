@@ -47,16 +47,16 @@ body.header-bar #topbar .search { display: none; }
 body.dragging-rail, body.dragging-rail * { cursor: grabbing !important; }
 /* A drop into a fleet: the chip shows the tile it makes, a tile shows its next square. */
 .rail-item.drop-into .rail-chip { background: var(--bg-raised); box-shadow: inset 0 0 0 2px var(--text); }
-.rail-item.drop-into .rail-chip:has(> .drop-preview) { color: transparent; }
-.rail-item.drop-into .rail-chip:has(> .drop-preview) > :not(.drop-preview) { display: none; }
-.rail-item.drop-into .fleet-tile { opacity: 1; }
+.rail-item.drop-into .rail-chip:has(> .fleet-preview) { color: transparent; }
+.rail-item.drop-into .rail-chip:has(> .fleet-preview) > :not(.fleet-preview) { display: none; }
+.rail-item.drop-into .fleet-letters { color: var(--text); }
+.rail-item.drop-into .fleet-strip { opacity: 1; }
 .rail-item.drop-into .rail-ring { display: none; }
-.drop-preview { height: calc(10 * var(--u)); }
-.fleet-tile.drop-preview { height: auto; opacity: 1; }
 /* The chip under the pointer during a drag, and what the drop does. */
 .rail-ghost { position: fixed; z-index: 20; display: flex; align-items: center; gap: calc(8 * var(--u)); pointer-events: none; }
 .rail-ghost > .rail-chip { width: calc(56 * var(--u)); height: calc(32 * var(--u)); background: var(--bg-raised); border: 1px solid var(--rule-strong); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5); }
-.rail-ghost > .rail-chip .fleet-tile { opacity: 1; }
+.rail-ghost > .rail-chip .fleet-letters { color: var(--text); }
+.rail-ghost > .rail-chip .fleet-strip { opacity: 1; }
 .rail-ghost-label { height: calc(24 * var(--u)); padding: 0 calc(8 * var(--u)); display: flex; align-items: center; background: var(--bg-raised); border: 1px solid var(--rule-strong); font-size: calc(12px * var(--zoom, 1)); color: var(--text); white-space: nowrap; }
 .rail-ghost-label[hidden] { display: none; }
 /* A new fleet's name, next to its tile. */
@@ -83,8 +83,13 @@ body.dragging-rail, body.dragging-rail * { cursor: grabbing !important; }
   .rail-fleet-open.opening > .rail-item:not(:first-child) { animation: none; }
   .rail-fleet-closing { display: none; }
 }
-.fleet-tile { display: grid; grid-template-columns: repeat(2, calc(10 * var(--u))); grid-auto-rows: calc(10 * var(--u)); gap: calc(2 * var(--u)); opacity: 0.7; transition: opacity 120ms; }
-.rail-fleet:hover .fleet-tile, .rail-fleet.active .fleet-tile, .rail-fleet.attention .fleet-tile, .rail-fleet-open .fleet-tile { opacity: 1; }
+.fleet-tile { display: flex; flex-direction: column; align-items: center; gap: calc(4 * var(--u)); }
+.fleet-letters { font-family: var(--mono); font-weight: 700; font-size: calc(12px * var(--zoom, 1)); line-height: 1; letter-spacing: 0.08em; color: var(--text-3); transition: color 120ms; }
+.fleet-strip { display: flex; gap: 1px; width: calc(25 * var(--u)); height: calc(3 * var(--u)); opacity: 0.8; transition: opacity 120ms; }
+.fleet-strip > span { flex: 1; }
+.rail-fleet:hover .fleet-letters, .rail-fleet.attention .fleet-letters, .rail-fleet-open .fleet-letters { color: var(--text); }
+.rail-fleet.active .fleet-letters { color: var(--pc); }
+.rail-fleet:hover .fleet-strip, .rail-fleet.active .fleet-strip, .rail-fleet.attention .fleet-strip, .rail-fleet-open .fleet-strip { opacity: 1; }
 .rail-add { color: var(--text-3); font-weight: 400; font-size: calc(18px * var(--zoom, 1)); }
 .rail-add:hover { color: var(--text); background: var(--bg-raised); }
 /* The project's state as a ring around its icon. Working: blue dashes that turn one dash at a time,

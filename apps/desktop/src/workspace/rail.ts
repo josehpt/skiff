@@ -98,6 +98,31 @@ export function pickRow(n: number) {
   else pickFleet(r.f);
 }
 
+/** The letters on a fleet tile: the initials of a name of several words, else its first three letters. */
+export function fleetLetters(name: string): string {
+  const words = name.split(/[\s_.-]+/).filter(Boolean);
+  const s = words.length > 1 ? words.map((w) => w[0]).join("") : name;
+  return [...s.replace(/[^\p{L}\p{N}]/gu, "")].slice(0, 3).join("").toUpperCase();
+}
+
+/** The most color bars under the letters. Past that, the bars get too thin to tell apart. */
+const STRIP_MAX = 6;
+
+function stripPart(color: string): HTMLElement {
+  const s = h("span");
+  s.style.background = color;
+  return s;
+}
+
+/** A fleet tile: its letters in capitals, so it reads apart from a project chip, over one color bar per project. */
+function fleetTile(name: string, colors: string[]): HTMLElement {
+  const tile = h("span", "fleet-tile");
+  const strip = h("span", "fleet-strip");
+  strip.append(...colors.slice(0, STRIP_MAX).map(stripPart));
+  tile.append(h("span", "fleet-letters", fleetLetters(name)), strip);
+  return tile;
+}
+
 /** The digit for row `i`, as Ctrl+Shift+digit reads it. */
 const digitHint = (name: string, i: number) => (i < 9 ? `${name} (${navigator.userAgent.includes("Macintosh") ? "⌘" : "Ctrl"}+Shift+${i + 1})` : name);
 
@@ -144,13 +169,7 @@ export function renderRail() {
       const item = h("div", "rail-item");
       const current = !r.open && !!sel && r.f.projects.includes(sel);
       const b = button("rail-chip rail-fleet" + (current ? " active" : ""), "", () => pickFleet(r.f));
-      const tile = h("span", "fleet-tile");
-      for (const p of r.f.projects.slice(0, 4)) {
-        const sq = h("span");
-        sq.style.background = accent(p);
-        tile.appendChild(sq);
-      }
-      b.appendChild(tile);
+      b.appendChild(fleetTile(r.f.name, r.f.projects.map(accent)));
       b.dataset.fleet = r.f.name;
       if (current && sel) b.style.setProperty("--pc", accent(sel));
       b.title = digitHint(r.f.name, i);
@@ -379,18 +398,14 @@ function dragRail(down: MouseEvent, item: HTMLElement, moving: Project[], fleet:
     if (!drop) return;
     drop.el.classList.add(drop.mark);
     if (drop.mark !== "drop-into" || !p) return;
-    const sq = (color: string) => {
-      const s = h("span", "drop-preview");
-      s.style.background = color;
-      return s;
-    };
-    const tile = drop.el.querySelector(".fleet-tile");
-    if (tile) {
-      if (tile.children.length < 4) tile.appendChild((preview = sq(accent(p))));
+    const strip = drop.el.querySelector(".fleet-strip");
+    if (strip) {
+      if (strip.children.length < STRIP_MAX) strip.appendChild((preview = stripPart(accent(p))));
+      preview?.classList.add("fleet-preview");
       return;
     }
-    preview = h("span", "fleet-tile drop-preview");
-    preview.append(sq(accent(drop.anchor)), sq(accent(p)));
+    preview = fleetTile(freeFleetName(), [accent(drop.anchor), accent(p)]);
+    preview.classList.add("fleet-preview");
     drop.el.querySelector(".rail-chip")?.appendChild(preview);
   }
 

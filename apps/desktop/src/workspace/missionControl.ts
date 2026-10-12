@@ -61,14 +61,14 @@ function projectSessions(p: Project): SessionInfo[] {
   return out;
 }
 
-/** The tree's sections with sessions, each a lane. Projects with no sessions are left out. */
+/** Each fleet is a lane, as in the tree; "Projects" only when it has sessions. Projects with no sessions are left out. */
 function lanes(): Lane[] {
   return treeSections()
     .map((sec) => ({
       name: sec.fleet ?? "Projects",
       projects: sec.projects.map((p) => ({ p, list: projectSessions(p) })).filter((x) => x.list.length),
     }))
-    .filter((l) => l.projects.length);
+    .filter((l, i) => l.projects.length || i > 0);
 }
 
 function tile(s: SessionInfo, p: Project): HTMLElement {
@@ -122,6 +122,7 @@ function build() {
     const roll = rollup(l.projects.map((x) => x.p));
     if (roll) head.appendChild(roll);
     lane.appendChild(head);
+    if (!l.projects.length) lane.appendChild(h("div", "mission-none", "No sessions"));
     for (const { p, list } of l.projects) {
       const row = h("div", "mission-project");
       row.style.setProperty("--pc", accent(p));
@@ -183,10 +184,15 @@ function step(key: string): boolean {
   if (li < 0) return false;
   const at = order[li].indexOf(lit!);
   const near = (l: string[]) => l[Math.min(at, l.length - 1)];
+  // Left and Right skip a lane with no sessions.
+  const next = (d: number) => {
+    for (let i = li + d; i >= 0 && i < order.length; i += d) if (order[i].length) return near(order[i]);
+    return lit!;
+  };
   if (key === "ArrowDown") light(order[li][Math.min(at + 1, order[li].length - 1)]);
   else if (key === "ArrowUp") light(order[li][Math.max(at - 1, 0)]);
-  else if (key === "ArrowRight") light(near(order[Math.min(li + 1, order.length - 1)]));
-  else if (key === "ArrowLeft") light(near(order[Math.max(li - 1, 0)]));
+  else if (key === "ArrowRight") light(next(1));
+  else if (key === "ArrowLeft") light(next(-1));
   else return false;
   return true;
 }

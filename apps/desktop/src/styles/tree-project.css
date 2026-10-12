@@ -118,3 +118,15 @@ body.dragging-tree, body.dragging-tree * { cursor: grabbing !important; user-sel
 .tree-ghost-label[hidden] { display: none; }
 /* The chevron's room on a row that does not fold, so its icon stays in line. */
 .chev-space { width: calc(12 * var(--u)); height: calc(12 * var(--u)); flex-shrink: 0; }
+
+/* A fleet head: the name folds and opens it, the + adds a project to the fleet (on hover). */
+#sidebar-scroll > .fleet-head { padding: 0; align-items: stretch; }
+.fleet-head .fleet-pick {
+  flex-grow: 1; min-width: 0; display: flex; align-items: flex-end; gap: calc(6 * var(--u));
+  padding: 0 calc(12 * var(--u)) calc(6 * var(--u)) calc(10 * var(--u));
+  border: 0; background: transparent; text-align: left;
+  font: inherit; letter-spacing: inherit; text-transform: inherit; color: inherit;
+}
+#sidebar-scroll > .fleet-head .tree-head-add { height: auto; align-self: stretch; margin: 0; visibility: hidden; }
+.fleet-head:hover .tree-head-add, .fleet-head .tree-head-add:focus-visible { visibility: visible; }
+.fleet-head:hover { color: var(--text-2); }

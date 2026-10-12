@@ -227,12 +227,18 @@ function sectionHead(sec: Section): HTMLElement {
   const name = sec.fleet;
   const key = fleetKey(name);
   const open = isOpen(key);
-  const head = button("tree-head fleet-pick", "", () => toggleRow(key, render));
-  head.dataset.key = head.dataset.fold = key;
-  head.setAttribute("aria-expanded", String(open));
-  head.append(chevron(open), h("span", "tree-head-name", name));
+  const head = h("div", "tree-head fleet-head");
+  const pick = button("fleet-pick", "", () => toggleRow(key, render));
+  pick.dataset.key = pick.dataset.fold = key;
+  pick.setAttribute("aria-expanded", String(open));
+  pick.append(chevron(open), h("span", "tree-head-name", name));
+  const add = button("tree-head-add", "", () => void addProject.open(name));
+  add.title = `Add project to ${name}`;
+  add.setAttribute("aria-label", `Add project to ${name}`);
+  add.appendChild(plusIcon());
+  head.append(pick, add);
   const roll = open ? null : rollup(sec.projects);
-  if (roll) head.appendChild(roll);
+  if (roll) pick.appendChild(roll);
   head.addEventListener("contextmenu", (e) => {
     e.preventDefault();
     fleetMenu({ name, projects: sec.projects }, e.clientX, e.clientY);

@@ -20,7 +20,7 @@ const fleetOf = (name: string) => S.projects.filter((p) => p.fleet === name);
 
 export function dragTree(down: MouseEvent, source: HTMLElement, moving: Project[], fleet: string | null) {
   if (down.button !== 0 || S.projects.length < 2) return;
-  if ((down.target as Element).closest(".wt-plus")) return;
+  if ((down.target as Element).closest(".wt-plus, .tree-head-add")) return;
   const sy = down.clientY;
   const p = fleet ? null : moving[0];
   let drop: Drop | null = null;
@@ -28,7 +28,7 @@ export function dragTree(down: MouseEvent, source: HTMLElement, moving: Project[
   let active = false;
 
   const into = (name: string | null) => (name ? `Add to ${name}` : p?.fleet ? `Take out of ${p.fleet}` : "");
-  const headOf = (name: string) => document.querySelector<HTMLElement>(`#sidebar-scroll .fleet-pick[data-key="${CSS.escape(`fleet:${name}`)}"]`);
+  const headOf = (name: string) => document.querySelector<HTMLElement>(`#sidebar-scroll .fleet-pick[data-key="${CSS.escape(`fleet:${name}`)}"]`)?.parentElement ?? null;
   const kidsOf = (name: string) => document.querySelector<HTMLElement>(`#sidebar-scroll [data-kids="${CSS.escape(`fleet:${name}`)}"]`);
 
   function dropAt(x: number, y: number): Drop | null {
@@ -37,7 +37,8 @@ export function dragTree(down: MouseEvent, source: HTMLElement, moving: Project[
     const box = el.getBoundingClientRect();
     const at = (y - box.top) / box.height;
     const q = el.dataset.project ? S.projects.find((x) => x.name === el.dataset.project) : undefined;
-    const headFleet = el.classList.contains("fleet-pick") ? el.dataset.key!.slice("fleet:".length) : null;
+    const pick = el.querySelector<HTMLElement>(":scope > .fleet-pick");
+    const headFleet = pick ? pick.dataset.key!.slice("fleet:".length) : null;
 
     if (fleet) {
       // A fleet lands before or after another fleet, whole.

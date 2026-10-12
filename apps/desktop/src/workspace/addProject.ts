@@ -8,8 +8,10 @@ import type { FolderInfo, Project } from "../platform/types";
  * repo's name, letters or its own icon, a random free color and theme. The
  * project's right-click menu changes them afterwards.
  */
-export function createAddProject(onAdded: (p: Project) => void, onClose: () => void) {
+/** `fleet`: the fleet the new project joins, from the + on a fleet head. */
+export function createAddProject(onAdded: (p: Project, fleet: string | null) => void, onClose: () => void) {
   let busy = false;
+  let fleet: string | null = null;
   async function add(folder: FolderInfo) {
     if (!folder.root || folder.error) throw new Error(folder.error ?? "Pick a folder in a git repository.");
     const p = await invoke<Project>("add_project", {
@@ -19,12 +21,13 @@ export function createAddProject(onAdded: (p: Project) => void, onClose: () => v
       color: folder.color,
       icon: null,
     });
-    await onAdded(p);
+    await onAdded(p, fleet);
   }
   return {
-    async open() {
+    async open(into: string | null = null) {
       if (busy) return;
       busy = true;
+      fleet = into;
       try {
         const dir = await openFolder({ directory: true, title: "Pick a project folder" });
         if (typeof dir !== "string") return onClose();

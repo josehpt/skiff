@@ -50,8 +50,15 @@ export const launchMenu = createLaunchMenu({
 });
 
 export const addProject = createAddProject(
-  async (p) => {
+  async (p, fleet) => {
     S.justAdded = p.name;
+    // From a fleet's +: the project goes in after the fleet's last project.
+    if (fleet) {
+      const order = S.projects.map((x) => x.name).filter((n) => n !== p.name);
+      const last = S.projects.filter((x) => x.fleet === fleet).pop();
+      order.splice(last ? order.indexOf(last.name) + 1 : order.length, 0, p.name);
+      await invoke("reorder_projects", { order, fleets: [[p.name, fleet]] }).catch(showError);
+    }
     await loadProjects();
     selectProject(p.name);
     host.querySelector<HTMLButtonElement>(".welcome button")?.focus();

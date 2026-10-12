@@ -27,7 +27,10 @@
   display: flex; align-items: center; gap: calc(8 * var(--u)); padding: 0 calc(8 * var(--u)) 0 calc(10 * var(--u));
   border: 0; background: transparent; text-align: left; color: var(--text);
 }
-.project-row:hover { background: color-mix(in srgb, var(--bg-raised) 60%, transparent); }
+/* Hover and press light the whole row, its + and menu included, never the name button alone. */
+.project-row:hover { background-image: linear-gradient(var(--hover), var(--hover)); }
+.project-row:has(> .project-pick:active) { background-image: linear-gradient(var(--press), var(--press)); }
+.project-row .project-pick:active { background-image: none; }
 .tree-fold { width: calc(12 * var(--u)); height: 100%; flex-shrink: 0; display: flex; align-items: center; justify-content: center; color: var(--text-dim); }
 .tree-fold:hover { color: var(--text); }
 .tree-icon {
@@ -98,5 +101,5 @@ body.kbd #sidebar-scroll .project-row:has(> .project-pick.current:focus) { outli
 .tree-project .wt-pick { font-size: calc(12px * var(--zoom, 1)); }
 .tree-project .wt-row .wt-plus { height: calc(20 * var(--u)); }
 /* A project with nothing under it: no chevron, and its row does not light on hover. */
-.project-row.empty:hover { background: transparent; }
+.project-row.empty:hover, .project-row.empty:has(> .project-pick:active) { background-image: none; }
 .project-row.empty .project-pick { cursor: default; }

@@ -26,3 +26,5 @@
 .mission-screen { margin: 0; height: calc(12 * 14 * var(--u) + 16 * var(--u)); padding: calc(8 * var(--u)) calc(10 * var(--u)); overflow: hidden; white-space: pre; font-family: var(--mono); font-size: calc(10px * var(--zoom, 1)); line-height: calc(14 * var(--u)); color: var(--text-3); }
 .mission-screen.note { color: var(--text-dim); white-space: normal; font-family: var(--font); }
 .mission-empty { margin: auto; color: var(--text-dim); }
+/* The board holds the keys; the lit screen is the only highlight. */
+body.kbd .mission:focus { outline: 0; }

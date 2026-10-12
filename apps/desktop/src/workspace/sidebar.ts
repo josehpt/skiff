@@ -194,6 +194,8 @@ export function renderSidebar() {
   head.style.setProperty("--pc", color);
   const title = h("div", "project-title");
   if (p) {
+    // In a fleet, the fleet comes first: one look tells which tile the project is under.
+    if (p.fleet) title.append(h("span", "project-fleet", `${p.fleet} /`));
     title.append(h("span", "project-name", p.name), ...(p.error ? [h("span", "project-meta", "error")] : []));
   } else {
     title.append(h("span", "project-name dim", S.projects.length ? "No project selected" : "No projects"));

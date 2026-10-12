@@ -18,8 +18,9 @@ import { panes } from "../terminal/terminalState";
 import { revealSession, selectProject, showGroup } from "../workspace/view";
 import { enterPreview, giveKeys, peekBlocksAction, previewOnScreen, startPreview } from "../terminal/peek";
 import { rowActs } from "../workspace/rowActs";
+import { pickRow, railProjects } from "../workspace/rail";
 
-/** Ctrl+Shift+1..9 selects a project (Command+Shift+1..9 on macOS). Not in the keymap: it is a range, not one key. */
+/** Ctrl+Shift+1..9 picks a visible rail row: a project, or a fleet (Command+Shift+1..9 on macOS). Not in the keymap: it is a range, not one key. */
 function projectKey(e: KeyboardEvent): number | null {
   const primary = navigator.userAgent.includes("Macintosh") ? e.metaKey : e.ctrlKey;
   if (!primary || !e.shiftKey || e.altKey || (navigator.userAgent.includes("Macintosh") ? e.ctrlKey : e.metaKey)) return null;
@@ -56,8 +57,7 @@ window.addEventListener("keydown", (e) => {
   e.stopPropagation();
   if (typeof key === "string" && modeKeyBlocked(key)) return;
   if (typeof key === "number") {
-    const p = S.projects[key - 1];
-    if (p) selectProject(p.name);
+    pickRow(key);
   } else {
     runAction(key);
   }
@@ -257,10 +257,11 @@ export function toProject() {
  * click reaches it, the cycle does not.
  */
 export function stepRail(dir: 1 | -1) {
-  const chips = [...document.querySelectorAll<HTMLElement>("#rail .rail-chip:not(.rail-add):not(.rail-other)")];
-  if (!chips.length) return;
-  const i = chips.findIndex((c) => c.classList.contains("active"));
-  chips[(i + dir + chips.length) % chips.length].click();
+  // Every project in rail order, the ones in folded fleets too: selecting one opens its fleet.
+  const all = railProjects();
+  if (!all.length) return;
+  const i = all.findIndex((p) => p.name === S.selectedProject);
+  selectProject(all[i < 0 ? (dir > 0 ? 0 : all.length - 1) : (i + dir + all.length) % all.length].name);
   activeChip()?.focus();
 }
 

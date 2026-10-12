@@ -88,6 +88,8 @@ export interface Project {
   error: string | null;
   /** Out of the rail until it opens again. Its worktrees are not read. Absent from an older daemon. */
   closed?: boolean;
+  /** The fleet it sits in on the rail. Absent: on the rail by itself. */
+  fleet?: string | null;
 }
 
 export type DaemonEvent =

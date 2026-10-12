@@ -113,6 +113,8 @@ pub struct ProjectConfig {
     /// Closed: kept with its settings, but out of the rail until it opens again.
     #[serde(default)]
     pub closed: bool,
+    /// The fleet this project sits in on the rail. Absent: on the rail by itself.
+    pub fleet: Option<String>,
 }
 
 impl ProjectConfig {

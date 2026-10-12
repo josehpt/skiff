@@ -168,6 +168,7 @@ pub fn add_project(
         changes: None,
         theme: Some(theme),
         closed: false,
+        fleet: None,
     })
 }
 
@@ -187,6 +188,13 @@ pub fn set_project_short(project: &str, short: &str) -> Result<()> {
         anyhow::bail!("the initials take at most {SHORT_MAX} characters");
     }
     set_project_key(project, "short", (!short.is_empty()).then_some(short))
+}
+
+/// Sets `fleet` on the named project. An empty name removes the key, and the
+/// project stands on the rail by itself again.
+pub fn set_project_fleet(project: &str, fleet: &str) -> Result<()> {
+    let fleet = fleet.trim();
+    set_project_key(project, "fleet", (!fleet.is_empty()).then_some(fleet))
 }
 
 /// Sets or removes `background` on the named project.

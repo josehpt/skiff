@@ -3,6 +3,7 @@
  * settings, out of the rail; Remove drops it. Both end its sessions and leave
  * the folder on disk.
  */
+import { railProjects } from "./rail";
 import { confirmAction } from "../ui/confirm";
 import type { MenuEntry } from "../ui/menu";
 import { ctxMenu } from "../ui/contextMenu";
@@ -54,8 +55,9 @@ async function endAll(ids: string[]): Promise<boolean> {
 
 /** The project next to `p` on the rail, else the one before it. */
 function neighbor(p: Project): Project | null {
-  const i = S.projects.findIndex((x) => x.name === p.name);
-  return S.projects[i + 1] ?? S.projects[i - 1] ?? null;
+  const all = railProjects();
+  const i = all.findIndex((x) => x.name === p.name);
+  return all[i + 1] ?? all[i - 1] ?? null;
 }
 
 /** After a close or remove: the rail loses the project, and a neighbor shows. */

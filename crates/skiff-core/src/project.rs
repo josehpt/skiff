@@ -44,6 +44,9 @@ pub struct Project {
     /// Out of the rail until it opens again. Its worktrees are not read.
     #[serde(default)]
     pub closed: bool,
+    /// The fleet it sits in on the rail. Absent: on the rail by itself.
+    #[serde(default)]
+    pub fleet: Option<String>,
 }
 
 impl Project {
@@ -71,6 +74,7 @@ impl Project {
             worktrees,
             error,
             closed: p.closed,
+            fleet: p.fleet.clone().filter(|f| !f.trim().is_empty()),
         }
     }
 }

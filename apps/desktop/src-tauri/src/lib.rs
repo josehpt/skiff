@@ -74,6 +74,7 @@ pub fn run() {
             config::init_repository,
             config::set_project_icon,
             config::set_project_short,
+            config::set_project_fleet,
             config::set_project_color,
             config::set_project_closed,
             config::remove_project,

@@ -52,6 +52,11 @@ body.dragging-rail, body.dragging-rail * { cursor: grabbing !important; }
   font-family: var(--mono); font-weight: 700; color: var(--pc);
 }
 .rail-chip.active { background: color-mix(in srgb, var(--pc) 15%, transparent); box-shadow: inset 3px 0 0 var(--pc); }
+/* A fleet: one tile of its first four project colors. Open, it lifts and its projects follow under it, with a rule below. */
+.rail-fleet-open { background: color-mix(in srgb, var(--bg-raised) 40%, var(--bg-deep)); box-shadow: inset 2px 0 0 var(--rule-strong); border-bottom: 1px solid var(--rule); }
+.rail-fleet-open > .rail-item:first-child .rail-fleet { background: var(--bg-raised); }
+.fleet-tile { display: grid; grid-template-columns: repeat(2, calc(10 * var(--u))); grid-auto-rows: calc(10 * var(--u)); gap: calc(2 * var(--u)); opacity: 0.7; transition: opacity 120ms; }
+.rail-fleet:hover .fleet-tile, .rail-fleet.active .fleet-tile, .rail-fleet.attention .fleet-tile, .rail-fleet-open .fleet-tile { opacity: 1; }
 .rail-add { color: var(--text-3); font-weight: 400; font-size: calc(18px * var(--zoom, 1)); }
 .rail-add:hover { color: var(--text); background: var(--bg-raised); }
 /* The project's state as a ring around its icon. Working: blue dashes that turn one dash at a time,

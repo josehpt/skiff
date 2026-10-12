@@ -3,6 +3,8 @@
 .project-title { flex-grow: 1; min-width: 0; display: flex; align-items: center; gap: calc(10 * var(--u)); padding: 0 calc(12 * var(--u)) 0 calc(16 * var(--u)); }
 .project-row .project-name { font-size: calc(15px * var(--zoom, 1)); font-weight: 700; color: var(--pc); }
 .project-row .project-name.dim { color: var(--text-3); }
+.project-fleet { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(13px * var(--zoom, 1)); font-weight: 500; color: var(--text-dim); }
+.project-title .project-fleet + .project-name { margin-left: calc(-4 * var(--u)); }
 .project-meta { flex-shrink: 0; font-size: calc(11px * var(--zoom, 1)); color: var(--text-dim); }
 /* The project row is current: the whole row lights, ⋯ included, not just the name. */
 #sidebar-scroll .project-row:has(> .project-pick.current) { background: color-mix(in srgb, var(--pc) 22%, var(--bg-panel)); }

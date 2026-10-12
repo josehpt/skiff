@@ -11,6 +11,7 @@ import { agentName, basename, branchName, byStart, locate, taskTitle } from "./m
 import { cwdOf } from "./canvas";
 import { filledOf, slotsOf } from "./layoutSlots";
 import type { Group, Project, SessionInfo, SplitDir, Worktree } from "../platform/types";
+import type { Fleet } from "./rail";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openFile } from "@tauri-apps/plugin-dialog";
 import { openPath } from "../platform/os";
@@ -120,6 +121,52 @@ function setInitials(p: Project) {
   });
 }
 
+/** The fleets on the rail now, for the dialog's note. */
+const fleetNames = () => [...new Set(S.projects.map((x) => x.fleet).filter((f): f is string => !!f))];
+
+/** Ask for the fleet the project sits in. Projects with the same fleet fold into one tile on the rail. */
+function setFleet(p: Project) {
+  const names = fleetNames();
+  promptAction({
+    title: `Fleet for ${p.name}`,
+    body:
+      "Projects with the same fleet name fold into one tile on the rail. Leave the field empty to put the project on the rail by itself." +
+      (names.length ? ` Fleets now: ${names.join(", ")}.` : ""),
+    placeholder: "a fleet name",
+    value: p.fleet ?? "",
+    allowEmpty: true,
+    action: "Set fleet",
+    submit: (fleet) => invoke("set_project_fleet", { project: p.name, fleet }),
+    onClose: refocusTerminal,
+  });
+}
+
+/** Give every project of the fleet the new name. An empty name puts each on the rail by itself. */
+async function renameFleet(f: Fleet, name: string) {
+  for (const p of f.projects) await invoke("set_project_fleet", { project: p.name, fleet: name });
+}
+
+/** A right-click on a fleet tile. */
+export function fleetMenu(f: Fleet, x: number, y: number) {
+  ctxMenu.open(x, y, `Fleet ${f.name}`, [
+    {
+      icon: "tools-pencil",
+      label: "Rename fleet…",
+      run: () =>
+        promptAction({
+          title: `Rename fleet ${f.name}`,
+          body: `The ${f.projects.length} projects in it keep the new name.`,
+          placeholder: "a fleet name",
+          value: f.name,
+          action: "Rename",
+          submit: (name) => renameFleet(f, name),
+          onClose: refocusTerminal,
+        }),
+    },
+    { icon: "code-ungroup", label: "Remove fleet", run: () => void renameFleet(f, "").catch(showError) },
+  ]);
+}
+
 /** Ask for a branch, then make a worktree for it. Errors stay in the dialog. */
 export function newWorktree(p: Project) {
   S.justAdded = null;
@@ -162,6 +209,7 @@ export function projectMenu(p: Project, x: number, y: number) {
     { icon: "code-copy", label: "Copy path", hint: keyLabel("project-copy-path"), run: run["project-copy-path"] },
     { icon: "documents-file-image", label: "Icon…", sub: iconEntries(p) },
     { icon: "tools-pencil", label: "Initials…", run: () => setInitials(p) },
+    { icon: "code-group", label: "Fleet…", run: () => setFleet(p) },
     { icon: "tools-sparkles", label: "Color…", hint: keyLabel("project-color"), run: run["project-color"] },
     { icon: "tools-sparkles", label: "Project theme…", hint: keyLabel("theme"), run: () => void projectThemeMenu(p) },
     { icon: "playback-image", label: "Background…", sub: backgroundEntries(p) },

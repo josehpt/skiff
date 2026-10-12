@@ -7,7 +7,7 @@ mod settings;
 
 pub use types::*;
 pub use persistence::{config_path, write_atomic, load, load_from, parse};
-pub use projects::{inspect_folder, add_project, set_project_icon, set_project_short, set_project_background, set_project_background_opacity, set_project_color, set_project_changes, set_project_theme, set_project_files, set_project_closed, remove_project, reorder_projects};
+pub use projects::{inspect_folder, add_project, set_project_icon, set_project_short, set_project_fleet, set_project_background, set_project_background_opacity, set_project_color, set_project_changes, set_project_theme, set_project_files, set_project_closed, remove_project, reorder_projects};
 pub use settings::{set_enabled_agents, set_agent_command, remove_agent, rename_agent, restore_agents, set_app_theme, set_font_size, set_menu_layout, MENU_LAYOUTS, OPEN_KEYS, set_open, set_open_peek};
 
 #[cfg(test)]

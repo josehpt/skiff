@@ -135,6 +135,7 @@ pub fn run() {
             config::remove_agent,
             config::restore_agents,
             commands::list_groups,
+            commands::session_screen,
             commands::save_group,
             commands::delete_group,
             streaming::subscribe_output,

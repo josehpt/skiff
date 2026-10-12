@@ -16,7 +16,7 @@ export type Action =
   | "focus-left" | "focus-right" | "focus-up" | "focus-down"
   | "project-menu" | "project-folder" | "project-copy-path" | "project-color" | "project-changes" | "project-files"
   | "region-next" | "region-prev" | "session-next" | "session-prev" | "list-project" | "list-back" | "list-main" | "shortcuts"
-  | "focus-mode" | "maximize";
+  | "focus-mode" | "maximize" | "mission-control";
 
 const isMac = navigator.userAgent.includes("Macintosh");
 
@@ -64,6 +64,7 @@ export const DEFAULTS: Record<Action, string> = {
   shortcuts: "f1",
   "focus-mode": "ctrl+shift+e",
   maximize: "ctrl+shift+enter",
+  "mission-control": "ctrl+shift+a",
 };
 
 interface Combo { ctrl: boolean; shift: boolean; alt: boolean; key: string }
@@ -193,6 +194,7 @@ export const DESCRIBE: [string, Action, string][] = [
   ["View", "focus-down", "Focus the pane below"],
   ["View", "focus-mode", "Focus mode: hide the list and bars. On a session or group row, not a worktree, Changes or Files. From maximize it shows the view's panes again. Ctrl+Shift+Up/Down step through them. Going to another view ends it"],
   ["View", "maximize", "Maximize the focused pane, and hide the rest. On a session row only. Ctrl+Shift+Up/Down maximize the next pane of the view. Press again to go back"],
+  ["View", "mission-control", "Mission control: every session's screen, one lane per fleet. Click or Enter goes to a session. Press again or Esc to close"],
   ["View", "font-bigger", "Bigger text. On a session, its pane only: a terminal with the keys, or a session row"],
   ["View", "font-smaller", "Smaller text. On a session, its pane only"],
   ["View", "font-reset", "Reset text size. On a session, its pane goes back to the app size"],

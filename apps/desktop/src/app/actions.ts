@@ -25,6 +25,7 @@ import { fontTarget, setFontSize, stepPaneFont } from "../terminal/terminalFont"
 import { modeGate, modeKeyBlocked, toggleFocusMode, toggleMaximize } from "./modes";
 import { closePane, focusNextWaiting, goBack, moveFocus, removeFromGroup } from "../workspace/view";
 import { switcher } from "./commandUi";
+import { missionOpen, toggleMission } from "../workspace/missionControl";
 import { showShortcuts } from "../ui/infoDialogs";
 import { groupThemeMenu, projectThemeMenu, sessionThemeMenu } from "../appearance/themes";
 function openNewSession() {
@@ -48,6 +49,8 @@ export function runAction(a: Action) {
   if (switcher.isOpen() && a !== "palette") return;
   // Settings holds the keys as a dialog does. The list keys step its sections.
   if (settings.isOpen && (settings.runKey(a) || (a !== "settings" && a !== "quit"))) return;
+  // Mission control holds the keys as a dialog does. Its own key closes it.
+  if (missionOpen() && a !== "mission-control" && a !== "quit") return;
   switch (a) {
     case "palette": return switcher.toggle();
     case "new-session": return openNewSession();
@@ -89,6 +92,7 @@ export function runAction(a: Action) {
     }
     case "close-pane": return closeKey(!!shown);
     case "next-waiting": return focusNextWaiting();
+    case "mission-control": return toggleMission();
     case "back": return goBack();
     case "rename": {
       // In the list, the row with the keys: arrowing to a row does not open it at once.

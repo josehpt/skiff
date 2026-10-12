@@ -75,6 +75,12 @@ pub enum Request {
     Seen {
         session: SessionId,
     },
+    /// The last `rows` rows of the session's text above the agent's input
+    /// box, for mission control. Answers [`Response::Screen`].
+    Screen {
+        session: SessionId,
+        rows: u16,
+    },
     /// Terminate the process and drop the session.
     Kill {
         session: SessionId,
@@ -139,6 +145,7 @@ pub enum Response {
     Session { session: SessionInfo },
     Agents { agents: Vec<AgentInfo> },
     Output { stdout: String },
+    Screen { lines: Vec<String> },
     Groups { groups: Vec<Group> },
     Group { group: Group },
     Error { message: String },

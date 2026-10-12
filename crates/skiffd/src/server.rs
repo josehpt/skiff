@@ -218,6 +218,10 @@ pub async fn handle(stream: UnixStream, pool: Arc<SessionPool>) -> Result<()> {
                 Ok(()) => Response::Ok,
                 Err(e) => error(e),
             },
+            Request::Screen { session, rows } => match pool.tail_text(&session, rows as usize) {
+                Ok(lines) => Response::Screen { lines },
+                Err(e) => error(e),
+            },
             Request::Kill { session } => match pool.kill(&session) {
                 Ok(()) => Response::Ok,
                 Err(e) => error(e),

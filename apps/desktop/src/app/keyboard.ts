@@ -18,7 +18,7 @@ import { panes } from "../terminal/terminalState";
 import { revealSession, selectProject, showGroup } from "../workspace/view";
 import { enterPreview, giveKeys, peekBlocksAction, previewOnScreen, startPreview } from "../terminal/peek";
 import { rowActs } from "../workspace/rowActs";
-import { isOpen, projectKey as projectRowKey, setOpen, visibleProjects } from "../workspace/tree";
+import { isOpen, projectKey as projectRowKey, toggleRow, visibleProjects } from "../workspace/tree";
 
 /** Ctrl+Shift+1..9 picks a project row the tree shows (Command+Shift+1..9 on macOS). Not in the keymap: it is a range, not one key. */
 function projectKey(e: KeyboardEvent): number | null {
@@ -317,10 +317,11 @@ $("sidebar-scroll").addEventListener("keydown", (e) => {
     // A project or fleet row: Enter or Space opens or folds it, Right opens, Left folds.
     // A project's menu is the menu key or Ctrl+Shift+M, as on every row.
     const key = el.dataset.key!;
-    setOpen(key, e.key === "ArrowRight" || (e.key !== "ArrowLeft" && !isOpen(key)));
     S.roveKey = key;
-    render();
-    roveTarget()?.focus();
+    toggleRow(key, () => {
+      render();
+      roveTarget()?.focus();
+    }, e.key === "ArrowRight" || (e.key !== "ArrowLeft" && !isOpen(key)));
   } else if (el.classList.contains("project-pick") && (e.key === "Delete" || e.key === "Backspace") && !e.ctrlKey && !e.altKey && !e.metaKey) {
     const p = S.projects.find((x) => `project:${x.name}` === el.dataset.key);
     const r = el.getBoundingClientRect();

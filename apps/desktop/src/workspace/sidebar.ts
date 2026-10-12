@@ -30,7 +30,7 @@ import { accent, awayPlaces, currentWorktree, place } from "../app/stateQueries"
 
 import { dragSessions, revealSession, selectWorktree, showGroup } from "./view";
 import { addProject } from "../app/panels";
-import { fleetKey, folded, isOpen, openToFocused, projectBadge, projectKey, rollup, setOpen, treeSections, type Section } from "./tree";
+import { fleetKey, folded, growOpened, isOpen, openToFocused, projectBadge, projectKey, rollup, toggleRow, treeSections, type Section } from "./tree";
 import { render } from "../app/renderRequest";
 
 /** 20px lines, flush against whatever follows. */
@@ -192,7 +192,10 @@ export function renderSidebar() {
   for (const sec of treeSections()) {
     side.appendChild(sectionHead(sec));
     if (sec.fleet && !isOpen(fleetKey(sec.fleet))) continue;
-    for (const p of sec.projects) side.appendChild(projectBlock(p));
+    const kids = h("div", "tree-kids");
+    if (sec.fleet) kids.dataset.kids = fleetKey(sec.fleet);
+    for (const p of sec.projects) kids.appendChild(projectBlock(p));
+    side.appendChild(kids);
   }
   if (!S.projects.length) side.appendChild(h("div", "note-row", "No projects"));
   // Sessions whose folder is in no project.
@@ -202,6 +205,7 @@ export function renderSidebar() {
     head.append(h("span", "tree-head-name", "Other"));
     side.append(head, sessionBlock(other, DEFAULT_ACCENT));
   }
+  growOpened();
   restoreFocus(side, activeKey, caret, near);
 }
 
@@ -220,10 +224,7 @@ function sectionHead(sec: Section): HTMLElement {
   const name = sec.fleet;
   const key = fleetKey(name);
   const open = isOpen(key);
-  const head = button("tree-head fleet-pick", "", () => {
-    setOpen(key, !open);
-    render();
-  });
+  const head = button("tree-head fleet-pick", "", () => toggleRow(key, render));
   head.dataset.key = key;
   head.setAttribute("aria-expanded", String(open));
   head.append(chevron(open), h("span", "tree-head-name", name));
@@ -266,10 +267,7 @@ function projectBlock(p: Project): HTMLElement {
   const roll = open ? null : rollup([p]);
   if (roll) pick.appendChild(roll);
   // A click opens or folds the project, as on a fleet head. Its sessions open from their rows.
-  pick.addEventListener("click", () => {
-    setOpen(key, !open);
-    render();
-  });
+  pick.addEventListener("click", () => toggleRow(key, render));
   head.appendChild(pick);
   if (bare) {
     const plus = button("wt-plus", "", () => launchMenu.open(plus, p, bare));
@@ -294,18 +292,21 @@ function projectBlock(p: Project): HTMLElement {
   block.appendChild(head);
   if (!open) return block;
 
-  if (p.error) block.appendChild(errorRow(p.error));
-  else if (p.worktrees.length === 0) block.appendChild(h("div", "note-row", "No worktrees"));
+  const kids = h("div", "tree-kids");
+  kids.dataset.kids = key;
+  block.appendChild(kids);
+  if (p.error) kids.appendChild(errorRow(p.error));
+  else if (p.worktrees.length === 0) kids.appendChild(h("div", "note-row", "No worktrees"));
   else if (bare) {
     const body = h("div", "wt-body tree-bare");
     body.appendChild(sessionBlock(worktreeLines(bare), color));
     const changes = showsChanges(p) ? changesBlock(bare) : null;
     if (changes) body.appendChild(changes);
     if (showsFiles(p)) body.appendChild(filesBlock(bare));
-    block.appendChild(body);
+    kids.appendChild(body);
   } else {
     const sel = selectedWorktree.get(p.name);
-    for (const w of p.worktrees) block.appendChild(worktreeBlock(p, w, w.path === sel, color));
+    for (const w of p.worktrees) kids.appendChild(worktreeBlock(p, w, w.path === sel, color));
   }
   return block;
 }

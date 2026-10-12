@@ -74,3 +74,11 @@ body.kbd #sidebar-scroll .project-row:has(> .project-pick.current:focus) { outli
 .tree-project .file-row, .tree-project .file-note { padding-left: calc((var(--in) + 6 + var(--depth, 0) * 12) * var(--u)); }
 .tree-project .file-note { padding-left: calc((var(--in) + 22 + var(--depth, 0) * 12) * var(--u)); }
 .tree-project .file-row::before, .tree-project .file-note::before { left: calc((var(--in) + 12) * var(--u)); }
+
+/* Opening and folding: the rows grow from nothing or shrink into the head, in 180ms. */
+.tree-kids { display: flex; flex-direction: column; }
+.tree-opening { overflow: hidden; animation: tree-open 180ms ease-out both; }
+.tree-folding { overflow: hidden; pointer-events: none; animation: tree-fold 180ms ease-out both; }
+@keyframes tree-open { from { height: 0; opacity: 0; } to { height: var(--h); opacity: 1; } }
+@keyframes tree-fold { from { height: var(--h); opacity: 1; } to { height: 0; opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .tree-opening, .tree-folding { animation: none; } }

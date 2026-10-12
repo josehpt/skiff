@@ -93,3 +93,54 @@ export function projectBadge(p: Project): HTMLElement {
   else box.textContent = p.short;
   return box;
 }
+
+/** The row whose rows come in on the next render, to grow from nothing. */
+let opening: string | null = null;
+
+const still = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+const kidsOf = (key: string) => document.querySelector<HTMLElement>(`#sidebar-scroll [data-kids="${CSS.escape(key)}"]`);
+
+/**
+ * Open or fold a fleet or project row, `want` or the other way. Its rows grow
+ * or shrink in 180ms; the fold saves when they are gone. Reduced motion: at once.
+ */
+export function toggleRow(key: string, render: () => void, want = !isOpen(key)) {
+  if (want === isOpen(key)) return;
+  const kids = kidsOf(key);
+  if (kids?.classList.contains("tree-folding")) return;
+  if (want) {
+    opening = still() ? null : key;
+    setOpen(key, true);
+    return render();
+  }
+  if (!kids || still()) {
+    setOpen(key, false);
+    return render();
+  }
+  kids.style.setProperty("--h", `${kids.offsetHeight}px`);
+  kids.classList.add("tree-folding");
+  document.querySelector(`#sidebar-scroll [data-key="${CSS.escape(key)}"] .chev`)?.classList.add("closed");
+  const done = () => {
+    if (!isOpen(key)) return;
+    setOpen(key, false);
+    render();
+  };
+  kids.addEventListener("animationend", (e) => e.target === kids && done());
+  // A render that rebuilds the rows mid-fold drops them and their animationend.
+  window.setTimeout(done, 260);
+}
+
+/** After a render: the rows that just opened grow from nothing, and their chevron turns. */
+export function growOpened() {
+  const key = opening;
+  opening = null;
+  const kids = key ? kidsOf(key) : null;
+  if (!key || !kids) return;
+  kids.style.setProperty("--h", `${kids.offsetHeight}px`);
+  kids.classList.add("tree-opening");
+  kids.addEventListener("animationend", (e) => e.target === kids && kids.classList.remove("tree-opening"));
+  const chev = document.querySelector(`#sidebar-scroll [data-key="${CSS.escape(key)}"] .chev`);
+  if (!chev) return;
+  chev.classList.add("closed");
+  requestAnimationFrame(() => requestAnimationFrame(() => chev.classList.remove("closed")));
+}

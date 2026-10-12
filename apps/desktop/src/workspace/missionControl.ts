@@ -113,8 +113,9 @@ function build() {
   if (waiting) bar.appendChild(h("span", "mission-waiting", `${waiting} waiting`));
 
   const board = h("div", "mission-lanes");
-  for (const l of all) {
+  for (const [i, l] of all.entries()) {
     const lane = h("section", "mission-lane");
+    lane.style.setProperty("--i", String(i));
     lane.setAttribute("aria-label", l.name);
     const head = h("div", "mission-lane-head");
     head.appendChild(h("span", "mission-lane-name", l.name));
@@ -208,6 +209,11 @@ export function openMission() {
   shape = signature();
   build();
   root.hidden = false;
+  root.classList.remove("opening");
+  void root.offsetWidth;
+  root.classList.add("opening");
+  // A lane rebuilt later does not rise again.
+  window.setTimeout(() => root.classList.remove("opening"), 600);
   root.focus();
   light(lit ?? "");
   void read();
@@ -215,15 +221,64 @@ export function openMission() {
 }
 
 /** `go`: the session to show. Without it, the keys go back where they were. */
-export function closeMission(go?: string) {
-  if (!missionOpen()) return;
+let leaving = false;
+
+const still = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+function finish() {
+  leaving = false;
   root.hidden = true;
+  root.classList.remove("leaving", "opening");
   window.clearInterval(timer);
   screens.clear();
   root.replaceChildren();
-  if (go) return revealSession(go);
+}
+
+/** Where a session's pane is once it shows: its cell, else the terminal area. */
+function paneRect(id: string): DOMRect {
+  const el = document.querySelector(`.cell[data-session="${CSS.escape(id)}"]`) ?? document.getElementById("terminal-host");
+  return el?.getBoundingClientRect() ?? new DOMRect(0, 0, innerWidth, innerHeight);
+}
+
+/**
+ * The picked screen flies to where its pane opens, and the board fades
+ * around it. The session shows under the board from the start, so the
+ * screen lands on it.
+ */
+function flyTo(id: string) {
+  const tile = root.querySelector<HTMLElement>(`.mission-tile[data-session="${CSS.escape(id)}"]`);
+  revealSession(id);
+  if (!tile || still()) return finish();
+  const from = tile.getBoundingClientRect();
+  const fly = tile.cloneNode(true) as HTMLElement;
+  fly.classList.add("mission-fly", "lit");
+  Object.assign(fly.style, { left: `${from.left}px`, top: `${from.top}px`, width: `${from.width}px`, height: `${from.height}px` });
+  root.appendChild(fly);
+  root.classList.add("leaving");
+  // Two frames: the pane is laid out before it is measured.
+  requestAnimationFrame(() =>
+    requestAnimationFrame(() => {
+      const to = paneRect(id);
+      const move = `translate(${to.left - from.left}px, ${to.top - from.top}px) scale(${to.width / from.width}, ${to.height / from.height})`;
+      const a = fly.animate(
+        [{ transform: "none", opacity: 1 }, { transform: move, opacity: 1, offset: 0.8 }, { transform: move, opacity: 0 }],
+        { duration: 260, easing: "cubic-bezier(0.2, 0.8, 0.2, 1)", fill: "forwards" },
+      );
+      a.onfinish = finish;
+    }),
+  );
+}
+
+export function closeMission(go?: string) {
+  if (!missionOpen() || leaving) return;
+  leaving = true;
+  // No rebuild under the animation.
+  window.clearInterval(timer);
+  if (go) return flyTo(go);
   if (returnTo?.isConnected) returnTo.focus();
   else refocusTerminal();
+  if (still()) return finish();
+  root.animate([{ opacity: 1 }, { opacity: 0, transform: "scale(1.015)" }], { duration: 140, easing: "ease-in" }).onfinish = finish;
 }
 
 export function toggleMission() {

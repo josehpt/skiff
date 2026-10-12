@@ -28,7 +28,7 @@ import { stateIcon } from "../appearance/stateIcon";
 import { collapsed, DEFAULT_ACCENT, removeErrors, removing, S, selectedWorktree, sessions } from "../app/state";
 import { accent, awayPlaces, currentWorktree, place } from "../app/stateQueries";
 
-import { dragSessions, revealSession, selectProject, selectWorktree, showGroup } from "./view";
+import { dragSessions, revealSession, selectWorktree, showGroup } from "./view";
 import { addProject } from "../app/panels";
 import { fleetKey, folded, isOpen, openToFocused, projectBadge, projectKey, rollup, setOpen, treeSections, type Section } from "./tree";
 import { render } from "../app/renderRequest";
@@ -261,16 +261,15 @@ function projectBlock(p: Project): HTMLElement {
   pick.setAttribute("aria-expanded", String(open));
   const fold = h("span", "tree-fold");
   fold.appendChild(chevron(open));
-  fold.addEventListener("click", (e) => {
-    e.stopPropagation();
-    setOpen(key, !open);
-    render();
-  });
   pick.append(fold, projectBadge(p), h("span", "project-name", p.name));
   if (p.error) pick.appendChild(h("span", "project-meta", "error"));
   const roll = open ? null : rollup([p]);
   if (roll) pick.appendChild(roll);
-  pick.addEventListener("click", () => selectProject(p.name));
+  // A click opens or folds the project, as on a fleet head. Its sessions open from their rows.
+  pick.addEventListener("click", () => {
+    setOpen(key, !open);
+    render();
+  });
   head.appendChild(pick);
   if (bare) {
     const plus = button("wt-plus", "", () => launchMenu.open(plus, p, bare));

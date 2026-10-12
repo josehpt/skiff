@@ -116,3 +116,5 @@ body.dragging-tree, body.dragging-tree * { cursor: grabbing !important; user-sel
 }
 .tree-ghost-name { font-weight: 600; }
 .tree-ghost-label[hidden] { display: none; }
+/* The chevron's room on a row that does not fold, so its icon stays in line. */
+.chev-space { width: calc(12 * var(--u)); height: calc(12 * var(--u)); flex-shrink: 0; }

@@ -404,19 +404,27 @@ function worktreeBlock(p: Project, w: Worktree, selected: boolean, color: string
   const block = h("div", "wt" + (selected ? " selected" : ""));
   block.style.setProperty("--pc", color);
 
-  const open = !collapsed.has(w.path);
+  const lines = worktreeLines(w);
+  // changesBlock reads the worktree's changes the first time, folded or not.
+  const changes = showsChanges(p) ? changesBlock(w) : null;
+  // Nothing under the worktree: no chevron and no fold. A click still selects it.
+  const empty = !lines.length && !changes && !showsFiles(p);
+  const open = !empty && !collapsed.has(w.path);
 
   const row = h("div", "wt-row");
   const pick = button("wt-pick", "", () =>
-    animateFold(w.path, !open, () => {
-      if (open) collapsed.add(w.path);
-      else collapsed.delete(w.path);
-      selectWorktree(p, w);
-    }),
+    empty
+      ? selectWorktree(p, w)
+      : animateFold(w.path, !open, () => {
+          if (open) collapsed.add(w.path);
+          else collapsed.delete(w.path);
+          selectWorktree(p, w);
+        }),
   );
   pick.dataset.wt = pick.dataset.fold = w.path;
-  pick.setAttribute("aria-expanded", String(open));
-  pick.append(chevron(open), branchIcon(), h("span", "branch", branchName(w)));
+  if (!empty) pick.setAttribute("aria-expanded", String(open));
+  const lead = empty ? h("span", "chev-space") : chevron(open);
+  pick.append(lead, branchIcon(), h("span", "branch", branchName(w)));
   // The main checkout shows its tag only while it is off its usual branch.
   const usual = p.default_branch ? w.branch === p.default_branch : ["main", "master"].includes(w.branch ?? "");
   if (w.is_main && !usual) pick.appendChild(h("span", "tag", "main folder"));
@@ -444,8 +452,7 @@ function worktreeBlock(p: Project, w: Worktree, selected: boolean, color: string
     // and goes would move the whole tree.
     const body = h("div", "wt-body");
     body.dataset.kids = w.path;
-    body.appendChild(sessionBlock(worktreeLines(w), color));
-    const changes = showsChanges(p) ? changesBlock(w) : null;
+    body.appendChild(sessionBlock(lines, color));
     if (changes) body.appendChild(changes);
     if (showsFiles(p)) body.appendChild(filesBlock(w));
     block.appendChild(body);

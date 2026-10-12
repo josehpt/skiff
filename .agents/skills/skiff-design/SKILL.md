@@ -65,6 +65,7 @@ Themes are location cues. One look tells you which project or session you are in
 - **Ctrl+Shift for the app.** App keys are Ctrl+Shift+letter (⌘+Shift on macOS). Bare Ctrl belongs to the terminal. Users override keys in `[keys]`, and F1 shows the live keymap. Never hardcode a key label: use `keyLabel(action)`.
 - **Keys act on what is highlighted.** The menu and theme keys use the highlighted scope. New session uses the row's worktree, else the focused pane's worktree. End session uses a highlighted session row, else the focused session. Close pane follows the row with DOM focus, else the focused pane or picked group. File-manager and copy-path keys use the highlighted file when there is one. See the [Glossary](https://github.com/solutionscay/skiff/wiki/Glossary).
 - **Menus show their keys, and the keys work.** An item's hint key picks that item while the menu is open. Enter always picks the lit item.
+- **Only a row with children folds.** A row with nothing under it has no chevron, no fold, and no fold key. A row whose click does nothing does not light on hover.
 - **One highlight.** The list has one current row at most. The focused pane's frame hides when the keys are elsewhere, such as on the rail or on a group row.
 - **Focus goes back.** A menu or dialog gives the keys back to the rail, row or terminal that opened it. It does not change the selection.
 - **Three regions.** The rail, the list and the terminal have one tab stop each. F6 steps through them.

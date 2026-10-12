@@ -158,27 +158,30 @@ function folder(into: HTMLElement, dir: string, depth: number) {
 }
 
 function row(e: Entry, path: string, depth: number): HTMLElement {
+  // A folder read as empty has nothing to open: no chevron, no fold.
+  const l = e.dir ? listings.get(path) : undefined;
+  const foldable = e.dir && !(Array.isArray(l) && !l.length);
   const cls = ["file-row"];
   if (e.dir) cls.push("dir");
   if (e.name.startsWith(".")) cls.push("hidden-file");
   const r = h("button", cls.join(" "));
   r.type = "button";
   r.dataset.key = `file:${path}`;
-  if (e.dir) r.dataset.fold = r.dataset.key;
+  if (foldable) r.dataset.fold = r.dataset.key;
   setRowActs(r.dataset.key, e.dir
-    ? { preview: { kind: "folder", path }, fold: folds(path, expanded) }
+    ? { preview: { kind: "folder", path }, fold: foldable ? folds(path, expanded) : undefined }
     : { preview: { kind: "file", path }, open: () => open(path) });
   r.style.setProperty("--depth", String(depth));
-  if (e.dir) r.setAttribute("aria-expanded", String(expanded.has(path)));
+  if (foldable) r.setAttribute("aria-expanded", String(expanded.has(path)));
   // The mousedown selected the row and its preview (keyboard.ts). A click on a
   // folder opens or closes it; a double-click on a file opens it.
   r.addEventListener("click", (m) => {
     // detail counts clicks across the re-render the first click causes.
-    if (e.dir) toggle(path, expanded);
+    if (foldable) toggle(path, expanded);
     else if (m.detail >= 2) open(path);
   });
   const lead = h("span", "file-lead");
-  if (e.dir) lead.appendChild(chevron(expanded.has(path)));
+  if (foldable) lead.appendChild(chevron(expanded.has(path)));
   r.append(lead, h("span", "file-name", e.name));
   r.addEventListener("contextmenu", (m) => {
     m.preventDefault();

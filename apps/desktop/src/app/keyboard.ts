@@ -349,7 +349,9 @@ $("sidebar-scroll").addEventListener("keydown", (e) => {
   } else if (!el.dataset.session && ["ArrowUp", "ArrowDown", "Home", "End"].includes(e.key)) {
     // Rows move with Ctrl+Shift+Up/Down only. On a session row these keys go
     // to its terminal below; elsewhere they do nothing, not even scroll.
-  } else if ((e.key === "Enter" || e.key === " " || e.key === "ArrowLeft" || e.key === "ArrowRight") && wt) {
+  } else if ((e.key === " " || e.key === "ArrowLeft" || e.key === "ArrowRight") && wt && !el.hasAttribute("aria-expanded")) {
+    // A worktree with nothing under it does not open or fold.
+  } else if ((e.key === "Enter" || e.key === " " || e.key === "ArrowLeft" || e.key === "ArrowRight") && wt && el.hasAttribute("aria-expanded")) {
     // A worktree: Enter or Space opens or closes it, Right opens, Left closes.
     // Its + (start a session) is Ctrl+Shift+T, or New session in its menu.
     const close = e.key === "ArrowLeft" || ((e.key === "Enter" || e.key === " ") && !collapsed.has(wt));

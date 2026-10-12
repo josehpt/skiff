@@ -59,9 +59,9 @@ body.kbd #sidebar-scroll .project-row:has(> .project-pick.current:focus) { outli
 .roll-unread { color: var(--diff-add); }
 
 /* One indent grid. A project's rows start under its name (--in); a worktree's rows one step further.
-   Changes and Files put their glyph on the same line as the session icons. Projects part with space. */
-.tree-project { --in: 58; padding-bottom: calc(8 * var(--u)); }
-.tree-project .wt { --in: 78; padding-bottom: calc(4 * var(--u)); box-shadow: none; }
+   Changes and Files put their glyph on the same line as the session icons. No space between rows anywhere. */
+.tree-project { --in: 58; }
+.tree-project .wt { --in: 78; padding-bottom: 0; box-shadow: none; }
 .tree-project .wt.selected { box-shadow: none; }
 .tree-project .wt-row, .tree-project .files-head { background: transparent; }
 .tree-project .wt-pick { padding-left: calc(38 * var(--u)); }
@@ -95,8 +95,6 @@ body.kbd #sidebar-scroll .project-row:has(> .project-pick.current:focus) { outli
 #sidebar-scroll > .tree-head:first-child { margin-top: 0; border-top: 0; height: calc(28 * var(--u)); }
 #sidebar-scroll > .tree-head .tree-head-add { height: calc(26 * var(--u)); align-self: flex-end; margin-bottom: calc(-6 * var(--u)); }
 .tree-kids > .tree-project + .tree-project { border-top: 1px solid var(--rule); }
-.tree-project { padding-bottom: calc(4 * var(--u)); }
-.tree-project .wt { padding-bottom: 0; }
 .tree-project .wt-row { height: calc(20 * var(--u)); background: transparent; }
 .tree-project .wt-pick { font-size: calc(12px * var(--zoom, 1)); }
 .tree-project .wt-row .wt-plus { height: calc(20 * var(--u)); }

@@ -7,7 +7,6 @@
 .mission-bar { height: calc(40 * var(--u)); flex-shrink: 0; display: flex; align-items: center; gap: calc(16 * var(--u)); padding: 0 calc(16 * var(--u)); border-bottom: 1px solid var(--rule); background: var(--bg-deep); font-size: calc(12px * var(--zoom, 1)); color: var(--text-3); white-space: nowrap; overflow: hidden; }
 .mission-name { font-size: calc(13px * var(--zoom, 1)); font-weight: 600; color: var(--text); }
 .mission-waiting { color: var(--state-waiting-text); }
-.mission-hint { margin-left: auto; font-size: calc(11px * var(--zoom, 1)); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; }
 
 .mission-lanes { flex: 1; min-height: 0; display: flex; overflow-x: auto; }
 .mission-lane { flex: 1 0 calc(300 * var(--u)); min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--rule); overflow-y: auto; }

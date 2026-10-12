@@ -11,7 +11,7 @@ import { agentIcon } from "../appearance/agentIcon";
 import { stateIcon } from "../appearance/stateIcon";
 import { DEFAULT_THEME, isLight } from "../appearance/colors";
 import { themeIdFor, xtermTheme } from "../appearance/themes";
-import { actionFor, keyLabel } from "../app/keys";
+import { actionFor } from "../app/keys";
 import { S, sessions } from "../app/state";
 import { accent, place } from "../app/stateQueries";
 import { h } from "../ui/dom";
@@ -108,10 +108,9 @@ function build() {
   bar.append(
     h("span", "mission-name", "Mission control"),
     h("span", "", `${ids.size} sessions`),
-    h("span", "mission-hint", `Click a session to go · Arrows and Enter · Esc or ${keyLabel("mission-control")} closes`),
   );
   const waiting = count((s) => s.state === "waiting");
-  if (waiting) bar.insertBefore(h("span", "mission-waiting", `${waiting} waiting`), bar.lastChild);
+  if (waiting) bar.appendChild(h("span", "mission-waiting", `${waiting} waiting`));
 
   const board = h("div", "mission-lanes");
   for (const l of all) {

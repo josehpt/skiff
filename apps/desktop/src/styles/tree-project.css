@@ -128,5 +128,5 @@ body.dragging-tree, body.dragging-tree * { cursor: grabbing !important; user-sel
   font: inherit; letter-spacing: inherit; text-transform: inherit; color: inherit;
 }
 #sidebar-scroll > .fleet-head .tree-head-add { height: auto; align-self: stretch; margin: 0; visibility: hidden; }
-.fleet-head:hover .tree-head-add, .fleet-head .tree-head-add:focus-visible { visibility: visible; }
+#sidebar-scroll > .fleet-head:hover .tree-head-add, #sidebar-scroll > .fleet-head .tree-head-add:focus-visible { visibility: visible; }
 .fleet-head:hover { color: var(--text-2); }

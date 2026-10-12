@@ -82,3 +82,18 @@ body.kbd #sidebar-scroll .project-row:has(> .project-pick.current:focus) { outli
 @keyframes tree-open { from { height: 0; opacity: 0; } to { height: var(--h); opacity: 1; } }
 @keyframes tree-fold { from { height: var(--h); opacity: 1; } to { height: 0; opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .tree-opening, .tree-folding { animation: none; } }
+
+/* Grouping: a section is a labeled divider, a 1px strong rule with its name under it.
+   Projects in a section part with a 1px rule. Worktree rows keep the 20px child grid. */
+#sidebar-scroll > .tree-head {
+  height: calc(32 * var(--u)); margin-top: 0; align-items: flex-end; padding-bottom: calc(6 * var(--u));
+  border-top: 1px solid var(--rule-strong);
+}
+#sidebar-scroll > .tree-head:first-child { margin-top: 0; border-top: 0; height: calc(28 * var(--u)); }
+#sidebar-scroll > .tree-head .tree-head-add { height: calc(26 * var(--u)); align-self: flex-end; margin-bottom: calc(-6 * var(--u)); }
+.tree-kids > .tree-project + .tree-project { border-top: 1px solid var(--rule); }
+.tree-project { padding-bottom: calc(4 * var(--u)); }
+.tree-project .wt { padding-bottom: 0; }
+.tree-project .wt-row { height: calc(20 * var(--u)); background: transparent; }
+.tree-project .wt-pick { font-size: calc(12px * var(--zoom, 1)); }
+.tree-project .wt-row .wt-plus { height: calc(20 * var(--u)); }

@@ -171,10 +171,11 @@ function tick() {
   void read();
 }
 
-function light(id: string) {
+/** `scroll`: bring the screen into view, for keys. The pointer is already on it. */
+function light(id: string, scroll = true) {
   lit = id;
   for (const t of root.querySelectorAll<HTMLElement>(".mission-tile")) t.classList.toggle("lit", t.dataset.session === id);
-  root.querySelector(".mission-tile.lit")?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  if (scroll) root.querySelector(".mission-tile.lit")?.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
 /** Arrows: Up and Down in a lane, Left and Right to the same place in the next lane. */
@@ -234,9 +235,15 @@ root.addEventListener("click", (e) => {
   const t = (e.target as Element).closest<HTMLElement>(".mission-tile");
   if (t?.dataset.session) closeMission(t.dataset.session);
 });
-root.addEventListener("mouseover", (e) => {
+// Only a pointer that moves lights a screen. A key scrolls the board under a
+// still pointer, and the screen that lands under it must not take the light back.
+let pointer = "";
+root.addEventListener("mousemove", (e) => {
+  const at = `${e.clientX},${e.clientY}`;
+  if (at === pointer) return;
+  pointer = at;
   const t = (e.target as Element).closest<HTMLElement>(".mission-tile");
-  if (t?.dataset.session && t.dataset.session !== lit) light(t.dataset.session);
+  if (t?.dataset.session && t.dataset.session !== lit) light(t.dataset.session, false);
 });
 // A plain wheel scrolls the lanes sideways where it cannot scroll a lane:
 // over a lane head, or over a lane that fits. Shift+wheel always does.

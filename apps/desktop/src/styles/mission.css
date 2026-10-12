@@ -28,3 +28,6 @@
 .mission-empty { margin: auto; color: var(--text-dim); }
 /* The board holds the keys; the lit screen is the only highlight. */
 body.kbd .mission:focus { outline: 0; }
+/* Scrolled to, a screen clears the sticky lane head. The first of a project brings its project row too. */
+.mission-tile { scroll-margin-top: calc(40 * var(--u)); }
+.mission-project + .mission-tile { scroll-margin-top: calc(80 * var(--u)); }

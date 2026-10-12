@@ -9,6 +9,8 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Project, SessionInfo } from "../platform/types";
 import { agentIcon } from "../appearance/agentIcon";
 import { stateIcon } from "../appearance/stateIcon";
+import { DEFAULT_THEME, isLight } from "../appearance/colors";
+import { themeIdFor, xtermTheme } from "../appearance/themes";
 import { actionFor, keyLabel } from "../app/keys";
 import { S, sessions } from "../app/state";
 import { accent, place } from "../app/stateQueries";
@@ -82,6 +84,14 @@ function tile(s: SessionInfo, p: Project): HTMLElement {
   if (w && !bareWorktree(p) && !w.is_main) head.appendChild(h("span", "where mono", branchName(w)));
   const pre = screens.get(s.id) ?? h("pre", "mission-screen");
   screens.set(s.id, pre);
+  // The session's terminal theme, as its pane shows it.
+  const id = themeIdFor(s);
+  const t = S.themes.find((x) => x.id === id) ?? S.themes.find((x) => x.id === DEFAULT_THEME);
+  if (t) {
+    pre.style.background = t.background;
+    pre.style.color = xtermTheme(t).foreground;
+    pre.style.colorScheme = isLight(t.background) ? "light" : "dark";
+  }
   b.append(head, pre);
   return b;
 }

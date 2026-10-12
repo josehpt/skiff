@@ -102,6 +102,7 @@ export function pickRow(n: number) {
 const digitHint = (name: string, i: number) => (i < 9 ? `${name} (${navigator.userAgent.includes("Macintosh") ? "⌘" : "Ctrl"}+Shift+${i + 1})` : name);
 
 export function renderRail() {
+  if (dragging) return;
   const rail = $<HTMLElement>("rail");
   const hasOther = worktreeLines(null).length > 0;
   // The last outside session ended: Other goes away, and the first project shows.
@@ -156,6 +157,8 @@ export function renderRail() {
         e.preventDefault();
         fleetMenu(r.f, e.clientX, e.clientY);
       });
+      b.addEventListener("mousedown", (e) => dragRail(e, item, r.f.projects, r.f));
+      item.dataset.fleet = r.f.name;
       item.appendChild(b);
       // An open fleet's projects show theirs.
       const ring = r.open ? null : ringFor(r.f.projects);
@@ -184,7 +187,7 @@ export function renderRail() {
       e.preventDefault();
       projectMenu(p, e.clientX, e.clientY);
     });
-    b.addEventListener("mousedown", (e) => dragProject(e, item, p));
+    b.addEventListener("mousedown", (e) => dragRail(e, item, [p], null));
     b.dataset.project = p.name;
     item.dataset.project = p.name;
     b.style.setProperty("--pc", accent(p));
@@ -216,39 +219,174 @@ export function renderRail() {
   rail.appendChild(add);
 }
 
+/** What a drop does: where the moved projects land, and the fleet each project ends in. */
+interface Drop {
+  /** The project the moved ones land next to. */
+  anchor: Project;
+  side: "before" | "after";
+  /** The moved projects' fleet after the drop. Undefined: a fleet moves whole and keeps its name. */
+  fleet?: string | null;
+  /** A drop on a lone chip: the chip goes into the new fleet too. */
+  make?: Project;
+  /** The item that shows the drop, and how. */
+  el: HTMLElement;
+  mark: "drop-before" | "drop-after" | "drop-into";
+  label: string;
+}
+
+/** The first "Fleet N" no fleet uses. */
+function freeFleetName(): string {
+  const used = new Set(S.projects.map((p) => p.fleet));
+  let n = 1;
+  while (used.has(`Fleet ${n}`)) n++;
+  return `Fleet ${n}`;
+}
+
+/** The fleets and the rail order after the drop, saved in one write. A fleet left with one project goes away. */
+function applyDrop(moving: Project[], d: Drop): string | null {
+  const order = railProjects().filter((p) => !moving.includes(p));
+  order.splice(order.indexOf(d.anchor) + (d.side === "after" ? 1 : 0), 0, ...moving);
+  const made = d.make ? freeFleetName() : null;
+  const next = new Map<Project, string | null>(order.map((p) => [p, p.fleet ?? null]));
+  if (d.fleet !== undefined) for (const p of moving) next.set(p, made ?? d.fleet);
+  if (d.make) next.set(d.make, made);
+  const size = new Map<string, number>();
+  for (const f of next.values()) if (f) size.set(f, (size.get(f) ?? 0) + 1);
+  for (const [p, f] of next) if (f && size.get(f) === 1) next.set(p, null);
+  const fleets = [...next].filter(([p, f]) => (p.fleet ?? null) !== f).map(([p, f]) => [p.name, f ?? ""]);
+  for (const [p, f] of next) p.fleet = f;
+  S.projects = order;
+  render();
+  invoke("reorder_projects", { order: order.map((x) => x.name), fleets }).catch(showError);
+  return made;
+}
+
+/** True while a chip is in the air. The rail does not rebuild under it. */
+let dragging = false;
+
 /**
- * Drag a rail chip to reorder projects. A press that does not move stays a
- * click. The new order is the rail order, so a fleet keeps its projects
- * together; a project drops out of a fleet only through its Fleet… item.
+ * Drag a rail chip or a fleet tile. A press that does not move stays a click.
+ * Over a chip, the top and bottom quarters move the drag next to it. The
+ * middle half puts a project with a lone chip into a new fleet, or into the
+ * chip's fleet. A tile takes a project in its middle. A label at the pointer
+ * says what the drop does. Esc cancels.
  */
-function dragProject(down: MouseEvent, item: HTMLElement, dragged: Project) {
+function dragRail(down: MouseEvent, item: HTMLElement, moving: Project[], fleet: Fleet | null) {
   if (down.button !== 0 || S.projects.length < 2) return;
   const sy = down.clientY;
-  const items = [...$<HTMLElement>("rail").querySelectorAll<HTMLElement>(".rail-item[data-project]")];
-  const from = items.indexOf(item);
-  let to = from;
+  const rows = railRows();
+  const items = [...$<HTMLElement>("rail").querySelectorAll<HTMLElement>(".rail-item[data-project], .rail-item[data-fleet]")];
+  // The rail draws one item per row, in row order.
+  if (items.length !== rows.length) return;
+  const p = fleet ? null : moving[0];
+  let drop: Drop | null = null;
+  let ghost: HTMLElement | null = null;
+  let preview: HTMLElement | null = null;
   let active = false;
-  const mark = () => {
-    items.forEach((el, i) => {
-      el.classList.toggle("drop-before", active && i === to && to < from);
-      el.classList.toggle("drop-after", active && i === to && to > from);
-    });
-  };
+
+  const itemOf = (r: RailRow) => items[rows.indexOf(r)];
+  /** The rows of one fleet: its tile, and its projects when it is open. */
+  const fleetRows = (name: string) => rows.filter((r) => (r.kind === "fleet" ? r.f.name : r.inFleet ? r.p.fleet : null) === name);
+  const into = (name: string | null) => (name ? `Add to ${name}` : p?.fleet ? `Take out of ${p.fleet}` : "");
+
+  function dropAt(y: number): Drop | null {
+    let i = items.findIndex((el) => y < el.getBoundingClientRect().bottom);
+    if (i < 0) i = items.length - 1;
+    const r = rows[i];
+    const box = items[i].getBoundingClientRect();
+    const at = (y - box.top) / box.height;
+    const zone = at < 0.25 ? "before" : at > 0.75 ? "after" : "into";
+    const el = items[i];
+    if (fleet) {
+      // A fleet moves whole: it lands before or after a lone chip or another fleet.
+      const name = r.kind === "fleet" ? r.f.name : r.inFleet ? r.p.fleet! : null;
+      if (name === fleet.name) return null;
+      if (!name && r.kind === "project") {
+        const side = at < 0.5 ? "before" : "after";
+        return { anchor: r.p, side, el, mark: side === "before" ? "drop-before" : "drop-after", label: "" };
+      }
+      const other = S.projects.filter((x) => x.fleet === name);
+      const own = fleetRows(name!);
+      if (r.kind === "fleet" && at < 0.5) return { anchor: other[0], side: "before", el, mark: "drop-before", label: "" };
+      return { anchor: other[other.length - 1], side: "after", el: itemOf(own[own.length - 1]), mark: "drop-after", label: "" };
+    }
+    if (!p) return null;
+    if (r.kind === "project") {
+      const q = r.p;
+      if (q === p) return null;
+      const qFleet = r.inFleet ? q.fleet! : null;
+      if (zone === "into") {
+        if (qFleet === p.fleet && qFleet) return null;
+        if (qFleet) return { anchor: q, side: "after", fleet: qFleet, el, mark: "drop-into", label: into(qFleet) };
+        return { anchor: q, side: "after", fleet: null, make: q, el, mark: "drop-into", label: "Make fleet" };
+      }
+      const label = qFleet !== (p.fleet ?? null) ? into(qFleet) : "";
+      return { anchor: q, side: zone, fleet: qFleet, el, mark: zone === "before" ? "drop-before" : "drop-after", label };
+    }
+    const f = r.f;
+    if (zone === "into") {
+      if (p.fleet === f.name) return null;
+      return { anchor: f.projects[f.projects.length - 1], side: "after", fleet: f.name, el, mark: "drop-into", label: into(f.name) };
+    }
+    if (zone === "before") return { anchor: f.projects[0], side: "before", fleet: null, el, mark: "drop-before", label: into(null) };
+    // Below an open tile is the top of its fleet. Below a folded one is past it.
+    if (r.open) return { anchor: f.projects[0], side: "before", fleet: f.name, el, mark: "drop-after", label: p.fleet === f.name ? "" : into(f.name) };
+    return { anchor: f.projects[f.projects.length - 1], side: "after", fleet: null, el, mark: "drop-after", label: into(null) };
+  }
+
+  /** The drop's mark on the rail. A drop into a fleet shows the tile it makes or grows. */
+  function mark() {
+    for (const el of items) el.classList.remove("drop-before", "drop-after", "drop-into");
+    preview?.remove();
+    preview = null;
+    if (!drop) return;
+    drop.el.classList.add(drop.mark);
+    if (drop.mark !== "drop-into" || !p) return;
+    const sq = (color: string) => {
+      const s = h("span", "drop-preview");
+      s.style.background = color;
+      return s;
+    };
+    const tile = drop.el.querySelector(".fleet-tile");
+    if (tile) {
+      if (tile.children.length < 4) tile.appendChild((preview = sq(accent(p))));
+      return;
+    }
+    preview = h("span", "fleet-tile drop-preview");
+    preview.append(sq(accent(drop.anchor)), sq(accent(p)));
+    drop.el.querySelector(".rail-chip")?.appendChild(preview);
+  }
+
+  function place(m: MouseEvent) {
+    if (!ghost) return;
+    ghost.style.left = `${m.clientX + 8}px`;
+    ghost.style.top = `${m.clientY - ghost.offsetHeight / 2}px`;
+  }
+
   const move = (m: MouseEvent) => {
     if (!active) {
       if (Math.abs(m.clientY - sy) < 5) return;
-      active = true;
+      active = dragging = true;
       item.classList.add("dragging");
       document.body.classList.add("dragging-rail");
+      ghost = h("div", "rail-ghost");
+      const chip = item.querySelector(".rail-chip")!.cloneNode(true) as HTMLElement;
+      chip.classList.remove("active", "attention");
+      ghost.append(chip, h("span", "rail-ghost-label"));
+      document.body.appendChild(ghost);
     }
-    to = items.findIndex((el) => m.clientY < el.getBoundingClientRect().bottom);
-    if (to < 0) to = items.length - 1;
+    drop = dropAt(m.clientY);
+    const label = ghost!.querySelector<HTMLElement>(".rail-ghost-label")!;
+    label.textContent = drop?.label ?? "";
+    label.hidden = !drop?.label;
+    place(m);
     mark();
   };
-  const up = () => {
+  const end = () => {
     window.removeEventListener("mousemove", move);
     window.removeEventListener("mouseup", up);
-    if (!active) return;
+    window.removeEventListener("keydown", esc, true);
+    if (!active) return false;
     // The click that follows the release would select the project.
     // A release off the chip fires no click, so the guard must not outlive this event.
     const swallow = (c: Event) => c.stopPropagation();
@@ -256,17 +394,79 @@ function dragProject(down: MouseEvent, item: HTMLElement, dragged: Project) {
     setTimeout(() => window.removeEventListener("click", swallow, true), 0);
     document.body.classList.remove("dragging-rail");
     item.classList.remove("dragging");
-    active = false;
+    ghost?.remove();
+    const d = drop;
+    drop = null;
     mark();
-    if (to === from) return;
-    const order = railProjects();
-    const target = order.find((p) => p.name === items[to].dataset.project);
-    order.splice(order.indexOf(dragged), 1);
-    if (target) order.splice(order.indexOf(target) + (to > from ? 1 : 0), 0, dragged);
-    S.projects = order;
+    active = dragging = false;
+    return d;
+  };
+  const up = () => {
+    const d = end();
+    if (!d) {
+      render();
+      return;
+    }
+    const made = applyDrop(moving, d);
+    if (made) nameFleet(made);
+  };
+  const esc = (k: KeyboardEvent) => {
+    if (k.key !== "Escape") return;
+    k.preventDefault();
+    k.stopPropagation();
+    end();
     render();
-    invoke("reorder_projects", { order: S.projects.map((x) => x.name) }).catch(showError);
   };
   window.addEventListener("mousemove", move);
   window.addEventListener("mouseup", up);
+  window.addEventListener("keydown", esc, true);
+}
+
+/**
+ * A name field next to a new fleet's tile. The fleet has its "Fleet N" name
+ * already: Enter, Esc or a click away keeps what the field holds.
+ */
+function nameFleet(name: string) {
+  const tile = document.querySelector<HTMLElement>(`#rail .rail-fleet[data-fleet="${CSS.escape(name)}"]`);
+  if (!tile) return;
+  const box = h("div", "fleet-name");
+  const label = h("label", "fleet-name-label", "Fleet name");
+  const input = h("input");
+  input.type = "text";
+  input.value = name;
+  input.spellcheck = false;
+  input.id = label.htmlFor = "fleet-name-input";
+  const hint = h("div", "fleet-name-hint", "Enter or a click away keeps it.");
+  box.append(label, input, hint);
+  const r = tile.getBoundingClientRect();
+  box.style.left = `${r.right}px`;
+  box.style.top = `${r.top}px`;
+  document.body.appendChild(box);
+  input.focus();
+  input.select();
+  let done = false;
+  const close = (keep: boolean, blur = false) => {
+    const next = input.value.trim();
+    const taken = next !== name && S.projects.some((p) => p.fleet === next);
+    if (keep && taken && !blur) {
+      hint.textContent = `A fleet named ${next} exists. Use another name.`;
+      return;
+    }
+    done = true;
+    box.remove();
+    document.querySelector<HTMLElement>(`#rail .rail-fleet[data-fleet="${CSS.escape(name)}"]`)?.focus();
+    if (!keep || taken || !next || next === name) return;
+    const members = S.projects.filter((p) => p.fleet === name);
+    for (const p of members) p.fleet = next;
+    render();
+    invoke("reorder_projects", { order: S.projects.map((x) => x.name), fleets: members.map((p) => [p.name, next]) }).catch(showError);
+  };
+  input.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") close(true);
+    else if (e.key === "Escape") close(false);
+  });
+  input.addEventListener("blur", () => {
+    if (!done) close(true, true);
+  });
 }

@@ -262,6 +262,13 @@ pub fn remove_project(project: &str) -> Result<()> {
 
 /// Rewrites the `[[project]]` order. Comments on each table move with it.
 pub fn reorder_projects(order: &[String]) -> Result<()> {
+    arrange_projects(order, &[])
+}
+
+/// Sets `fleet` on each named project and rewrites the `[[project]]` order,
+/// in one write. An empty fleet name removes the key. A drag on the rail can
+/// move a project and change its fleet at once.
+pub fn arrange_projects(order: &[String], fleets: &[(String, String)]) -> Result<()> {
     let _edit = edit_lock();
     let file = config_path();
     let text = std::fs::read_to_string(&file).with_context(|| format!("read {}", file.display()))?;
@@ -273,6 +280,17 @@ pub fn reorder_projects(order: &[String]) -> Result<()> {
         .and_then(|i| i.as_array_of_tables_mut())
         .ok_or_else(|| anyhow::anyhow!("no [[project]] in {}", file.display()))?;
     let name = |t: &toml_edit::Table| t.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
+    for t in tables.iter_mut() {
+        let Some((_, fleet)) = fleets.iter().find(|(p, _)| *p == name(t)) else { continue };
+        match fleet.trim() {
+            "" => {
+                t.remove("fleet");
+            }
+            f => {
+                t.insert("fleet", toml_edit::value(f));
+            }
+        }
+    }
     let mut old: Vec<toml_edit::Table> = tables.iter().cloned().collect();
     let positions: Vec<Option<_>> = old.iter().map(|t| t.position()).collect();
     let mut sorted = Vec::with_capacity(old.len());

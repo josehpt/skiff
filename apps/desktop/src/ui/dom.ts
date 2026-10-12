@@ -7,7 +7,7 @@ export const $ = <T extends HTMLElement>(id: string) => document.getElementById(
  * so it can leave the peek without sending its key to the tool.
  */
 export function modalOpen(includePeek = true): boolean {
-  const dialogs = "#ctx-menu:not([hidden]), #launch-menu:not([hidden]), #switcher:not([hidden]), #settings:not([hidden]), .confirm-overlay";
+  const dialogs = "#ctx-menu:not([hidden]), #launch-menu:not([hidden]), #switcher:not([hidden]), #settings:not([hidden]), .confirm-overlay, .fleet-name";
   return !!document.querySelector(includePeek ? `${dialogs}, .peek:not([hidden])` : dialogs);
 }
 

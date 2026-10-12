@@ -162,8 +162,12 @@ pub(crate) async fn set_project_color(handle: AppHandle, project: String, color:
 }
 
 #[tauri::command]
-pub(crate) async fn reorder_projects(handle: AppHandle, order: Vec<String>) -> Result<(), String> {
-    project_edit(&handle, move || config::reorder_projects(&order)).await
+pub(crate) async fn reorder_projects(
+    handle: AppHandle,
+    order: Vec<String>,
+    fleets: Option<Vec<(String, String)>>,
+) -> Result<(), String> {
+    project_edit(&handle, move || config::arrange_projects(&order, &fleets.unwrap_or_default())).await
 }
 
 #[tauri::command]

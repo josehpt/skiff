@@ -142,8 +142,8 @@ function setFleet(p: Project) {
 }
 
 /** Give every project of the fleet the new name. An empty name puts each on the rail by itself. */
-async function renameFleet(f: Fleet, name: string) {
-  for (const p of f.projects) await invoke("set_project_fleet", { project: p.name, fleet: name });
+function renameFleet(f: Fleet, name: string) {
+  return invoke<void>("reorder_projects", { order: S.projects.map((x) => x.name), fleets: f.projects.map((p) => [p.name, name]) });
 }
 
 /** A right-click on a fleet tile. */

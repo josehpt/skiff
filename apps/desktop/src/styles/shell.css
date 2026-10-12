@@ -45,6 +45,25 @@ body.header-bar #topbar .search { display: none; }
 .rail-item.drop-before::before { top: -1px; }
 .rail-item.drop-after::after { bottom: -1px; }
 body.dragging-rail, body.dragging-rail * { cursor: grabbing !important; }
+/* A drop into a fleet: the chip shows the tile it makes, a tile shows its next square. */
+.rail-item.drop-into .rail-chip { background: var(--bg-raised); box-shadow: inset 0 0 0 2px var(--text); }
+.rail-item.drop-into .rail-chip:has(> .drop-preview) { color: transparent; }
+.rail-item.drop-into .rail-chip:has(> .drop-preview) > :not(.drop-preview) { display: none; }
+.rail-item.drop-into .fleet-tile { opacity: 1; }
+.rail-item.drop-into .rail-ring { display: none; }
+.drop-preview { height: calc(10 * var(--u)); }
+.fleet-tile.drop-preview { height: auto; opacity: 1; }
+/* The chip under the pointer during a drag, and what the drop does. */
+.rail-ghost { position: fixed; z-index: 20; display: flex; align-items: center; gap: calc(8 * var(--u)); pointer-events: none; }
+.rail-ghost > .rail-chip { width: calc(56 * var(--u)); height: calc(32 * var(--u)); background: var(--bg-raised); border: 1px solid var(--rule-strong); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5); }
+.rail-ghost > .rail-chip .fleet-tile { opacity: 1; }
+.rail-ghost-label { height: calc(24 * var(--u)); padding: 0 calc(8 * var(--u)); display: flex; align-items: center; background: var(--bg-raised); border: 1px solid var(--rule-strong); font-size: calc(12px * var(--zoom, 1)); color: var(--text); white-space: nowrap; }
+.rail-ghost-label[hidden] { display: none; }
+/* A new fleet's name, next to its tile. */
+.fleet-name { position: fixed; z-index: 15; width: calc(232 * var(--u)); display: flex; flex-direction: column; background: var(--bg-raised); border: 1px solid var(--rule-strong); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5); }
+.fleet-name-label { height: calc(20 * var(--u)); display: flex; align-items: flex-end; padding: 0 calc(12 * var(--u)); font-size: calc(11px * var(--zoom, 1)); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3); }
+.fleet-name input { height: calc(32 * var(--u)); margin: calc(4 * var(--u)) calc(12 * var(--u)) 0; padding: 0 calc(8 * var(--u)); background: var(--bg); border: 1px solid var(--state-working); border-radius: 0; color: var(--text); font: inherit; font-size: calc(13px * var(--zoom, 1)); outline: 0; }
+.fleet-name-hint { min-height: calc(28 * var(--u)); display: flex; align-items: center; padding: 0 calc(12 * var(--u)); font-size: calc(11px * var(--zoom, 1)); color: var(--text-3); }
 .rail-chip {
   width: 100%; height: var(--row);
   display: flex; align-items: center; justify-content: center;

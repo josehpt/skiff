@@ -30,7 +30,8 @@ import { accent, awayPlaces, currentWorktree, place } from "../app/stateQueries"
 
 import { dragSessions, revealSession, selectWorktree, showGroup } from "./view";
 import { addProject } from "../app/panels";
-import { fleetKey, folded, growOpened, isOpen, openToFocused, projectBadge, projectKey, rollup, toggleRow, treeSections, type Section } from "./tree";
+import { animateFold, growOpened } from "../ui/fold";
+import { fleetKey, folded, isOpen, openToFocused, projectBadge, projectKey, rollup, toggleRow, treeSections, type Section } from "./tree";
 import { render } from "../app/renderRequest";
 
 /** 20px lines, flush against whatever follows. */
@@ -225,7 +226,7 @@ function sectionHead(sec: Section): HTMLElement {
   const key = fleetKey(name);
   const open = isOpen(key);
   const head = button("tree-head fleet-pick", "", () => toggleRow(key, render));
-  head.dataset.key = key;
+  head.dataset.key = head.dataset.fold = key;
   head.setAttribute("aria-expanded", String(open));
   head.append(chevron(open), h("span", "tree-head-name", name));
   const roll = open ? null : rollup(sec.projects);
@@ -257,7 +258,7 @@ function projectBlock(p: Project): HTMLElement {
   const head = h("div", "project-row");
   const pick = h("button", "project-pick");
   pick.type = "button";
-  pick.dataset.key = key;
+  pick.dataset.key = pick.dataset.fold = key;
   pick.tabIndex = -1;
   pick.setAttribute("aria-expanded", String(open));
   const fold = h("span", "tree-fold");
@@ -398,12 +399,14 @@ function worktreeBlock(p: Project, w: Worktree, selected: boolean, color: string
   const open = !collapsed.has(w.path);
 
   const row = h("div", "wt-row");
-  const pick = button("wt-pick", "", () => {
-    if (open) collapsed.add(w.path);
-    else collapsed.delete(w.path);
-    selectWorktree(p, w);
-  });
-  pick.dataset.wt = w.path;
+  const pick = button("wt-pick", "", () =>
+    animateFold(w.path, !open, () => {
+      if (open) collapsed.add(w.path);
+      else collapsed.delete(w.path);
+      selectWorktree(p, w);
+    }),
+  );
+  pick.dataset.wt = pick.dataset.fold = w.path;
   pick.setAttribute("aria-expanded", String(open));
   pick.append(chevron(open), branchIcon(), h("span", "branch", branchName(w)));
   // The main checkout shows its tag only while it is off its usual branch.
@@ -432,6 +435,7 @@ function worktreeBlock(p: Project, w: Worktree, selected: boolean, color: string
     // No count line: the rows carry their own marks, and a line that comes
     // and goes would move the whole tree.
     const body = h("div", "wt-body");
+    body.dataset.kids = w.path;
     body.appendChild(sessionBlock(worktreeLines(w), color));
     const changes = showsChanges(p) ? changesBlock(w) : null;
     if (changes) body.appendChild(changes);

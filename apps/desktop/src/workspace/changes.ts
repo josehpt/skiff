@@ -10,6 +10,7 @@ import type { Project, Worktree } from "../platform/types";
 import { h } from "../ui/dom";
 import { keyLabel } from "../app/keys";
 import { icon } from "../ui/icons";
+import { animateFold } from "../ui/fold";
 import { showError } from "../ui/alerts";
 import type { MenuEntry } from "../ui/menu";
 import { ctxMenu } from "../ui/contextMenu";
@@ -115,12 +116,14 @@ export const hasChanges = (w: Worktree) => !!lists.get(w.path)?.length;
 const join = (wt: string, rel: string) => `${wt}/${rel}`;
 
 function toggle(wt: string) {
-  if (shown.has(wt)) shown.delete(wt);
-  else {
-    shown.add(wt);
-    load(wt);
-  }
-  render();
+  animateFold(`changes:${wt}`, !shown.has(wt), () => {
+    if (shown.has(wt)) shown.delete(wt);
+    else {
+      shown.add(wt);
+      load(wt);
+    }
+    render();
+  });
 }
 
 /** Review all changes: the worktree's Changes row becomes current, and its diff takes the keys. */
@@ -158,6 +161,7 @@ export function changesBlock(w: Worktree): HTMLElement | null {
   block.appendChild(head);
   if (isOpen) {
     const rows = h("div", "files-rows");
+    rows.dataset.kids = key;
     for (const c of list) rows.appendChild(row(w, c));
     block.appendChild(rows);
   }

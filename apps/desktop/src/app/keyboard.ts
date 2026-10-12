@@ -18,6 +18,7 @@ import { panes } from "../terminal/terminalState";
 import { revealSession, selectProject, showGroup } from "../workspace/view";
 import { enterPreview, giveKeys, peekBlocksAction, previewOnScreen, startPreview } from "../terminal/peek";
 import { rowActs } from "../workspace/rowActs";
+import { animateFold } from "../ui/fold";
 import { isOpen, projectKey as projectRowKey, toggleRow, visibleProjects } from "../workspace/tree";
 
 /** Ctrl+Shift+1..9 picks a project row the tree shows (Command+Shift+1..9 on macOS). Not in the keymap: it is a range, not one key. */
@@ -350,11 +351,14 @@ $("sidebar-scroll").addEventListener("keydown", (e) => {
     // A worktree: Enter or Space opens or closes it, Right opens, Left closes.
     // Its + (start a session) is Ctrl+Shift+T, or New session in its menu.
     const close = e.key === "ArrowLeft" || ((e.key === "Enter" || e.key === " ") && !collapsed.has(wt));
-    if (close) collapsed.add(wt);
-    else collapsed.delete(wt);
     S.roveKey = wt;
-    render();
-    roveTarget()?.focus();
+    if (close === collapsed.has(wt)) return e.preventDefault();
+    animateFold(wt, !close, () => {
+      if (close) collapsed.add(wt);
+      else collapsed.delete(wt);
+      render();
+      roveTarget()?.focus();
+    });
   } else if (e.key === "Enter") {
     // Enter opens the row right away, instead of waiting out the pause.
     openRow(el);

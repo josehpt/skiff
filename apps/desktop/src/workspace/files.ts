@@ -11,6 +11,7 @@ import type { Project, Worktree } from "../platform/types";
 import { h } from "../ui/dom";
 import { keyLabel } from "../app/keys";
 import { chevron, icon } from "../ui/icons";
+import { animateFold } from "../ui/fold";
 import { showError } from "../ui/alerts";
 import { ctxMenu } from "../ui/contextMenu";
 import { render } from "../app/render";
@@ -97,13 +98,15 @@ function refresh(root: string) {
 
 /** Opening reads again, so the tree is as fresh as the last click. */
 function toggle(dir: string, set: Set<string>) {
-  if (set.has(dir)) set.delete(dir);
-  else {
-    set.add(dir);
-    refresh(dir);
-  }
-  version++;
-  render();
+  animateFold(`${set === shown ? "files" : "file"}:${dir}`, !set.has(dir), () => {
+    if (set.has(dir)) set.delete(dir);
+    else {
+      set.add(dir);
+      refresh(dir);
+    }
+    version++;
+    render();
+  });
 }
 
 export function filesBlock(w: Worktree): HTMLElement {
@@ -125,6 +128,7 @@ export function filesBlock(w: Worktree): HTMLElement {
   block.appendChild(head);
   if (isOpen) {
     const rows = h("div", "files-rows");
+    rows.dataset.kids = key;
     folder(rows, w.path, 0);
     block.appendChild(rows);
   }
@@ -143,7 +147,13 @@ function folder(into: HTMLElement, dir: string, depth: number) {
   else for (const e of l) {
     const path = join(dir, e.name);
     into.appendChild(row(e, path, depth));
-    if (e.dir && expanded.has(path)) folder(into, path, depth + 1);
+    if (e.dir && expanded.has(path)) {
+      // The open folder's rows sit in one box, so they can grow and fold together.
+      const sub = h("div", "files-rows");
+      sub.dataset.kids = `file:${path}`;
+      folder(sub, path, depth + 1);
+      into.appendChild(sub);
+    }
   }
 }
 
@@ -154,6 +164,7 @@ function row(e: Entry, path: string, depth: number): HTMLElement {
   const r = h("button", cls.join(" "));
   r.type = "button";
   r.dataset.key = `file:${path}`;
+  if (e.dir) r.dataset.fold = r.dataset.key;
   setRowActs(r.dataset.key, e.dir
     ? { preview: { kind: "folder", path }, fold: folds(path, expanded) }
     : { preview: { kind: "file", path }, open: () => open(path) });

@@ -15,7 +15,7 @@ import { filesBlock, filesSig, showsFiles } from "./files";
 import { $, button, h } from "../ui/dom";
 import { branchIcon, chevron, icon, plusIcon } from "../ui/icons";
 
-import { groupMenu, projectMenu, rowMenu, worktreeMenu } from "./menus";
+import { fleetMenu, groupMenu, projectMenu, rowMenu, worktreeMenu } from "./menus";
 
 import { launchMenu } from "../app/panels";
 
@@ -25,10 +25,13 @@ import { itemKey, listItems } from "../app/keyboard";
 import { clearSelection, keepRow, selectRange, toggleSelect, toggleSelectGroup } from "./selection";
 import { startPreview } from "../terminal/peek";
 import { stateIcon } from "../appearance/stateIcon";
-import { collapsed, DEFAULT_ACCENT, OTHER, removeErrors, removing, S, selectedWorktree, sessions } from "../app/state";
-import { accent, awayPlaces, currentProject, currentWorktree, place } from "../app/stateQueries";
+import { collapsed, DEFAULT_ACCENT, removeErrors, removing, S, selectedWorktree, sessions } from "../app/state";
+import { accent, awayPlaces, currentWorktree, place } from "../app/stateQueries";
 
-import { dragSessions, revealSession, selectWorktree, showGroup } from "./view";
+import { dragSessions, revealSession, selectProject, selectWorktree, showGroup } from "./view";
+import { addProject } from "../app/panels";
+import { fleetKey, folded, isOpen, openToFocused, projectBadge, projectKey, rollup, setOpen, treeSections, type Section } from "./tree";
+import { render } from "../app/renderRequest";
 
 /** 20px lines, flush against whatever follows. */
 function sessionBlock(lines: Line[], color: string): HTMLElement {
@@ -137,7 +140,6 @@ function sidebarSig(): string {
     lastGroups = S.groups;
     listGen++;
   }
-  const p = S.selectedProject === OTHER ? null : currentProject();
   const rows = [...sessions.values()].map((s) => {
     const t = ownTheme(s);
     return [
@@ -150,19 +152,23 @@ function sidebarSig(): string {
     const lead = sessions.get(g.focus ?? filledOf(g.layout)[0]);
     return [g.id, g.name, g.layout, g.cwd, groupColor(g), accent(lead ? place(lead)?.project : null)];
   });
-  const trees = p?.worktrees.map((w) => [
-    w.path, w.branch, w.is_main, w.locked, w.prunable, collapsed.has(w.path), removing.has(w.path), removeErrors.get(w.path),
-    showsChanges(p) ? changesSig(w) : null, showsFiles(p) ? filesSig(w) : null,
+  const projects = S.projects.map((p) => [
+    p.name, p.short, p.icon, p.fleet ?? null, p.error, p.default_branch, accent(p), selectedWorktree.get(p.name),
+    p.worktrees.map((w) => [
+      w.path, w.branch, w.is_main, w.locked, w.prunable, collapsed.has(w.path), removing.has(w.path), removeErrors.get(w.path),
+      showsChanges(p) ? changesSig(w) : null, showsFiles(p) ? filesSig(w) : null,
+    ]),
   ]);
   // The agent icons are inked against the applied app theme: a new theme re-inks them.
   return JSON.stringify([
-    listGen, appliedTheme(), S.selectedProject, S.projects.length, p && [p.name, p.error, p.default_branch, accent(p), selectedWorktree.get(p.name)],
-    S.selection, S.renamingSession, S.renaming?.id ?? null, rows, groups, trees,
+    listGen, appliedTheme(), S.selectedProject, [...folded],
+    S.selection, S.renamingSession, S.renaming?.id ?? null, rows, groups, projects,
   ]);
 }
 
 export function renderSidebar() {
   const side = $<HTMLElement>("sidebar-scroll");
+  openToFocused();
   const sig = sidebarSig();
   if (side.dataset.sig === sig) return;
   side.dataset.sig = sig;
@@ -183,66 +189,126 @@ export function renderSidebar() {
   const near = at < 0 ? [] : [...items.slice(at + 1), ...items.slice(0, at).reverse()].map(itemKey);
 
   side.replaceChildren();
-  if (S.selectedProject === OTHER) return renderOther(side, activeKey, caret, near);
-  const p = currentProject();
-  const color = accent(p);
-
-  // One 40px row: the name, and ⋯ for the project menu in the column of every
-  // worktree's +. The name is the list's first row, so the keys reach the menu.
-  // The rail shows the icon.
-  const head = h("div", "project-row");
-  head.style.setProperty("--pc", color);
-  const title = h("div", "project-title");
-  if (p) {
-    // In a fleet, the fleet comes first: one look tells which tile the project is under.
-    if (p.fleet) title.append(h("span", "project-fleet", `${p.fleet} /`));
-    title.append(h("span", "project-name", p.name), ...(p.error ? [h("span", "project-meta", "error")] : []));
-  } else {
-    title.append(h("span", "project-name dim", S.projects.length ? "No project selected" : "No projects"));
+  for (const sec of treeSections()) {
+    side.appendChild(sectionHead(sec));
+    if (sec.fleet && !isOpen(fleetKey(sec.fleet))) continue;
+    for (const p of sec.projects) side.appendChild(projectBlock(p));
   }
-  head.appendChild(title);
-  if (p) {
-    title.classList.add("project-pick");
-    title.dataset.key = `project:${p.name}`;
-    title.tabIndex = -1;
-    title.setAttribute("aria-expanded", String(p.worktrees.some((w) => !collapsed.has(w.path))));
-    const more = button("wt-plus", "", () => {
-      const r = more.getBoundingClientRect();
-      projectMenu(p, r.right, r.top);
-    });
-    more.setAttribute("aria-label", `${p.name} menu`);
-    more.setAttribute("aria-haspopup", "menu");
-    more.appendChild(icon('<circle cx="5" cy="12" r="1"></circle><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle>'));
-    head.appendChild(more);
-    head.addEventListener("contextmenu", (e) => {
-      e.preventDefault();
-      projectMenu(p, e.clientX, e.clientY);
-    });
+  if (!S.projects.length) side.appendChild(h("div", "note-row", "No projects"));
+  // Sessions whose folder is in no project.
+  const other = worktreeLines(null);
+  if (other.length) {
+    const head = h("div", "tree-head");
+    head.append(h("span", "tree-head-name", "Other"));
+    side.append(head, sessionBlock(other, DEFAULT_ACCENT));
   }
-  side.appendChild(head);
-
-  if (p) {
-    if (p.error) side.appendChild(errorRow(p.error));
-    else if (p.worktrees.length === 0) side.appendChild(h("div", "note-row", "No worktrees"));
-    const sel = selectedWorktree.get(p.name);
-    for (const w of p.worktrees) side.appendChild(worktreeBlock(p, w, w.path === sel, color));
-  }
-
   restoreFocus(side, activeKey, caret, near);
 }
 
-/** The "Other" view: sessions and groups whose folder is in no project. */
-function renderOther(side: HTMLElement, activeKey: string | undefined, caret: Caret | null, near: string[]) {
+/** A section head: "Projects" with its +, or a fleet that folds and opens. */
+function sectionHead(sec: Section): HTMLElement {
+  if (!sec.fleet) {
+    const head = h("div", "tree-head");
+    head.append(h("span", "tree-head-name", "Projects"));
+    const add = button("tree-head-add", "", () => void addProject.open());
+    add.title = "Add project";
+    add.setAttribute("aria-label", "Add project");
+    add.appendChild(plusIcon());
+    head.appendChild(add);
+    return head;
+  }
+  const name = sec.fleet;
+  const key = fleetKey(name);
+  const open = isOpen(key);
+  const head = button("tree-head fleet-pick", "", () => {
+    setOpen(key, !open);
+    render();
+  });
+  head.dataset.key = key;
+  head.setAttribute("aria-expanded", String(open));
+  head.append(chevron(open), h("span", "tree-head-name", name));
+  const roll = open ? null : rollup(sec.projects);
+  if (roll) head.appendChild(roll);
+  head.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    fleetMenu({ name, projects: sec.projects }, e.clientX, e.clientY);
+  });
+  return head;
+}
+
+/** A worktree that needs no row of its own: the only one, on its usual branch. Its sessions sit under the project. */
+function bareWorktree(p: Project): Worktree | null {
+  if (p.worktrees.length !== 1) return null;
+  const w = p.worktrees[0];
+  const usual = p.default_branch ? w.branch === p.default_branch : ["main", "master"].includes(w.branch ?? "");
+  return w.is_main && usual && !w.locked && !w.prunable && !removing.has(w.path) && !removeErrors.has(w.path) ? w : null;
+}
+
+/** A project: one 40px row, then its worktrees, groups and sessions while it is open. */
+function projectBlock(p: Project): HTMLElement {
+  const color = accent(p);
+  const key = projectKey(p.name);
+  const open = isOpen(key);
+  const bare = bareWorktree(p);
+  const block = h("div", "tree-project" + (p.name === S.selectedProject ? " selected" : ""));
+  block.style.setProperty("--pc", color);
+
   const head = h("div", "project-row");
-  head.style.setProperty("--pc", DEFAULT_ACCENT);
-  const title = h("div", "project-title");
-  title.append(h("span", "project-name", "Other"), h("span", "project-meta", "outside every project"));
-  head.appendChild(title);
-  side.appendChild(head);
-  const lines = worktreeLines(null);
-  if (lines.length) side.appendChild(sessionBlock(lines, DEFAULT_ACCENT));
-  else side.appendChild(h("div", "note-row", "No sessions"));
-  restoreFocus(side, activeKey, caret, near);
+  const pick = h("button", "project-pick");
+  pick.type = "button";
+  pick.dataset.key = key;
+  pick.tabIndex = -1;
+  pick.setAttribute("aria-expanded", String(open));
+  const fold = h("span", "tree-fold");
+  fold.appendChild(chevron(open));
+  fold.addEventListener("click", (e) => {
+    e.stopPropagation();
+    setOpen(key, !open);
+    render();
+  });
+  pick.append(fold, projectBadge(p), h("span", "project-name", p.name));
+  if (p.error) pick.appendChild(h("span", "project-meta", "error"));
+  const roll = open ? null : rollup([p]);
+  if (roll) pick.appendChild(roll);
+  pick.addEventListener("click", () => selectProject(p.name));
+  head.appendChild(pick);
+  if (bare) {
+    const plus = button("wt-plus", "", () => launchMenu.open(plus, p, bare));
+    plus.dataset.wt = bare.path;
+    plus.setAttribute("aria-label", `Start a session in ${p.name}`);
+    plus.setAttribute("aria-haspopup", "menu");
+    plus.appendChild(plusIcon());
+    head.appendChild(plus);
+  }
+  const more = button("wt-plus", "", () => {
+    const r = more.getBoundingClientRect();
+    projectMenu(p, r.right, r.top);
+  });
+  more.setAttribute("aria-label", `${p.name} menu`);
+  more.setAttribute("aria-haspopup", "menu");
+  more.appendChild(icon('<circle cx="5" cy="12" r="1"></circle><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle>'));
+  head.appendChild(more);
+  head.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    projectMenu(p, e.clientX, e.clientY);
+  });
+  block.appendChild(head);
+  if (!open) return block;
+
+  if (p.error) block.appendChild(errorRow(p.error));
+  else if (p.worktrees.length === 0) block.appendChild(h("div", "note-row", "No worktrees"));
+  else if (bare) {
+    const body = h("div", "wt-body tree-bare");
+    body.appendChild(sessionBlock(worktreeLines(bare), color));
+    const changes = showsChanges(p) ? changesBlock(bare) : null;
+    if (changes) body.appendChild(changes);
+    if (showsFiles(p)) body.appendChild(filesBlock(bare));
+    block.appendChild(body);
+  } else {
+    const sel = selectedWorktree.get(p.name);
+    for (const w of p.worktrees) block.appendChild(worktreeBlock(p, w, w.path === sel, color));
+  }
+  return block;
 }
 
 type Caret = [start: number, end: number, dir: "forward" | "backward" | "none"];

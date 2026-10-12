@@ -1,12 +1,61 @@
-/* The project row: 40px, name left, + right in the worktree + column. */
-.project-row { height: var(--row); flex-shrink: 0; display: flex; align-items: stretch; background: var(--bg-panel); box-shadow: inset 3px 0 0 var(--pc), inset 0 -1px 0 var(--rule-strong); }
-.project-title { flex-grow: 1; min-width: 0; display: flex; align-items: center; gap: calc(10 * var(--u)); padding: 0 calc(12 * var(--u)) 0 calc(16 * var(--u)); }
-.project-row .project-name { font-size: calc(15px * var(--zoom, 1)); font-weight: 700; color: var(--pc); }
-.project-row .project-name.dim { color: var(--text-3); }
-.project-fleet { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(13px * var(--zoom, 1)); font-weight: 500; color: var(--text-dim); }
-.project-title .project-fleet + .project-name { margin-left: calc(-4 * var(--u)); }
-.project-meta { flex-shrink: 0; font-size: calc(11px * var(--zoom, 1)); color: var(--text-dim); }
-/* The project row is current: the whole row lights, ⋯ included, not just the name. */
-#sidebar-scroll .project-row:has(> .project-pick.current) { background: color-mix(in srgb, var(--pc) 22%, var(--bg-panel)); }
+/* The tree (#87): fleets head sections, projects are 40px rows, worktrees, groups and sessions follow. No project bars. */
+#rail { display: none; }
+
+.tree-head {
+  height: calc(20 * var(--u)); width: 100%; flex-shrink: 0;
+  display: flex; align-items: center; gap: calc(6 * var(--u));
+  margin-top: calc(12 * var(--u)); padding: 0 0 0 calc(16 * var(--u));
+  border: 0; background: transparent; text-align: left;
+  font-size: calc(11px * var(--zoom, 1)); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim);
+}
+#sidebar-scroll > .tree-head:first-child { margin-top: calc(4 * var(--u)); }
+.tree-head-name { flex-grow: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fleet-pick { padding-left: calc(10 * var(--u)); padding-right: calc(12 * var(--u)); }
+.fleet-pick:hover, .fleet-pick.hover { color: var(--text-2); }
+.tree-head-add { width: var(--row); height: 100%; flex-shrink: 0; display: flex; align-items: center; justify-content: center; border: 0; background: transparent; color: var(--text-dim); }
+.tree-head-add:hover { color: var(--text); background: var(--bg-raised); }
+.tree-head-add svg { width: calc(12 * var(--u)); height: calc(12 * var(--u)); }
+
+/* A chevron shows on hover, on the current row, and on a folded row. */
+.fleet-pick .chev:not(.closed), .project-pick .chev:not(.closed) { opacity: 0; }
+.fleet-pick:hover .chev, .fleet-pick.current .chev, .project-row:hover .chev, .project-pick.current .chev { opacity: 1; }
+
+.tree-project { display: flex; flex-direction: column; flex-shrink: 0; }
+.project-row { height: var(--row); flex-shrink: 0; display: flex; align-items: stretch; }
+.project-pick {
+  flex-grow: 1; min-width: 0;
+  display: flex; align-items: center; gap: calc(8 * var(--u)); padding: 0 calc(8 * var(--u)) 0 calc(10 * var(--u));
+  border: 0; background: transparent; text-align: left; color: var(--text);
+}
+.project-row:hover { background: color-mix(in srgb, var(--bg-raised) 60%, transparent); }
+.tree-fold { width: calc(12 * var(--u)); height: 100%; flex-shrink: 0; display: flex; align-items: center; justify-content: center; color: var(--text-dim); }
+.tree-fold:hover { color: var(--text); }
+.tree-icon {
+  width: calc(20 * var(--u)); height: calc(20 * var(--u)); flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center; overflow: hidden;
+  font-family: var(--mono); font-size: calc(10px * var(--zoom, 1)); font-weight: 700; color: var(--pc);
+  background: color-mix(in srgb, var(--pc) 14%, transparent);
+}
+.tree-icon:has(img) { background: transparent; }
+.tree-icon img { width: calc(16 * var(--u)); height: calc(16 * var(--u)); object-fit: contain; }
+.project-row .project-name { flex-grow: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(13px * var(--zoom, 1)); font-weight: 600; color: var(--text); }
+.project-meta { flex-shrink: 0; font-size: calc(11px * var(--zoom, 1)); color: var(--error); }
+.project-row .wt-plus { visibility: hidden; }
+.project-row:hover .wt-plus, .project-row:has(.current) .wt-plus, .project-row .wt-plus[aria-expanded="true"] { visibility: visible; }
+/* The project row is current: the whole row lights, its buttons included. */
+#sidebar-scroll .project-row:has(> .project-pick.current) { background: color-mix(in srgb, var(--pc) 22%, var(--bg-panel)); box-shadow: inset 2px 0 0 var(--pc); }
 #sidebar-scroll .project-pick.current, body.kbd #sidebar-scroll .project-pick.current:focus { background: transparent; box-shadow: none; }
-body.kbd #sidebar-scroll .project-row:has(> .project-pick.current:focus) { box-shadow: inset 3px 0 0 var(--pc), inset 0 1px 0 var(--pc), inset 0 -1px 0 var(--pc); }
+body.kbd #sidebar-scroll .project-row:has(> .project-pick.current:focus) { outline: 1px solid var(--rule-strong); outline-offset: -1px; }
+
+/* A folded row's marks: waiting, working and unread counts. */
+.tree-roll { flex-shrink: 0; display: flex; gap: calc(8 * var(--u)); font-family: var(--mono); font-size: calc(11px * var(--zoom, 1)); font-weight: 700; letter-spacing: 0; text-transform: none; }
+.tree-roll > span { display: flex; align-items: center; gap: calc(3 * var(--u)); }
+.tree-roll svg { width: calc(10 * var(--u)); height: calc(10 * var(--u)); }
+.roll-waiting { color: var(--state-waiting-text); }
+.roll-working { color: var(--state-working); }
+.roll-unread { color: var(--diff-add); }
+
+/* Sessions of a project with one plain worktree sit under the project, a step in. */
+.tree-bare { padding-bottom: calc(8 * var(--u)); }
+.tree-project .wt { padding-bottom: calc(8 * var(--u)); }
+.tree-project .wt, .tree-project .wt.selected { box-shadow: none; }

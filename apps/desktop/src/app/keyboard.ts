@@ -18,9 +18,9 @@ import { panes } from "../terminal/terminalState";
 import { revealSession, selectProject, showGroup } from "../workspace/view";
 import { enterPreview, giveKeys, peekBlocksAction, previewOnScreen, startPreview } from "../terminal/peek";
 import { rowActs } from "../workspace/rowActs";
-import { pickRow, railProjects } from "../workspace/rail";
+import { isOpen, projectKey as projectRowKey, setOpen, visibleProjects } from "../workspace/tree";
 
-/** Ctrl+Shift+1..9 picks a visible rail row: a project, or a fleet (Command+Shift+1..9 on macOS). Not in the keymap: it is a range, not one key. */
+/** Ctrl+Shift+1..9 picks a project row the tree shows (Command+Shift+1..9 on macOS). Not in the keymap: it is a range, not one key. */
 function projectKey(e: KeyboardEvent): number | null {
   const primary = navigator.userAgent.includes("Macintosh") ? e.metaKey : e.ctrlKey;
   if (!primary || !e.shiftKey || e.altKey || (navigator.userAgent.includes("Macintosh") ? e.ctrlKey : e.metaKey)) return null;
@@ -57,7 +57,7 @@ window.addEventListener("keydown", (e) => {
   e.stopPropagation();
   if (typeof key === "string" && modeKeyBlocked(key)) return;
   if (typeof key === "number") {
-    pickRow(key);
+    pickProject(key);
   } else {
     runAction(key);
   }
@@ -74,7 +74,7 @@ window.addEventListener("mousedown", () => document.body.classList.remove("kbd")
 export const itemKey = (el: HTMLElement) => el.dataset.session ?? el.dataset.wt ?? el.dataset.group ?? el.dataset.key ?? "";
 
 export function listItems(): HTMLElement[] {
-  return [...document.querySelectorAll<HTMLElement>("#sidebar-scroll .project-pick, #sidebar-scroll .wt-pick, #sidebar-scroll .group-pick, #sidebar-scroll button.session-row, #sidebar-scroll .files-head, #sidebar-scroll .file-row")];
+  return [...document.querySelectorAll<HTMLElement>("#sidebar-scroll .fleet-pick, #sidebar-scroll .project-pick, #sidebar-scroll .wt-pick, #sidebar-scroll .group-pick, #sidebar-scroll button.session-row, #sidebar-scroll .files-head, #sidebar-scroll .file-row")];
 }
 
 /** Where we are in the list: the last-roved row, else the picked group, else the
@@ -231,45 +231,39 @@ function landOn(next: HTMLElement) {
   }
 }
 
-const activeChip = () => document.querySelector<HTMLElement>("#rail .rail-chip.active") ?? document.querySelector<HTMLElement>("#rail .rail-chip");
+/** Ctrl+Shift+1..9: the project row with that number, counted down the tree. Its sessions show. */
+function pickProject(n: number) {
+  const p = visibleProjects()[n - 1];
+  if (!p) return;
+  selectProject(p.name);
+  listItems().find((el) => el.dataset.key === projectRowKey(p.name))?.scrollIntoView({ block: "nearest" });
+}
 
-/**
- * Ctrl+Shift+Left: the keys go to the project on the rail. No sidebar row stays
- * highlighted or selected; the panes stay as they are.
- */
+/** Ctrl+Shift+Left: the keys go to the current project's row in the tree. The panes stay as they are. */
 export function toProject() {
   ctxMenu.close(false);
   launchMenu.close(false);
   clearSelection();
   S.groupPicked = null;
-  S.atRail = true;
-  // A render puts focus back on the row that had it, and that focus would end
-  // the rail level at once. Let go of the row first.
-  (document.activeElement as HTMLElement | null)?.blur();
+  const name = S.selectedProject;
+  const row = listItems().find((el) => el.dataset.key === (name ? projectRowKey(name) : ""));
+  if (!row) return;
   render();
-  document.body.classList.add("kbd");
-  activeChip()?.focus();
+  landOn(listItems().find((el) => el.dataset.key === row.dataset.key) ?? row);
 }
 
-/**
- * Ctrl+Shift+Up/Down on the rail: the next or previous project. The keys stay
- * on the rail. Other (sessions outside every project) is not a project: a
- * click reaches it, the cycle does not.
- */
+/** Ctrl+Shift+Up/Down while the keys were on the rail. The rail is gone (#87): the list steps. */
 export function stepRail(dir: 1 | -1) {
-  // Every project in rail order, the ones in folded fleets too: selecting one opens its fleet.
-  const all = railProjects();
-  if (!all.length) return;
-  const i = all.findIndex((p) => p.name === S.selectedProject);
-  selectProject(all[i < 0 ? (dir > 0 ? 0 : all.length - 1) : (i + dir + all.length) % all.length].name);
-  activeChip()?.focus();
+  leaveRail();
+  stepList(dir);
 }
 
-/** Ctrl+Shift+Right: from the rail back into the list, at its current row. */
+/** Ctrl+Shift+Right: from a project or fleet row back to the session on screen. */
 export function fromProject() {
-  if (!S.atRail) return;
   leaveRail();
-  const row = currentRow() ?? listItems()[0];
+  const el = document.activeElement as HTMLElement | null;
+  if (el && !el.classList.contains("project-pick") && !el.classList.contains("fleet-pick")) return;
+  const row = S.focused ? listItems().find((x) => x.dataset.session === S.focused) : undefined;
   if (row) landOn(row);
 }
 
@@ -285,7 +279,8 @@ document.addEventListener("focusin", (e) => {
 });
 
 /** A Changes or Files header, or a row under one. Not a session, group or worktree. */
-const isSection = (el: HTMLElement) => !!el.dataset.key && !el.dataset.session && !el.dataset.wt && !el.dataset.group && !el.classList.contains("project-pick");
+const isSection = (el: HTMLElement) =>
+  !!el.dataset.key && !el.dataset.session && !el.dataset.wt && !el.dataset.group && !el.classList.contains("project-pick") && !el.classList.contains("fleet-pick");
 
 /** Arrows inside the rail and the session list; Enter, Left/Right, Menu key. */
 $("rail").addEventListener("keydown", (e) => {
@@ -318,18 +313,14 @@ $("sidebar-scroll").addEventListener("keydown", (e) => {
     clearSelection();
     render();
     keepRow(key);
-  } else if (el.classList.contains("project-pick") && (e.key === "Enter" || e.key === " " || e.key === "ArrowLeft" || e.key === "ArrowRight")) {
-    // The project row, as a worktree row one level up: Enter or Space opens or
-    // closes all its worktrees, Right opens them, Left closes them. Its menu is
-    // the menu key or Ctrl+Shift+M, as on every row.
-    const p = S.projects.find((x) => `project:${x.name}` === el.dataset.key);
-    if (p) {
-      const paths = p.worktrees.map((w) => w.path);
-      const close = e.key === "ArrowLeft" || ((e.key === "Enter" || e.key === " ") && paths.some((w) => !collapsed.has(w)));
-      for (const w of paths) close ? collapsed.add(w) : collapsed.delete(w);
-      render();
-      roveTarget()?.focus();
-    }
+  } else if ((el.classList.contains("project-pick") || el.classList.contains("fleet-pick")) && (e.key === "Enter" || e.key === " " || e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+    // A project or fleet row: Enter or Space opens or folds it, Right opens, Left folds.
+    // A project's menu is the menu key or Ctrl+Shift+M, as on every row.
+    const key = el.dataset.key!;
+    setOpen(key, e.key === "ArrowRight" || (e.key !== "ArrowLeft" && !isOpen(key)));
+    S.roveKey = key;
+    render();
+    roveTarget()?.focus();
   } else if (el.classList.contains("project-pick") && (e.key === "Delete" || e.key === "Backspace") && !e.ctrlKey && !e.altKey && !e.metaKey) {
     const p = S.projects.find((x) => `project:${x.name}` === el.dataset.key);
     const r = el.getBoundingClientRect();

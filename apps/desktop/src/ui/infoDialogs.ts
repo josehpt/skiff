@@ -42,10 +42,8 @@ type Shortcut = [section: string, what: string, key: string];
 
 /** Keyboard controls that do not come from the configurable action keymap. */
 const FIXED_SHORTCUTS: Shortcut[] = [
-  ["Projects", "Select rail row 1 through 9: a project, or a fleet. On the open fleet, fold it", `${navigator.userAgent.includes("Macintosh") ? "⌘" : "Ctrl"}+Shift+1…9`],
-  ["Rail", "Open the focused project", "Enter / Space"],
-  ["Rail", "Close or remove the focused project", "Delete / Backspace"],
-  ["Session list", "Open or close all worktrees from the project row", "Enter / Space / ← / →"],
+  ["Projects", "Select project 1 through 9, counted down the list. Folded fleets do not count", `${navigator.userAgent.includes("Macintosh") ? "⌘" : "Ctrl"}+Shift+1…9`],
+  ["Session list", "Open or fold the focused project or fleet", "Enter / Space / ← / →"],
   ["Session list", "Close or remove the project from the project row", "Delete / Backspace"],
   ["Session list", "Open or close the focused worktree", "Enter / Space"],
   ["Session list", "Open the focused session or group", "Enter"],

@@ -1,6 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { promptAction } from "../ui/confirm";
-import { showError, showNotice } from "../ui/alerts";
+import { showError } from "../ui/alerts";
 import type { AgentInfo, SessionInfo } from "../platform/types";
 import { newSession } from "./daemon";
 import { setSkiffAgentName } from "./keys";
@@ -10,10 +9,7 @@ import { continueLine } from "../terminal/resume";
 import { agentKind } from "../appearance/agentIcon";
 import { byStart, samePath } from "../workspace/model";
 import { keepRow } from "../workspace/selection";
-import { refocusTerminal, revealSession } from "../workspace/view";
-
-/** The default folder. It does not follow the agent's name, so a rename keeps its history. */
-const FOLDER = "~/skiff-agent";
+import { revealSession } from "../workspace/view";
 
 /** The name until Settings has one. skiffd's setup keeps the same default. */
 export const DEFAULT_NAME = "Skipper";
@@ -112,26 +108,4 @@ function rename(id: string, name: string) {
       render();
     })
     .catch(console.error);
-}
-
-/**
- * Writes the Skiff agent template into an empty folder the user names. The
- * folder becomes the Skiff agent's, so its row shows above the projects.
- */
-export function setUpSkiffAgent() {
-  let dir: string | null = null;
-  promptAction({
-    title: "Set up Skiff agent",
-    body: "Skiff writes the agent's instructions, its task ledger and a results folder into an empty folder. It does not overwrite files. The folder becomes the Skiff agent's folder in Settings.",
-    placeholder: "a folder",
-    value: S.skiffAgent?.folder ? "" : FOLDER,
-    action: "Set up",
-    submit: async (path) => {
-      dir = await invoke<string>("setup_skiff_agent", { path });
-    },
-    onClose: () => {
-      refocusTerminal();
-      if (dir) showNotice(`Skiff wrote the agent's files to ${dir}. Select ${skiffAgentName()} at the top of the side panel to start it.`);
-    },
-  });
 }

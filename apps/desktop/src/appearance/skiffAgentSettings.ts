@@ -13,7 +13,7 @@ export type SkiffAgentEdit =
  * Settings › Skiff agent: its name, the agent it starts, its folder, and
  * whether a restored pane continues the last conversation.
  */
-export function skiffAgentSection(set: SkiffAgentSettings, agents: AgentInfo[], save: (e: SkiffAgentEdit) => void): HTMLElement[] {
+export function skiffAgentSection(set: SkiffAgentSettings, agents: AgentInfo[], save: (e: SkiffAgentEdit) => void, choose: () => void): HTMLElement[] {
   // Enabled agents and the user's own. A custom agent is on when the user added it.
   const choices = agents.filter((a) => a.enabled || a.custom);
   const chosen = skiffAgentChoice(agents, set.agent);
@@ -33,13 +33,25 @@ export function skiffAgentSection(set: SkiffAgentSettings, agents: AgentInfo[], 
   pick.disabled = !choices.length;
   pick.addEventListener("change", () => save({ key: "agent", value: pick.value }));
   agentRow.append(h("span", "c-name", "Agent"), pick, h("span", "c-mode", "At next start"));
-  const note = h(
-    "div",
-    "set-note",
-    "A running session keeps its agent. A new agent starts a new conversation: the old agent's history stays in the folder, but the new agent cannot read it. The ledger carries the open tasks across.",
-  );
-
-  const folder = textRow("Folder", set.folder ?? "", "none: no row in the side panel", (v) => save({ key: "folder", value: v || null }));
+  // The folder picker. Skiff writes the agent's files into the folder it gets.
+  const folder = h("div", "set-row set-open set-agent on");
+  const path = h("input", "c-cmd");
+  path.readOnly = true;
+  path.value = set.folder ?? "";
+  path.placeholder = "Choose a folder to show the row";
+  path.setAttribute("aria-label", "Skiff agent folder. Enter chooses one");
+  path.addEventListener("click", choose);
+  path.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      choose();
+    }
+  });
+  const clear = h("button", "c-mode set-switch", set.folder ? "Clear" : "");
+  clear.type = "button";
+  clear.disabled = !set.folder;
+  clear.addEventListener("click", () => save({ key: "folder", value: null }));
+  folder.append(h("span", "c-name", "Folder"), path, clear);
 
   // A custom agent has no continue line: the switch shows off, with the reason.
   const line = chosen ? continueLine(chosen.id, chosen.command) : null;
@@ -57,12 +69,7 @@ export function skiffAgentSection(set: SkiffAgentSettings, agents: AgentInfo[], 
     ? h("span", "c-cmd mono", line)
     : h("span", "c-cmd", chosen ? `${chosen.id} has no continue command. The pane restores as a shell.` : "No agent is on.");
   cont.append(h("span", "c-name", "Continue on restore"), what, sw);
-  const contNote = h(
-    "div",
-    "set-note",
-    "Off: a restored pane is a shell, as every other pane is. On: Skiff types the line above into the restored Skiff agent pane, and only into that pane.",
-  );
-  return [name, agentRow, note, folder, cont, contNote];
+  return [name, agentRow, folder, cont];
 }
 
 /** A label and a text field that saves on Enter or blur. Esc puts the old value back. */

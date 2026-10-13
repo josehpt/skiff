@@ -89,8 +89,24 @@ export function openSkiffAgent() {
     .then((dir) => newSession(dir, a.command, a.id, "agent", undefined, skiffAgentName()))
     .then((id) => {
       startedId = id;
+      watch(id);
     })
     .catch(showError);
+}
+
+/** When the app last asked for a watcher, so a render does not ask each time. */
+let watchAsked = { id: "", at: 0 };
+
+/**
+ * Starts `skiff watch` for the Skiff agent's session: on start, and again after
+ * an app restart or a daemon restart. The backend starts none while one runs,
+ * so this asks again now and then.
+ */
+function watch(id: string) {
+  const now = Date.now();
+  if (watchAsked.id === id && now - watchAsked.at < 30_000) return;
+  watchAsked = { id, at: now };
+  invoke<boolean>("start_skiff_watch", { session: id }).catch(console.error);
 }
 
 /** Restored panes Skiff already typed the continue line into. Once each. */
@@ -111,6 +127,7 @@ export function syncSkiffAgent() {
   if (s && shownName !== null && shownName !== name && s.name !== name) rename(s.id, name);
   shownName = name;
   if (!s) return;
+  watch(s.id);
   if (!S.skiffAgent.continue_on_restore || !s.resume || continued.has(s.id) || agentKind(s) !== "shell") return;
   const a = skiffAgentChoice();
   const line = a && continueLine(a.id, a.command);

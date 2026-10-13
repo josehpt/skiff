@@ -229,6 +229,53 @@ pub async fn ensure_skiff_agent(app: AppHandle) -> Result<String, String> {
     blocking(move || Ok(ensure(&app)?.display().to_string())).await
 }
 
+/// The `skiff` CLI beside the app binary, else the one on `PATH`.
+fn cli() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .map(|e| e.with_file_name("skiff"))
+        .filter(|p| p.is_file())
+        .unwrap_or_else(|| PathBuf::from("skiff"))
+}
+
+/// Starts `skiff watch` for the agent's session, unless one runs for this
+/// daemon. The watcher is its own process, out of the app's process group: it
+/// outlives an app restart, connects again after a daemon reload, and stops
+/// when the session ends. Its lock beside the socket keeps it to one copy, so
+/// the page can call this on every start and every restore.
+fn start_watch(session: &str) -> anyhow::Result<bool> {
+    let socket = skiff_core::socket::socket_path();
+    let lock = socket.with_extension("watch.lock");
+    if let Ok(f) = std::fs::File::options().create(true).truncate(false).write(true).open(&lock) {
+        if f.try_lock().is_err() {
+            return Ok(false);
+        }
+    }
+    let log = std::fs::File::create(socket.with_extension("watch.log")).context("create the watch log")?;
+    let mut cmd = std::process::Command::new(cli());
+    cmd.args(["watch", session])
+        .env("SKIFF_SOCKET", &socket)
+        .stdin(std::process::Stdio::null())
+        .stdout(log.try_clone()?)
+        .stderr(log);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    let mut child = cmd.spawn().with_context(|| format!("start {}", cli().display()))?;
+    // Reap it when it ends while the app runs.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(true)
+}
+
+#[tauri::command]
+pub async fn start_skiff_watch(session: String) -> Result<bool, String> {
+    blocking(move || start_watch(&session)).await
+}
+
 /// `[skiff_agent]` as the page reads it: the folder without `~`.
 #[derive(Serialize)]
 pub struct SkiffAgent {

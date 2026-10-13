@@ -22,6 +22,7 @@ mod resolve;
 mod sessions;
 mod theme;
 mod wait;
+mod watch;
 
 #[derive(Parser)]
 #[command(
@@ -140,6 +141,22 @@ enum Cmd {
         /// Stop after this many seconds.
         #[arg(long, value_name = "SECS")]
         timeout: Option<f64>,
+    },
+    /// Follow the open tasks in the Skiff agent's ledger for that agent.
+    /// Skiff starts it with the agent's session; it stops when that session
+    /// ends. One runs per daemon.
+    #[command(
+        after_help = "A pane in an open ledger row (sent, pending, blocked) that:\n  waits (approval or bell): the person gets a desktop notification. The agent gets nothing.\n  goes idle after work, exits or is gone: the agent gets one line, typed while it is idle and its input box is empty. Lines that wait for it are joined.\nA pane stays unread until the agent or the person marks it seen, so a new run tells it again.\nIt logs one line for each thing it does."
+    )]
+    Watch {
+        /// The Skiff agent's session.
+        skipper: String,
+        /// The ledger. Default: ledger.md in the agent's folder.
+        #[arg(long, value_name = "FILE")]
+        ledger: Option<std::path::PathBuf>,
+        /// Do not send desktop notifications.
+        #[arg(long)]
+        no_notify: bool,
     },
     /// Mark a session seen, as focusing its pane does.
     Seen { session: String },
@@ -382,6 +399,10 @@ async fn run(cli: Cli) -> Result<i32> {
         Cmd::OpenWith { cmd } => return open_with::run(cmd).map(|_| 0),
         Cmd::Status => return info::status(&socket).await.map(|_| 0),
         Cmd::Daemon(DaemonCmd::Reload { binary }) => return daemon::reload(&socket, binary).await.map(|_| 0),
+        // It connects again after a daemon reload, so it holds no connection here.
+        Cmd::Watch { skipper, ledger, no_notify } => {
+            return watch::watch(&socket, watch::Options { skipper, ledger, notify: !no_notify }).await
+        }
         _ => {}
     }
     let c = connect(&socket).await?;
@@ -409,7 +430,7 @@ async fn run(cli: Cli) -> Result<i32> {
         Cmd::Seen { session } => sessions::seen(&c, &session).await,
         Cmd::Agents { json } => info::agents(&c, json).await,
         Cmd::Theme { cmd: ThemeCmd::Session { cmd } } => theme::session(&c, cmd).await,
-        Cmd::Status | Cmd::Daemon(_) | Cmd::Projects { .. } | Cmd::Theme { .. } | Cmd::OpenWith { .. } | Cmd::Wait { .. } | Cmd::Events { .. } | Cmd::Send { .. } => {
+        Cmd::Status | Cmd::Daemon(_) | Cmd::Projects { .. } | Cmd::Theme { .. } | Cmd::OpenWith { .. } | Cmd::Wait { .. } | Cmd::Events { .. } | Cmd::Watch { .. } | Cmd::Send { .. } => {
             unreachable!()
         }
     }

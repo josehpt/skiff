@@ -21,8 +21,22 @@ const SCROLLBACK: usize = 10_000;
 pub async fn peek(c: &Client, arg: &str, lines: Option<usize>) -> Result<()> {
     let all = sessions::sorted(c).await?;
     let id = resolve::session(&all, arg)?.id.clone();
-    let mut out = c.output(&id);
-    c.subscribe(&id).await?;
+    for line in screen(c, &id, lines).await? {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+/// The screen text of session `id`, as `peek` prints it.
+pub async fn screen(c: &Client, id: &str, lines: Option<usize>) -> Result<Vec<String>> {
+    let (data, cols, rows) = snapshot(c, id).await?;
+    Ok(render(&data, cols, rows, lines))
+}
+
+/// The bytes that redraw session `id`, and its size.
+pub async fn snapshot(c: &Client, id: &str) -> Result<(Vec<u8>, u16, u16)> {
+    let mut out = c.output(id);
+    c.subscribe(id).await?;
     let snap = loop {
         match out.recv().await {
             Ok(Event::Snapshot { data, cols, rows, .. }) => break (data, cols, rows),
@@ -30,16 +44,12 @@ pub async fn peek(c: &Client, arg: &str, lines: Option<usize>) -> Result<()> {
             Err(_) => bail!("no snapshot from skiffd"),
         }
     };
-    let _ = c.unsubscribe(&id).await;
-    for line in render(&snap.0, snap.1, snap.2, lines) {
-        println!("{line}");
-    }
-    Ok(())
+    let _ = c.unsubscribe(id).await;
+    Ok(snap)
 }
 
-/// Runs the snapshot through the same emulator skiffd uses and reads the
-/// text back out of its grid.
-fn render(bytes: &[u8], cols: u16, rows: u16, lines: Option<usize>) -> Vec<String> {
+/// A local terminal fed with `bytes`: the same emulator skiffd uses.
+pub fn term(bytes: &[u8], cols: u16, rows: u16) -> Term<VoidListener> {
     let config = Config {
         scrolling_history: SCROLLBACK,
         ..Config::default()
@@ -48,7 +58,13 @@ fn render(bytes: &[u8], cols: u16, rows: u16, lines: Option<usize>) -> Vec<Strin
     let mut term = Term::new(config, &size, VoidListener);
     let mut parser: Processor = Processor::new();
     parser.advance(&mut term, bytes);
+    term
+}
 
+/// Runs the snapshot through the same emulator skiffd uses and reads the
+/// text back out of its grid.
+fn render(bytes: &[u8], cols: u16, rows: u16, lines: Option<usize>) -> Vec<String> {
+    let term = term(bytes, cols, rows);
     let grid = term.grid();
     let top = if lines.is_some() { grid.topmost_line().0 } else { 0 };
     let bottom = grid.bottommost_line().0;

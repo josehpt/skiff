@@ -77,6 +77,7 @@ pub fn run() {
             skiff_agent::setup_skiff_agent,
             skiff_agent::get_skiff_agent,
             skiff_agent::set_skiff_agent,
+            skiff_agent::init_skiff_agent_repository,
             commands::list_sessions,
             commands::create_session,
             commands::pty_write,

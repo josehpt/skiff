@@ -141,7 +141,7 @@ fn link(_target: &Path, _at: &Path) -> anyhow::Result<()> {
 /// results/                     long child reports
 /// ```
 fn setup(res: &Path, dir: &Path, name: &str) -> anyhow::Result<PathBuf> {
-    if let Ok(meta) = dir.symlink_metadata() {
+    if let Ok(meta) = dir.metadata() {
         if !meta.is_dir() {
             bail!("{} is not a folder", dir.display());
         }
@@ -259,6 +259,31 @@ pub async fn set_skiff_agent(app: AppHandle, edit: Edit) -> Result<SkiffAgent, S
     .await?;
     let _ = app.emit(PROJECTS_CHANGED, ());
     Ok(out)
+}
+
+/// Starts a git repository in the agent's folder, even inside another
+/// repository, such as a home folder kept in git. The project must be the
+/// folder itself. No files are staged and nothing is committed.
+#[tauri::command]
+pub async fn init_skiff_agent_repository(path: PathBuf) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if path.join(".git").exists() {
+            return Ok(());
+        }
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&path)
+            .arg("init")
+            .output()
+            .context("run git")?;
+        if !out.status.success() {
+            bail!("git init: {}", String::from_utf8_lossy(&out.stderr).trim());
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e: anyhow::Error| format!("{e:#}"))
 }
 
 #[cfg(test)]

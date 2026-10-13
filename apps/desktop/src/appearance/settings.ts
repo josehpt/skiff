@@ -7,6 +7,8 @@ import type { AgentInfo, TerminalTheme } from "../platform/types";
 import { agentNameList, setAgentNameList } from "./agentNames";
 import { nextCard, themeGrid, type ThemeFilters } from "./themeCards";
 import { type Action, actionFor } from "../app/keys";
+import type { SkiffAgentSettings } from "../app/skiffAgent";
+import { type SkiffAgentEdit, skiffAgentSection } from "./skiffAgentSettings";
 
 /**
  * Settings over the sidebar and terminal: agents, appearance, and Open with.
@@ -28,7 +30,7 @@ export function createSettings(onAgents: (a: AgentInfo[]) => void, onClose: () =
   document.getElementById("body")!.appendChild(root);
 
   let agents: AgentInfo[] = [];
-  const TABS = ["agents", "appearance", "open"] as const;
+  const TABS = ["agents", "skiff-agent", "appearance", "open"] as const;
   let tab: (typeof TABS)[number] = "agents";
   const themeFilters: ThemeFilters = { query: "", family: null };
   type OpenKey = "diff" | "text" | "markdown" | "html";
@@ -36,6 +38,7 @@ export function createSettings(onAgents: (a: AgentInfo[]) => void, onClose: () =
   let openSet: OpenSettings | null = null;
   type MenuLayout = { available: boolean; chosen: string | null; auto: string; current: string };
   let menuSet: MenuLayout | null = null;
+  let agentSet: SkiffAgentSettings | null = null;
   let error: string | null = null;
   let saving = false;
 
@@ -101,7 +104,7 @@ export function createSettings(onAgents: (a: AgentInfo[]) => void, onClose: () =
     const nav = h("div", "set-nav");
     const head = h("div", "set-nav-head");
     head.append(h("div", "set-title", "Settings"), h("div", "set-path mono", "~/.config/skiff/projects.toml"));
-    const names = { agents: "Agents", appearance: "Appearance", open: "Open with" };
+    const names = { agents: "Agents", "skiff-agent": "Skiff agent", appearance: "Appearance", open: "Open with" };
     const tabs = TABS.map((t) => {
       const b = h("button", "set-tab" + (tab === t ? " active" : ""), names[t]);
       b.type = "button";
@@ -119,6 +122,10 @@ export function createSettings(onAgents: (a: AgentInfo[]) => void, onClose: () =
     }
     if (tab === "open") {
       root.replaceChildren(nav, openWith(), closeButton());
+      return;
+    }
+    if (tab === "skiff-agent") {
+      root.replaceChildren(nav, skiffAgent(), closeButton());
       return;
     }
 
@@ -377,6 +384,34 @@ export function createSettings(onAgents: (a: AgentInfo[]) => void, onClose: () =
     { key: "html", label: "HTML" },
   ];
 
+  async function setSkiffAgent(edit: SkiffAgentEdit) {
+    error = null;
+    try {
+      agentSet = await invoke<SkiffAgentSettings>("set_skiff_agent", { edit });
+    } catch (e) {
+      error = String(e);
+    }
+    render();
+  }
+
+  /** The one agent session that coordinates the others. */
+  function skiffAgent(): HTMLElement {
+    const main = h("div", "set-main");
+    const intro = h("div", "set-head");
+    intro.append(
+      h("div", "set-h", "Skiff agent"),
+      h("div", "set-sub", "One agent session for all projects. Its row is at the top of the side panel while it has a folder. A rename does not move the folder or the conversation."),
+    );
+    main.append(intro);
+    if (agentSet) main.append(...skiffAgentSection(agentSet, agents, (e) => void setSkiffAgent(e)));
+    if (error) {
+      const err = h("div", "set-error", error);
+      err.setAttribute("role", "alert");
+      main.appendChild(err);
+    }
+    return main;
+  }
+
   /** Which apps Skiff hands things to. */
   function openWith(): HTMLElement {
     const main = h("div", "set-main");
@@ -527,6 +562,7 @@ export function createSettings(onAgents: (a: AgentInfo[]) => void, onClose: () =
       await look.load();
       openSet = await invoke<OpenSettings>("open_settings").catch(() => null);
       menuSet = await invoke<MenuLayout>("menu_layout").catch(() => null);
+      agentSet = await invoke<SkiffAgentSettings>("get_skiff_agent").catch(() => null);
       agents = await invoke<AgentInfo[]>("list_agents").catch((e) => {
         error = String(e);
         return [];

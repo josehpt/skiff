@@ -65,3 +65,11 @@
 .set-seg-item:hover { color: var(--text); }
 .set-seg-item.on { background: var(--bg-raised); color: var(--text); box-shadow: inset 0 -2px 0 var(--state-working); }
 .set-menu .c-status { font-size: calc(12px * var(--zoom, 1)); color: var(--text-3); }
+/* Settings › Skiff agent. */
+.set-open select.c-cmd { width: 100%; border: 0; border-left: 1px solid var(--rule); border-radius: 0; background: var(--bg-panel); color: var(--text); font: inherit; }
+.set-open span.c-cmd { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(13px * var(--zoom, 1)); }
+.set-open .c-mode { font-size: calc(12px * var(--zoom, 1)); color: var(--text-3); }
+.set-agent button.set-switch { justify-content: center; border: 0; background: transparent; }
+.set-agent button.set-switch:hover:not(:disabled) { background: var(--bg-panel); }
+.set-agent.missing button.set-switch { cursor: not-allowed; }
+.set-note { padding: calc(10 * var(--u)) calc(24 * var(--u)); border-bottom: 1px solid var(--rule); font-size: calc(12px * var(--zoom, 1)); color: var(--text-3); }

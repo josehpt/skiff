@@ -130,3 +130,8 @@ body.dragging-tree, body.dragging-tree * { cursor: grabbing !important; user-sel
 #sidebar-scroll > .fleet-head .tree-head-add { height: auto; align-self: stretch; margin: 0; visibility: hidden; }
 #sidebar-scroll > .fleet-head:hover .tree-head-add, #sidebar-scroll > .fleet-head .tree-head-add:focus-visible { visibility: visible; }
 .fleet-head:hover { color: var(--text-2); }
+
+/* The Skiff agent (#95): one session row above the projects, in line with the section heads. */
+.session-row.skiff-agent-row { margin-top: calc(4 * var(--u)); padding-left: calc(16 * var(--u)); }
+.skiff-agent-row .skiff-agent-name { flex-shrink: 0; font-size: calc(12px * var(--zoom, 1)); font-weight: 600; color: var(--text); }
+.skiff-agent-row:not([data-session]) .title { color: var(--text-dim); }

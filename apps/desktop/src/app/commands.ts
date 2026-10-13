@@ -1,6 +1,6 @@
 import { runAction, openProjectMenu } from "./actions";
 import { showAbout } from "../ui/infoDialogs";
-import { setUpSkiffAgent } from "./skiffAgent";
+import { setUpSkiffAgent, skiffAgentName, skiffAgentSession } from "./skiffAgent";
 
 /** One command list for the menu bar and the palette; key actions. */
 import { type Action, keyLabel, menuAccel } from "./keys";
@@ -76,6 +76,10 @@ function commands(): Cmd[] {
     })),
     { section: "View", label: "Mission control", key: k("mission-control"), action: "mission-control", run: act("mission-control") },
     { section: "View", label: "Next waiting", key: k("next-waiting"), action: "next-waiting", run: act("next-waiting") },
+    {
+      section: "View", label: `${skiffAgentSession() ? "Show" : "Start"} ${skiffAgentName()}`, key: k("skiff-agent"), action: "skiff-agent",
+      run: act("skiff-agent"), off: !S.skiffAgent?.folder,
+    },
     { section: "View", label: "Back to last session", key: k("back"), action: "back", run: act("back"), off: !S.previous },
     { section: "View", label: S.focusMode ? "Leave focus mode" : "Focus mode", key: k("focus-mode"), action: "focus-mode", run: act("focus-mode"), off: (!S.focusMode && !shown) || modeKeyBlocked("focus-mode") },
     { section: "View", label: S.maximized ? "Restore pane" : "Maximize pane", key: k("maximize"), action: "maximize", run: act("maximize"), off: (!S.maximized && !shown) || modeKeyBlocked("maximize") },

@@ -28,6 +28,7 @@ import { switcher } from "./commandUi";
 import { missionKey, missionOpen, toggleSearch } from "../workspace/missionControl";
 import { closeMission, goToSession, maximizeLit, toggleMission } from "../workspace/missionMotion";
 import { showShortcuts } from "../ui/infoDialogs";
+import { openSkiffAgent, skiffAgentSession } from "./skiffAgent";
 import { groupThemeMenu, projectThemeMenu, sessionThemeMenu } from "../appearance/themes";
 function openNewSession() {
   // Its key works from inside a menu, such as the worktree menu that shows it: that menu goes.
@@ -50,8 +51,9 @@ export function runAction(a: Action) {
   if (missionOpen() && a === "palette") return toggleSearch();
   if (missionKey(a)) return;
   // The top bar shows over the board, so its actions work there: Next waiting leaves the board on that session; Settings closes the board.
-  if (missionOpen() && a === "settings") closeMission();
-  else if (missionOpen() && a !== "mission-control" && a !== "quit" && a !== "next-waiting") return;
+  // The Skiff agent's key leaves the board on its pane, or closes the board and starts it.
+  if (missionOpen() && (a === "settings" || (a === "skiff-agent" && !skiffAgentSession()))) closeMission();
+  else if (missionOpen() && a !== "mission-control" && a !== "quit" && a !== "next-waiting" && a !== "skiff-agent") return;
   // The native menu runs its accelerators through here, not through the key handler.
   if (modeKeyBlocked(a) || modeGate(a)) return;
   // The open palette holds every other action; its own key closes it.
@@ -99,6 +101,10 @@ export function runAction(a: Action) {
     }
     case "close-pane": return closeKey(!!shown);
     case "next-waiting": return goToSession(nextWaiting());
+    case "skiff-agent": {
+      const s = skiffAgentSession();
+      return s && missionOpen() ? goToSession(s.id) : openSkiffAgent();
+    }
     case "mission-control": return toggleMission();
     case "back": return goBack();
     case "rename": {

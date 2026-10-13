@@ -21,6 +21,7 @@ import { hasKeys, markSeen, quietSeen } from "./seen";
 import { peekExited, peekUpdated, previewToken, strayPeek } from "../terminal/peek";
 import { activeGroupObj, awayPlaces, currentWorktree, place, shownIds } from "./stateQueries";
 import { agentKind } from "../appearance/agentIcon";
+import { loadSkiffAgent } from "./skiffAgent";
 import { taskTitle } from "../workspace/model";
 import { panes } from "../terminal/terminalState";
 import { ptySized } from "../terminal/terminal";
@@ -118,6 +119,8 @@ export async function newSession(
   label: string,
   role: "agent" | "shell",
   where?: { target: string; dir: SplitDir } | { slot: string },
+  /** A fixed name, such as the Skiff agent's, in place of a call sign. */
+  name?: string,
 ) {
   // Projects list agents as command lines; the first word is the program.
   const words = (agent ?? "").trim().split(/\s+/).filter(Boolean);
@@ -127,7 +130,7 @@ export async function newSession(
   const visible = S.focused ? panes.get(S.focused) : undefined;
   // Agent IDs are useful in the launch menu, but call signs make a new crew
   // easier (and more fun) to tell apart once it is running.
-  const sessionLabel = role === "agent" ? agentCallsign([...sessions.values()].map((s) => s.label)) : label;
+  const sessionLabel = name ?? (role === "agent" ? agentCallsign([...sessions.values()].map((s) => s.label)) : label);
   const info = await invoke<SessionInfo>("create_session", {
     spec: {
       label: sessionLabel,
@@ -169,7 +172,7 @@ export async function loadProjects() {
   let list: Project[] | null = null;
   let err: string | null = null;
   try {
-    [list] = await Promise.all([invoke<Project[]>("list_projects"), loadFilesSetting(), loadChangesSetting(), loadProjectThemes(), loadAppTheme()]);
+    [list] = await Promise.all([invoke<Project[]>("list_projects"), loadFilesSetting(), loadChangesSetting(), loadProjectThemes(), loadAppTheme(), loadSkiffAgent()]);
   } catch (e) {
     err = String(e);
   }

@@ -28,7 +28,7 @@ Keys that are not actions live where they are handled. Their F1 rows are in `FIX
 - Ctrl+Shift+1…9: `projectKey()` in `keyboard.ts`.
 - Menus, palette, find bar, start-session menu, empty pane: their own files.
 
-Screens that hold the keys reuse action keys with a local meaning. Settings (`appearance/settings.ts`) is one: `modalOpen()` stops global dispatch, and the screen reads `actionFor(e)` itself. Up/Down step sections. Left goes to the tabs. Right goes into the section. Focus mode and maximize (`app/modes.ts`) also give Up/Down a local meaning.
+Screens that hold the keys reuse action keys with a local meaning. Settings (`appearance/settings.ts`) is one: `modalOpen()` stops global dispatch, and the screen reads `actionFor(e)` itself. Up/Down step sections. Left goes to the tabs. Right goes into the section. Focus mode and maximize (`app/modes.ts`) also give Up/Down a local meaning. Mission control (`workspace/missionControl.ts`) holds the keys as a dialog does: `runAction()` drops every action but its own key, maximize and quit, and the board reads plain arrows, Enter and Esc itself.
 
 ## Rules
 
@@ -46,7 +46,7 @@ Screens that hold the keys reuse action keys with a local meaning. Settings (`ap
 F1 is the full list. It reads the live keymap, so it is never out of date. The wiki does not copy it.
 
 - [Design](https://github.com/solutionscay/skiff/wiki/Design) holds the rules: Ctrl+Shift for the app, keys act on the highlighted target, `[keys]` and F1.
-- [Glossary](https://github.com/solutionscay/skiff/wiki/Glossary), section "The current keybinding scheme", holds the navigation model only: Ctrl+Shift+Up/Down, Ctrl+Shift+Left/Right, Ctrl+Shift+Home, F6, F1, Ctrl+Shift+P, Ctrl+Shift+M, Ctrl+Shift+Alt+Arrow. Each line names its action id. It sends the reader to F1 for the rest.
+- [Glossary](https://github.com/solutionscay/skiff/wiki/Glossary), section "The current keybinding scheme", holds the navigation model only: Ctrl+Shift+Up/Down, Ctrl+Shift+Left/Right, Ctrl+Shift+Home, F6, F1, Ctrl+Shift+P, Ctrl+Shift+M, Ctrl+Shift+A, Ctrl+Shift+Alt+Arrow. Each line names its action id. It sends the reader to F1 for the rest.
 
 Update the wiki only when one of those keys or rules changes. The wiki is a separate repo: `git clone https://github.com/solutionscay/skiff.wiki.git`. Ask the operator before you push it.
 

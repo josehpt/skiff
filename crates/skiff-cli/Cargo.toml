@@ -22,3 +22,4 @@ clap.workspace = true
 uuid.workspace = true
 alacritty_terminal = "0.26"
 libc = "0.2"
+rusqlite = { version = "0.40.2", features = ["bundled"] }

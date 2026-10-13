@@ -15,6 +15,7 @@ mod events;
 mod groups;
 mod info;
 mod layout;
+mod ledger;
 mod open_with;
 mod peek;
 mod print;
@@ -151,9 +152,6 @@ enum Cmd {
     Watch {
         /// The Skiff agent's session.
         skipper: String,
-        /// The ledger. Default: ledger.md in the agent's folder.
-        #[arg(long, value_name = "FILE")]
-        ledger: Option<std::path::PathBuf>,
         /// Do not send desktop notifications.
         #[arg(long)]
         no_notify: bool,
@@ -193,6 +191,61 @@ enum Cmd {
         #[command(subcommand)]
         cmd: OpenWithCmd,
     },
+    /// The Skiff agent's task ledger: ledger.db in its folder.
+    #[command(after_help = "States: sent, pending (not delivered: the pane was working), blocked (the pane needs the user), done.\nThe ledger is ~/skiff-agent/ledger.db, or ledger.db in the [skiff_agent] folder override. SKIFF_LEDGER overrides the path.\nOn first use, an old ledger.md next to it is imported and kept as ledger.md.bak.")]
+    Ledger {
+        #[command(subcommand)]
+        cmd: LedgerCmd,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum LedgerCmd {
+    /// Add a task. Prints its id.
+    Add {
+        /// The pane the task went to: an id, a unique prefix or a name. It must exist.
+        #[arg(long)]
+        pane: String,
+        #[arg(long)]
+        task: String,
+        /// Default: the project that holds the pane's folder.
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long, default_value = "sent")]
+        state: String,
+        /// Where the child writes a long result.
+        #[arg(long, value_name = "PATH")]
+        result: Option<String>,
+    },
+    /// Change a task. Only the given fields change.
+    Update {
+        id: i64,
+        #[arg(long)]
+        state: Option<String>,
+        #[arg(long, value_name = "PATH")]
+        result: Option<String>,
+        #[arg(long)]
+        task: Option<String>,
+        #[arg(long)]
+        pane: Option<String>,
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// List tasks, oldest first. LIVE says if the pane still exists.
+    Ls {
+        #[arg(long)]
+        state: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show one task.
+    Show {
+        id: i64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Take a task out of the ledger.
+    Rm { id: i64 },
 }
 
 #[derive(Subcommand)]
@@ -397,11 +450,12 @@ async fn run(cli: Cli) -> Result<i32> {
         Cmd::Theme { cmd: ThemeCmd::App { cmd } } => return theme::app(cmd).map(|_| 0),
         Cmd::Theme { cmd: ThemeCmd::Project { cmd } } => return theme::project(cmd).map(|_| 0),
         Cmd::OpenWith { cmd } => return open_with::run(cmd).map(|_| 0),
+        Cmd::Ledger { cmd } => return ledger::run(&socket, cmd).await.map(|_| 0),
         Cmd::Status => return info::status(&socket).await.map(|_| 0),
         Cmd::Daemon(DaemonCmd::Reload { binary }) => return daemon::reload(&socket, binary).await.map(|_| 0),
         // It connects again after a daemon reload, so it holds no connection here.
-        Cmd::Watch { skipper, ledger, no_notify } => {
-            return watch::watch(&socket, watch::Options { skipper, ledger, notify: !no_notify }).await
+        Cmd::Watch { skipper, no_notify } => {
+            return watch::watch(&socket, watch::Options { skipper, notify: !no_notify }).await
         }
         _ => {}
     }
@@ -430,7 +484,7 @@ async fn run(cli: Cli) -> Result<i32> {
         Cmd::Seen { session } => sessions::seen(&c, &session).await,
         Cmd::Agents { json } => info::agents(&c, json).await,
         Cmd::Theme { cmd: ThemeCmd::Session { cmd } } => theme::session(&c, cmd).await,
-        Cmd::Status | Cmd::Daemon(_) | Cmd::Projects { .. } | Cmd::Theme { .. } | Cmd::OpenWith { .. } | Cmd::Wait { .. } | Cmd::Events { .. } | Cmd::Watch { .. } | Cmd::Send { .. } => {
+        Cmd::Status | Cmd::Daemon(_) | Cmd::Projects { .. } | Cmd::Theme { .. } | Cmd::OpenWith { .. } | Cmd::Ledger { .. } | Cmd::Wait { .. } | Cmd::Events { .. } | Cmd::Watch { .. } | Cmd::Send { .. } => {
             unreachable!()
         }
     }

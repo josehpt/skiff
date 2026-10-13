@@ -15,16 +15,16 @@ Do these steps when a conversation starts, before any other `skiff` command.
 2. Run `which -a skiff`. If the first `skiff` on `PATH` is not the one that
    Skiff installed, tell the user which paths you found. An old copy first on
    `PATH` gives old commands and old exit codes.
-3. Read `ledger.md`.
+3. Run `skiff ledger ls`.
 4. Run `skiff ls --json` and `skiff group ls --json`.
 5. Rebuild your state from the ledger and the session list. Do not trust pane
-   ids from memory. A pane id in the ledger that is not in the list is gone:
-   mark its task and tell the user.
+   ids from memory. A row with `LIVE no` is a pane that is gone: set its task
+   to `blocked` and tell the user.
 
 ## Your role
 
 - You delegate. You do not edit project repositories yourself. You write only
-  in this folder: `ledger.md` and `results/`.
+  in `results/` in this folder. The ledger changes only through `skiff ledger`.
 - The user authorizes you to send tasks to sessions in Skiff projects. This
   file is that written, standing authorization. It does not remove any `send`
   or `wait` refusal. Peek before each send. Do not add to or submit a draft.
@@ -37,19 +37,28 @@ Do these steps when a conversation starts, before any other `skiff` command.
 
 Skiff has no queue. A send to a working pane is refused with exit 4.
 
-- On exit 4, write the task to `ledger.md` with the state `pending`. Tell the
-  user that the task waits for that pane.
-- Check the pending tasks again when you start a turn, and when a `wait`
-  reports that the pane is idle. Peek, then send.
+- On exit 4, add the task with `skiff ledger add --pane S --task "..." --state
+  pending`. Tell the user that the task waits for that pane.
+- Check `skiff ledger ls --state pending` when you start a turn, and when a
+  `wait` reports that the pane is idle. Peek, send, then
+  `skiff ledger update ID --state sent`.
 - Do not run a retry loop. Do not interrupt a pane to make room for a task.
 
 ## Ledger
 
-`ledger.md` is your record. Your conversation is not: compaction and restarts
-lose it. Write each task to the ledger when you send it, and update its row
-when its state changes.
+The ledger is your record. Your conversation is not: compaction and restarts
+lose it. It is `ledger.db` in this folder. Do not open or edit the file. Use
+the commands:
 
-Each row has: pane id, project, task, sent at, state, result path.
+| Command | When |
+|---|---|
+| `skiff ledger add --pane S --task "..." [--result PATH]` | You send a task. It prints the row id. |
+| `skiff ledger update ID --state S [--result PATH]` | The state changes: `sent`, `pending`, `blocked`, `done`. |
+| `skiff ledger ls [--state S] [--json]` | You start a turn or report on work. |
+| `skiff ledger show ID` | You need one row. |
+| `skiff ledger rm ID` | You reported the result to the user. |
+
+`--pane` takes a pane id, a prefix or a name. The pane must exist.
 
 ## Results
 
@@ -57,7 +66,7 @@ Each row has: pane id, project, task, sent at, state, result path.
   Read short results with `skiff peek`.
 - For a long result, tell the child where to write it: `results/<task>.md` in
   this folder. If the child cannot write outside its repository, use a path in
-  that repository. Write the path in the ledger.
+  that repository. Record it with `skiff ledger update ID --result PATH`.
 - Do not report a task as done from the pane state alone. Read the result.
 
 ## Sends to you

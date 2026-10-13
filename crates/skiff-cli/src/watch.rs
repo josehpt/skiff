@@ -32,7 +32,7 @@ use tokio::{
     time::{interval, sleep, Instant, MissedTickBehavior},
 };
 
-use crate::{peek, print, resolve, sessions};
+use crate::{ledger, peek, print, resolve, sessions};
 
 /// How often the ledger and the session list are read again without an event.
 const TICK: Duration = Duration::from_secs(2);
@@ -44,8 +44,6 @@ const LOCK_WAIT: Duration = Duration::from_secs(10);
 pub struct Options {
     /// The Skiff agent's session.
     pub skipper: String,
-    /// The ledger. Default: ledger.md in the agent's folder.
-    pub ledger: Option<PathBuf>,
     pub notify: bool,
 }
 
@@ -56,28 +54,10 @@ pub struct Task {
     pub task: String,
 }
 
-/// The open rows of the ledger table: the state is `sent`, `pending` or
-/// `blocked`. The table columns are: pane id, project, task, sent at, state,
-/// result. This is the one place that knows the ledger format.
-pub fn open_tasks(text: &str) -> Vec<Task> {
-    text.lines()
-        .filter_map(|l| {
-            let l = l.trim();
-            if !l.starts_with('|') {
-                return None;
-            }
-            let cells: Vec<&str> = l.trim_matches('|').split('|').map(|c| c.trim()).collect();
-            if cells.len() < 5 {
-                return None;
-            }
-            let state = cells[4].trim_matches('`').to_ascii_lowercase();
-            if !matches!(state.as_str(), "sent" | "pending" | "blocked") {
-                return None;
-            }
-            let pane = cells[0].trim_matches('`').to_string();
-            (!pane.is_empty()).then(|| Task { pane, task: cells[2].to_string() })
-        })
-        .collect()
+/// The open rows of the ledger (`skiff ledger`): the state is `sent`,
+/// `pending` or `blocked`.
+fn open_tasks() -> Result<Vec<Task>> {
+    Ok(ledger::open_tasks()?.into_iter().map(|r| Task { pane: r.pane_id, task: r.task }).collect())
 }
 
 /// What a ledger pane is now.
@@ -306,8 +286,15 @@ async fn step(c: &Client, o: &Options, w: &mut Watcher) -> Result<Option<i32>> {
         return Ok(Some(0));
     };
     w.skipper = Some(skipper.id.clone());
-    let ledger = o.ledger.clone().unwrap_or_else(|| skipper.cwd.join("ledger.md"));
-    let tasks = open_tasks(&std::fs::read_to_string(&ledger).unwrap_or_default());
+    // A read that fails (the file busy past its timeout) skips this step: the
+    // next tick reads again. An empty list would forget the open panes.
+    let tasks = match open_tasks() {
+        Ok(t) => t,
+        Err(e) => {
+            log(format!("cannot read the ledger: {e:#}"));
+            return Ok(None);
+        }
+    };
 
     let mut open = HashSet::new();
     for t in &tasks {
@@ -457,14 +444,6 @@ fn desktop_notify(title: &str, body: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const LEDGER: &str = "# Ledger\n\n| Pane id | Project | Task | Sent at | State | Result |\n|---|---|---|---|---|---|\n| abc12345 | app | fix bug | 10:00 | sent | |\n| def67890 | web | seo | 10:01 | done | r.md |\n| 1111aaaa | api | docs | 10:02 | pending | |\n";
-
-    #[test]
-    fn reads_only_open_rows() {
-        let t = open_tasks(LEDGER);
-        assert_eq!(t.iter().map(|t| t.pane.as_str()).collect::<Vec<_>>(), ["abc12345", "1111aaaa"]);
-    }
 
     #[test]
     fn idle_counts_after_work_or_while_unread_and_is_told_once() {

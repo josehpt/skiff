@@ -166,7 +166,6 @@ fn check(dir: &Path, home: &Path, cfg: &config::Config) -> anyhow::Result<()> {
 /// CLAUDE.md, GEMINI.md         links to AGENTS.md
 /// .claude                      a link to .agents, for Claude's skills
 /// .agents/skills/skiff-cli     a link to the app's copy of the skill
-/// ledger.md                    the task ledger
 /// results/                     long child reports
 /// ```
 fn setup(res: &Path, dir: &Path, name: &str) -> anyhow::Result<PathBuf> {
@@ -182,7 +181,6 @@ fn setup(res: &Path, dir: &Path, name: &str) -> anyhow::Result<PathBuf> {
         std::fs::read_to_string(&p).with_context(|| format!("read {}", p.display()))
     };
     let agents = read("AGENTS.md.tmpl")?.replace("{{name}}", name);
-    let ledger = read("ledger.md")?;
     let skill = sync_skill(res)?;
 
     std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
@@ -196,9 +194,6 @@ fn setup(res: &Path, dir: &Path, name: &str) -> anyhow::Result<PathBuf> {
         if missing(&dir.join(f)) {
             link(Path::new("AGENTS.md"), &dir.join(f))?;
         }
-    }
-    if missing(&dir.join("ledger.md")) {
-        write_new(&dir.join("ledger.md"), &ledger)?;
     }
     std::fs::create_dir_all(dir.join("results")).context("create results")?;
     let skills = dir.join(".agents").join("skills");
@@ -365,13 +360,14 @@ mod tests {
         assert!(agents.contains("You are Skipper, the Skiff agent."));
         assert_eq!(std::fs::read_to_string(dir.join("GEMINI.md")).unwrap(), agents);
         assert!(dir.join(".claude/skills/skiff-cli/SKILL.md").is_file());
-        assert!(dir.join("ledger.md").is_file() && dir.join("results").is_dir());
+        // The ledger is the CLI's ledger.db, made on first use.
+        assert!(!dir.join("ledger.md").exists() && dir.join("results").is_dir());
         // A second run fills in what is missing and keeps the user's edits.
         std::fs::write(dir.join("AGENTS.md"), "mine").unwrap();
-        std::fs::remove_file(dir.join("ledger.md")).unwrap();
+        std::fs::remove_dir(dir.join("results")).unwrap();
         setup(&res, &dir, "Skipper").unwrap();
         assert_eq!(std::fs::read_to_string(dir.join("AGENTS.md")).unwrap(), "mine");
-        assert!(dir.join("ledger.md").is_file() && dir.join(MARKER).is_file());
+        assert!(dir.join("results").is_dir() && dir.join(MARKER).is_file());
         // A folder with other files and no marker is refused.
         let other = tmp.join("other");
         std::fs::create_dir_all(&other).unwrap();

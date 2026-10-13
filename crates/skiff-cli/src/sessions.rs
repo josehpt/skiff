@@ -174,7 +174,7 @@ async fn group_cwd(c: &Client, g: &Group) -> Result<Option<PathBuf>> {
 
 /// The pause before Enter. A TUI without bracketed paste guesses pastes
 /// from fast input, and takes an Enter that comes too soon as a newline.
-const ENTER_DELAY: Duration = Duration::from_millis(200);
+pub const ENTER_DELAY: Duration = Duration::from_millis(200);
 
 /// Why `send` must not type into `s`, as an exit code and a message.
 /// `here` is `SKIFF_SESSION`; `caller_shell` is the caller's `SHELL`.
@@ -304,7 +304,7 @@ const TURN_WAIT: Duration = Duration::from_secs(5);
 
 /// The program in front is an agent Skiff knows. The daemon names a known
 /// agent by its id ("claude", "codex"...), whatever binary runs it.
-fn is_agent(s: &SessionInfo) -> bool {
+pub fn is_agent(s: &SessionInfo) -> bool {
     let prog = s.foreground_program.as_deref().map(basename).unwrap_or("");
     skiff_core::project::KNOWN_AGENTS.iter().any(|(id, _)| *id == prog)
 }

@@ -178,6 +178,13 @@ export function maximizeLit() {
   if (lit) closeMission(lit, true);
 }
 
+/** To a session: from the board, it closes on that session; else the session shows. */
+export function goToSession(id: string | undefined) {
+  if (!id) return;
+  if (missionOpen()) closeMission(id);
+  else revealSession(id);
+}
+
 export function toggleMission() {
   if (missionOpen() || preparing) closeMission();
   else void openMission();

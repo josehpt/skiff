@@ -16,13 +16,15 @@ import { DEFAULT_THEME, isLight } from "../appearance/colors";
 import { appThemeOf, themeIdFor, xtermTheme } from "../appearance/themes";
 import { appThemeVars } from "../appearance/appTheme";
 import { type Action, actionFor, keyLabel } from "../app/keys";
-import { S, sessions } from "../app/state";
+import { S } from "../app/state";
 import { accent, place } from "../app/stateQueries";
 import { h } from "../ui/dom";
 import { agentName, branchName, fuzzy, taskTitle } from "./model";
 import { worktreeLines } from "./sidebarLines";
 import { bareWorktree, projectBadge, rollup, treeSections } from "./tree";
-import { closeMission, maximizeLit } from "./missionMotion";
+import { closeMission, goToSession, maximizeLit } from "./missionMotion";
+import { nextWaiting } from "./view";
+import { settings } from "../app/panels";
 
 /** Rows of text per screen. */
 const ROWS = 12;
@@ -51,7 +53,10 @@ let reading = false;
 let paused = false;
 const screens = new Map<string, HTMLElement>();
 
-/** The search in the bar. `found`: the sessions it matches; null with no search. */
+/**
+ * The search, in the app's top bar where the palette field sits; it shows
+ * only while the board is open. `found`: the sessions it matches; null with no search.
+ */
 const search = h("input", "mission-search");
 search.type = "text";
 search.autocomplete = "off";
@@ -59,8 +64,10 @@ search.spellcheck = false;
 search.placeholder = "Search sessions";
 search.setAttribute("aria-label", "Search sessions");
 const findKey = h("kbd", "mission-find-key");
-const find = h("label", "mission-find");
-find.append(search, findKey);
+const count = h("span", "mission-count");
+const find = h("label", "tb-cell mission-find");
+find.append(search, count, findKey);
+document.getElementById("open-switcher")?.after(find);
 const noMatch = h("div", "mission-empty", "No match");
 let found: Set<string> | null = null;
 
@@ -101,8 +108,7 @@ function filter(all: Lane[], scroll = false) {
   const board = root.querySelector(".mission-lanes");
   if (found && !found.size) board?.appendChild(noMatch);
   else noMatch.remove();
-  const bar = root.querySelector<HTMLElement>(".mission-bar");
-  if (bar) counts(bar, new Set(order.flat()));
+  counts(new Set(order.flat()));
   const first = shown().flat()[0];
   if (first && (scroll || !lit || (found && !found.has(lit)))) light(first, true);
   else if (scroll) root.querySelector<HTMLElement>(".mission-lanes")?.scrollTo({ left: 0 });
@@ -172,17 +178,9 @@ function tile(s: SessionInfo, p: Project): HTMLElement {
   return b;
 }
 
-/** The bar's counts: the sessions on the board, those the search shows, and all that wait. */
-function counts(bar: HTMLElement, ids: Set<string>) {
-  const n = bar.querySelector(".mission-count");
-  if (n) n.textContent = found ? `${found.size} of ${ids.size} sessions` : `${ids.size} sessions`;
-  const waiting = [...sessions.values()].filter((s) => s.state === "waiting").length;
-  let w = bar.querySelector(".mission-waiting");
-  if (!waiting) w?.remove();
-  else {
-    if (!w) bar.appendChild((w = h("span", "mission-waiting")));
-    w.textContent = `${waiting} waiting`;
-  }
+/** The search's count: the sessions on the board, or those it shows. The top bar counts the waiting ones. */
+function counts(ids: Set<string>) {
+  count.textContent = found ? `${found.size} of ${ids.size}` : `${ids.size} sessions`;
 }
 
 /**
@@ -269,8 +267,6 @@ function build(all = lanes()) {
   const tops = new Map<string, number>();
   for (const el of old?.querySelectorAll<HTMLElement>(".mission-lane") ?? []) tops.set(el.getAttribute("aria-label") ?? "", el.scrollTop);
 
-  const bar = h("div", "mission-bar");
-  bar.append(h("span", "mission-name", "Mission control"), h("span", "mission-count"), find);
   findKey.textContent = keyLabel("palette");
 
   const board = h("div", "mission-lanes");
@@ -297,14 +293,7 @@ function build(all = lanes()) {
   }
   if (!all.length) board.appendChild(h("div", "mission-empty", "No sessions"));
   themed(root, null);
-  // The search moves into the new bar. Moved, it loses focus: give it back where the caret was.
-  const typing = document.activeElement === search;
-  const caret = [search.selectionStart, search.selectionEnd];
-  root.replaceChildren(bar, board, scrollbar(board));
-  if (typing) {
-    search.focus({ preventScroll: true });
-    search.setSelectionRange(caret[0], caret[1]);
-  }
+  root.replaceChildren(board, scrollbar(board));
   filter(all);
 
   if (root.hidden || !old) return;
@@ -427,6 +416,8 @@ export const board = {
   /** With the root shown: scroll the lit screen into view and keep the screens fresh. */
   start() {
     paused = false;
+    // Focus mode and maximize leave the top bar inert. The board shows it, and its search is in it.
+    topbar()?.toggleAttribute("inert", false);
     light(lit ?? "");
     window.clearInterval(timer);
     timer = window.setInterval(tick, TICK);
@@ -439,6 +430,7 @@ export const board = {
   /** Empty and hidden. */
   clear() {
     window.clearInterval(timer);
+    topbar()?.toggleAttribute("inert", document.body.classList.contains("focus-mode"));
     root.hidden = true;
     screens.clear();
     root.replaceChildren();
@@ -467,7 +459,7 @@ root.addEventListener(
     const board = root.querySelector<HTMLElement>(".mission-lanes");
     if (!board || e.shiftKey || e.deltaX || board.scrollWidth <= board.clientWidth) return;
     const lane = (e.target as Element).closest<HTMLElement>(".mission-lane");
-    const head = (e.target as Element).closest(".mission-lane-head, .mission-bar");
+    const head = (e.target as Element).closest(".mission-lane-head");
     if (lane && !head && lane.scrollHeight > lane.clientHeight) return;
     board.scrollLeft += e.deltaY;
     e.preventDefault();
@@ -490,6 +482,8 @@ export function missionKey(a: Action | null): boolean {
   return true;
 }
 
+const topbar = () => document.getElementById("topbar");
+
 /** Ctrl+Shift+P here: into the search, or back out to the board. The search stays. */
 export function toggleSearch() {
   if (document.activeElement === search) root.focus();
@@ -500,7 +494,8 @@ export function toggleSearch() {
 }
 
 search.addEventListener("input", () => filter(lanes(), true));
-root.addEventListener("keydown", (e) => {
+/** The board's keys, on the board and in its search. */
+function onKey(e: KeyboardEvent) {
   const a = actionFor(e);
   if (a === "palette") toggleSearch();
   // The first Esc clears the search; the next one closes.
@@ -510,7 +505,12 @@ root.addEventListener("keydown", (e) => {
     if (lit) light(lit);
   } else if (e.key === "Escape" || a === "mission-control") closeMission();
   else if (a === "maximize") maximizeLit();
-  else if (missionKey(a)) {
+  // The top bar's actions, as its buttons run them.
+  else if (a === "next-waiting") goToSession(nextWaiting());
+  else if (a === "settings") {
+    closeMission();
+    void settings.open();
+  } else if (missionKey(a)) {
     // Stepped. The list keys work in the search too.
   } else if (e.key === "Enter" && lit) closeMission(lit);
   // Plain arrows step too. In the search, Left and Right move the caret.
@@ -518,4 +518,6 @@ root.addEventListener("keydown", (e) => {
   else if ((e.target === search && (e.key === "ArrowLeft" || e.key === "ArrowRight")) || !step(e.key)) return;
   e.preventDefault();
   e.stopPropagation();
-});
+}
+root.addEventListener("keydown", onKey);
+find.addEventListener("keydown", onKey);

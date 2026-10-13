@@ -1,15 +1,12 @@
-/* Mission control (#88): the whole window, one lane per fleet, one screen per session. Four lanes fit; more scroll sideways. */
-.mission { transform: translateZ(0); isolation: isolate; position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column; background: var(--bg); outline: none; }
+/* Mission control (#88): the window under the top bar, one lane per fleet, one screen per session. Four lanes fit; more scroll sideways. */
+/* Under the app's top bar, which stays: the board's search sits in it. */
+.mission { transform: translateZ(0); isolation: isolate; position: fixed; inset: calc(48 * var(--u)) 0 0 0; z-index: 60; display: flex; flex-direction: column; background: var(--bg); outline: none; }
 .mission[hidden] { display: none; }
 
 /* Open and close: the board only fades. The focus frame flies between the pane and its screen, over the board. */
 .mission-frame { position: fixed; z-index: 61; box-sizing: border-box; border: calc(2 * var(--u)) solid var(--pc); pointer-events: none; transform: translateZ(0); }
 /* One frame at a time: the lit screen's own frame waits while the flying one moves. */
 .mission.flying .mission-tile.lit::after { visibility: hidden; }
-
-.mission-bar { height: calc(40 * var(--u)); flex-shrink: 0; display: flex; align-items: center; gap: calc(16 * var(--u)); padding: 0 calc(16 * var(--u)); border-bottom: 1px solid var(--rule); background: var(--bg-deep); font-size: calc(12px * var(--zoom, 1)); color: var(--text-3); white-space: nowrap; overflow: hidden; }
-.mission-name { font-size: calc(13px * var(--zoom, 1)); font-weight: 600; color: var(--text); }
-.mission-waiting { color: var(--state-waiting-text); }
 
 .mission-lanes { flex: 1; min-height: 0; display: flex; overflow-x: auto; }
 .mission-lane { flex: 0 0 max(25%, calc(300 * var(--u))); min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--rule); overflow-y: auto; }
@@ -53,12 +50,17 @@ body.kbd .mission:focus { outline: 0; }
 .mission-scroll:hover .mission-thumb { background: var(--text-dim); }
 .mission-scroll.dragging .mission-thumb { background: var(--text-3); cursor: grabbing; transition: none; }
 
-/* The search, at the right of the bar. What it leaves out hides. */
-.mission-find { margin-left: auto; width: calc(260 * var(--u)); height: calc(28 * var(--u)); display: flex; align-items: center; gap: calc(8 * var(--u)); padding: 0 calc(8 * var(--u)); border: 1px solid var(--rule); background: var(--bg); cursor: text; }
+/* The search takes the palette field's place in the top bar while the board is open. What it leaves out hides. */
+#topbar .tb-cell.mission-find { display: none; flex-grow: 1; min-width: 0; max-width: calc(560 * var(--u)); gap: calc(10 * var(--u)); margin-left: max(0px, calc(50vw - 280 * var(--u) - 356 * var(--u))); border-left: 1px solid var(--rule); background: var(--bg-raised); color: var(--text-3); cursor: text; }
+body:has(#mission-control:not([hidden])) #topbar .tb-cell.mission-find { display: flex; }
+body:has(#mission-control:not([hidden])) #open-switcher { display: none; }
+/* Focus mode and maximize hide the top bar; the board brings it back. */
+body.focus-mode:has(#mission-control:not([hidden])) #topbar { opacity: 1; visibility: visible; pointer-events: auto; z-index: 62; }
 /* With the keys, the search gets the focus frame, and the lit screen gives up its own: one frame shows where typing goes. */
-.mission-find:focus-within { border-color: transparent; background: var(--bg-panel); box-shadow: inset 0 0 0 calc(2 * var(--u)) var(--pc, var(--text-2)); }
-.mission:has(.mission-search:focus) .mission-tile.lit::after { visibility: hidden; }
-.mission-search { flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; font-size: calc(12px * var(--zoom, 1)); }
-.mission-search::placeholder { color: var(--text-dim); }
+#topbar .tb-cell.mission-find:focus-within { box-shadow: inset 0 0 0 calc(2 * var(--u)) var(--pc, var(--text-2)); }
+body:has(.mission-search:focus) .mission-tile.lit::after { visibility: hidden; }
+.mission-search { flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; font-size: calc(13px * var(--zoom, 1)); }
+.mission-search::placeholder { color: var(--text-3); }
+.mission-count { flex-shrink: 0; font-size: calc(12px * var(--zoom, 1)); color: var(--text-3); }
 .mission-find:focus-within .mission-find-key { visibility: hidden; }
 .mission-tile[hidden], .mission-group[hidden], .mission-lane[hidden] { display: none; }

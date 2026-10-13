@@ -23,10 +23,10 @@ import { copySelection, pasteClipboard } from "../terminal/terminalClipboard";
 import { fontTarget, setFontSize, stepPaneFont } from "../terminal/terminalFont";
 
 import { modeGate, modeKeyBlocked, toggleFocusMode, toggleMaximize } from "./modes";
-import { closePane, focusNextWaiting, goBack, moveFocus, removeFromGroup } from "../workspace/view";
+import { closePane, goBack, moveFocus, nextWaiting, removeFromGroup } from "../workspace/view";
 import { switcher } from "./commandUi";
 import { missionKey, missionOpen, toggleSearch } from "../workspace/missionControl";
-import { maximizeLit, toggleMission } from "../workspace/missionMotion";
+import { closeMission, goToSession, maximizeLit, toggleMission } from "../workspace/missionMotion";
 import { showShortcuts } from "../ui/infoDialogs";
 import { groupThemeMenu, projectThemeMenu, sessionThemeMenu } from "../appearance/themes";
 function openNewSession() {
@@ -49,7 +49,9 @@ export function runAction(a: Action) {
   if (missionOpen() && a === "maximize") return maximizeLit();
   if (missionOpen() && a === "palette") return toggleSearch();
   if (missionKey(a)) return;
-  if (missionOpen() && a !== "mission-control" && a !== "quit") return;
+  // The top bar shows over the board, so its actions work there: Next waiting leaves the board on that session; Settings closes the board.
+  if (missionOpen() && a === "settings") closeMission();
+  else if (missionOpen() && a !== "mission-control" && a !== "quit" && a !== "next-waiting") return;
   // The native menu runs its accelerators through here, not through the key handler.
   if (modeKeyBlocked(a) || modeGate(a)) return;
   // The open palette holds every other action; its own key closes it.
@@ -96,7 +98,7 @@ export function runAction(a: Action) {
       return splitMenu(S.focused, a === "split-right" ? "row" : "col", x, y);
     }
     case "close-pane": return closeKey(!!shown);
-    case "next-waiting": return focusNextWaiting();
+    case "next-waiting": return goToSession(nextWaiting());
     case "mission-control": return toggleMission();
     case "back": return goBack();
     case "rename": {

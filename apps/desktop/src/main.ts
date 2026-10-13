@@ -30,7 +30,9 @@ import { loadPlace, trackPlace } from "./app/stored";
 import { startMemory } from "./diagnostics/memory";
 import { watchStatusbar } from "./workspace/status";
 import { toggleFocusMode, toggleMaximize } from "./app/modes";
-import { focusNextUnread, focusNextWaiting, selectProject, showGroup, showSingle } from "./workspace/view";
+import { nextUnread, nextWaiting, selectProject, showGroup, showSingle } from "./workspace/view";
+import { closeMission, goToSession } from "./workspace/missionMotion";
+import { missionOpen } from "./workspace/missionControl";
 
 configureRender(render);
 configurePaneActions({ focusPane, closePane, dragSessions });
@@ -54,10 +56,14 @@ async function boot() {
     badge.title = "Development build (tauri dev)";
     $("statusbar").prepend(badge);
   }
-  $("next-waiting").addEventListener("click", focusNextWaiting);
-  $("next-unread").addEventListener("click", focusNextUnread);
+  $("next-waiting").addEventListener("click", () => goToSession(nextWaiting()));
+  $("next-unread").addEventListener("click", () => goToSession(nextUnread()));
   $("open-switcher").addEventListener("click", () => switcher.open());
-  $("open-settings").addEventListener("click", () => (settings.isOpen ? settings.close() : void settings.open()));
+  $("open-settings").addEventListener("click", () => {
+    if (missionOpen()) closeMission();
+    if (settings.isOpen) settings.close();
+    else void settings.open();
+  });
   render();
 
   // The GNOME header bar has its own search button.

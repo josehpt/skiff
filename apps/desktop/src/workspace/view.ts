@@ -477,17 +477,16 @@ export function selectProject(name: string) {
   else unfocus();
 }
 
-export function focusNextWaiting() {
+/** The next session that waits or has unread output. */
+export function nextWaiting(): string | undefined {
   // Bells first, then unread results: the sort ranks waiting ahead of unread.
   const waiting = [...sessions.values()].filter((s) => s.state === "waiting" || isUnread(s)).sort(bySessionPriority);
-  const next = waiting.find((s) => s.id !== S.focused) ?? waiting[0];
-  if (next) revealSession(next.id);
+  return (waiting.find((s) => s.id !== S.focused) ?? waiting[0])?.id;
 }
 
-export function focusNextUnread() {
+export function nextUnread(): string | undefined {
   const unread = [...sessions.values()].filter(isUnread).sort(bySessionPriority);
-  const next = unread.find((s) => s.id !== S.focused) ?? unread[0];
-  if (next) revealSession(next.id);
+  return (unread.find((s) => s.id !== S.focused) ?? unread[0])?.id;
 }
 
 export function goBack() {

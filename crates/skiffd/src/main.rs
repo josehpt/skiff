@@ -152,16 +152,32 @@ fn adopt(pool: &std::sync::Arc<SessionPool>, file: &std::path::Path) -> Result<U
     // else here owns it.
     let listener = unsafe { std::os::unix::net::UnixListener::from_raw_fd(fd) };
     // The path the old image bound, which this build may not compute itself.
-    match listener.local_addr().ok().and_then(|a| a.as_pathname().map(PathBuf::from)) {
-        Some(socket) => paths::set_socket(socket),
+    let socket = listener.local_addr().ok().and_then(|a| a.as_pathname().map(PathBuf::from));
+    match &socket {
+        Some(socket) => paths::set_socket(socket.clone()),
         None => tracing::warn!("the handed-over listener has no path; panes get {}", paths::socket().display()),
     }
-    if let Some(state) = handover.state() {
-        paths::set_state(state.to_path_buf());
+    if let Some(state) = handover.state().map(PathBuf::from).or_else(|| socket.as_deref().and_then(legacy_state)) {
+        paths::set_state(state);
     }
     pty::set_inherit(fd, false)?;
     listener.set_nonblocking(true)?;
     let listener = UnixListener::from_std(listener)?;
     pool.adopt(handover);
     Ok(listener)
+}
+
+/// The workspace file of an old image whose handover names none (version 1).
+/// That image picked its socket and its workspace file with the same build
+/// test, so the socket's name tells which file it saved to. A socket that
+/// `SKIFF_SOCKET` named tells nothing; the computed path stands then.
+fn legacy_state(socket: &std::path::Path) -> Option<PathBuf> {
+    if std::env::var_os("SKIFF_SOCKET").is_some() {
+        return None;
+    }
+    match socket.file_name()?.to_str()? {
+        "skiffd.sock" => Some(skiffd::workspace::path_for(false)),
+        "skiffd-dev.sock" => Some(skiffd::workspace::path_for(true)),
+        _ => None,
+    }
 }

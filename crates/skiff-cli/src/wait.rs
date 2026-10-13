@@ -44,7 +44,11 @@ enum Now {
 /// session went away or exited before it got there, 3 when a session is
 /// waiting. Only a person answers an approval, so unless the target is
 /// `waiting`, a waiting session ends the wait at once.
-pub async fn wait(c: &Client, args: &[String], target: Target, timeout: Option<f64>) -> Result<i32> {
+///
+/// With `any`, the first session to get there ends the wait with 0, and
+/// only that session prints. 2 then means every session went away or
+/// exited first.
+pub async fn wait(c: &Client, args: &[String], target: Target, any: bool, timeout: Option<f64>) -> Result<i32> {
     // Listen before the list, so no change falls between the two.
     let mut events = c.events();
     let all = sessions::sorted(c).await?;
@@ -87,8 +91,12 @@ pub async fn wait(c: &Client, args: &[String], target: Target, timeout: Option<f
         Now::State(s) => target.hit(s) || s == SessionState::Done,
         Now::Gone => true,
     };
+    let hit = |n: &Now| matches!(*n, Now::State(s) if target.hit(s));
+    let finished = |now: &HashMap<String, Now>| {
+        (any && ids.iter().any(|id| hit(&now[id]))) || ids.iter().all(|id| settled(&now[id]))
+    };
     let mut timed_out = false;
-    while !ids.iter().all(|id| settled(&now[id])) {
+    while !finished(&now) {
         let next = async {
             match deadline {
                 Some(d) => tokio::time::timeout_at(d, events.recv()).await.ok(),
@@ -134,6 +142,18 @@ pub async fn wait(c: &Client, args: &[String], target: Target, timeout: Option<f
         }
     }
 
+    if any {
+        let first = ids.iter().find_map(|id| match now[id] {
+            Now::State(s) if target.hit(s) => Some((id, s)),
+            _ => None,
+        });
+        if let Some((id, s)) = first {
+            // The full id, so a script can pass it on as it is.
+            let row = vec![id.clone(), names[id].clone(), sessions::state(s).to_string()];
+            print::table(&["", "", ""], &[row]);
+            return Ok(0);
+        }
+    }
     let mut code = 0;
     let rows: Vec<Vec<String>> = ids
         .iter()
@@ -152,6 +172,11 @@ pub async fn wait(c: &Client, args: &[String], target: Target, timeout: Option<f
             vec![print::short_id(id).to_string(), names[id].clone(), state.to_string()]
         })
         .collect();
+    // With `any`, a session that went away first does not count while
+    // another can still get there: that is a timeout, not 2.
+    if any && timed_out {
+        code = 1;
+    }
     print::table(&["", "", ""], &rows);
     if timed_out && code == 1 {
         eprintln!("skiff: timed out");

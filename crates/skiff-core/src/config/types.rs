@@ -56,7 +56,11 @@ pub struct SkiffAgent {
     pub name: Option<String>,
     /// The agent id it starts. Absent: the first enabled agent.
     pub agent: Option<String>,
-    /// Its folder. Absent: no Skiff agent row.
+    /// Its row shows above the projects, and its folder is set up.
+    #[serde(default)]
+    pub enabled: bool,
+    /// A folder in place of `~/skiff-agent`. Only by hand in projects.toml:
+    /// the app checks it and refuses one that would mix with other work.
     pub folder: Option<PathBuf>,
     /// A restored pane continues the last conversation in the folder.
     #[serde(default)]

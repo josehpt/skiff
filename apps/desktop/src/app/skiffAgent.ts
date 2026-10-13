@@ -21,8 +21,18 @@ export const SKIFF_AGENT_KEY = "skiff-agent";
 export interface SkiffAgentSettings {
   name: string | null;
   agent: string | null;
+  /** The row shows and the folder is set up. */
+  enabled: boolean;
+  /** `~/skiff-agent`, or the override in projects.toml. Null when the override is refused. */
   folder: string | null;
+  /** Why the override is refused. */
+  folder_error: string | null;
   continue_on_restore: boolean;
+}
+
+/** The folder while the Skiff agent is on and its folder is good. */
+export function skiffAgentFolder(): string | null {
+  return S.skiffAgent?.enabled ? S.skiffAgent.folder : null;
 }
 
 /** Reads `[skiff_agent]` again. loadProjects calls it, so an edit from Settings or the CLI shows at once. */
@@ -44,16 +54,19 @@ export function skiffAgentChoice(agents: AgentInfo[] = S.agents, id = S.skiffAge
   return agents.find((a) => a.id === id && a.installed && (a.enabled || a.custom)) ?? agents.find((a) => a.enabled) ?? null;
 }
 
+/** The session the row started. A shell or another agent opened in the folder does not take its place. */
+let startedId: string | null = null;
+
 /**
- * The Skiff agent's session: the oldest live one in its folder. An agent
- * session goes before a shell there, so a shell opened in the folder does
- * not take the row from the agent.
+ * The Skiff agent's session: the one the row started while it lives. After a
+ * restart that id is gone: then the oldest agent session in the folder.
  */
 export function skiffAgentSession(): SessionInfo | null {
-  const folder = S.skiffAgent?.folder;
+  const folder = skiffAgentFolder();
   if (!folder) return null;
-  const here = [...sessions.values()].filter((s) => s.state !== "done" && samePath(s.cwd, folder)).sort(byStart);
-  return here.find((s) => s.role === "agent") ?? here[0] ?? null;
+  const started = startedId ? sessions.get(startedId) : undefined;
+  if (started && started.state !== "done" && samePath(started.cwd, folder)) return started;
+  return [...sessions.values()].filter((s) => s.state !== "done" && s.role === "agent" && samePath(s.cwd, folder)).sort(byStart)[0] ?? null;
 }
 
 /** True for the Skiff agent's session. It has no project, no splits and no rename: its name lives in Settings. */
@@ -61,7 +74,7 @@ export const isSkiffAgent = (id: string | null | undefined) => !!id && skiffAgen
 
 /** The row and the key: show the Skiff agent's pane, or start it in its folder. */
 export function openSkiffAgent() {
-  const folder = S.skiffAgent?.folder;
+  const folder = skiffAgentFolder();
   if (!folder) return;
   const s = skiffAgentSession();
   if (s) {
@@ -71,7 +84,13 @@ export function openSkiffAgent() {
   }
   const a = skiffAgentChoice();
   if (!a) return showError("No agent is on. Turn one on in Settings › Agents.");
-  newSession(folder, a.command, a.id, "agent", undefined, skiffAgentName()).catch(showError);
+  // The folder is made ready first: files the user deleted come back.
+  invoke<string>("ensure_skiff_agent")
+    .then((dir) => newSession(dir, a.command, a.id, "agent", undefined, skiffAgentName()))
+    .then((id) => {
+      startedId = id;
+    })
+    .catch(showError);
 }
 
 /** Restored panes Skiff already typed the continue line into. Once each. */

@@ -96,19 +96,6 @@ fn copy_tree(src: &Path, dest: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn expand_home(path: &str) -> anyhow::Result<PathBuf> {
-    let path = path.trim();
-    if path.is_empty() {
-        bail!("type a folder");
-    }
-    let home = || std::env::var_os("HOME").map(PathBuf::from).context("HOME is not set");
-    Ok(match path.strip_prefix("~/") {
-        Some(rest) => home()?.join(rest),
-        None if path == "~" => home()?,
-        None => PathBuf::from(path),
-    })
-}
-
 /// Writes a new file. Refuses one that is there, so setup never overwrites.
 fn write_new(path: &Path, text: &str) -> anyhow::Result<()> {
     use std::io::Write;
@@ -130,9 +117,49 @@ fn link(_target: &Path, _at: &Path) -> anyhow::Result<()> {
     bail!("not supported on this platform")
 }
 
-/// Writes the parts of the template that `dir` does not have yet. Any folder
-/// will do; a file or link already there stays as it is, so a second run
-/// keeps the user's edits and a folder set up before is used as it is.
+/// The marker setup leaves, so a later run knows the folder is the agent's.
+const MARKER: &str = ".skiff-agent";
+
+/// The agent's folder: `~/skiff-agent`, or the override in projects.toml when
+/// it passes [`check`]. The folder is fixed, so its conversation and ledger
+/// never move.
+fn folder(cfg: &config::Config) -> anyhow::Result<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from).context("HOME is not set")?;
+    let Some(dir) = cfg.skiff_agent.folder.clone() else { return Ok(home.join("skiff-agent")) };
+    check(&dir, &home, cfg)?;
+    Ok(dir)
+}
+
+/// Refuses a folder whose instructions would reach other sessions: an agent
+/// reads `CLAUDE.md` in every folder above its own, and `AGENTS.md` up to its
+/// repository's root. So the folder must not be the home, the root, the config
+/// folder, a project, or a folder above or inside one.
+fn check(dir: &Path, home: &Path, cfg: &config::Config) -> anyhow::Result<()> {
+    let real = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let d = real(dir);
+    let shown = dir.display();
+    if !dir.is_absolute() || d.parent().is_none() || d == real(home) {
+        bail!("[skiff_agent] folder = \"{shown}\" is not allowed. Use a folder of its own, such as ~/skiff-agent");
+    }
+    if let Some(c) = config::config_path().parent().map(real) {
+        if d.starts_with(&c) {
+            bail!("[skiff_agent] folder = \"{shown}\" is in Skiff's config folder. Use a folder of its own");
+        }
+    }
+    for p in &cfg.projects {
+        let pr = real(&p.path);
+        if d.starts_with(&pr) || pr.starts_with(&d) {
+            bail!("[skiff_agent] folder = \"{shown}\" mixes with the project {}. Use a folder of its own", p.name);
+        }
+    }
+    Ok(())
+}
+
+/// Writes the parts of the template that `dir` does not have yet. The folder
+/// must be new, empty, or one this setup made before (it has the marker), so
+/// setup never mixes the agent's files with other files. A second run keeps
+/// the user's edits and puts back what is missing. Nothing is written outside
+/// the folder.
 ///
 /// ```text
 /// AGENTS.md                    the instructions, with the agent's name
@@ -145,6 +172,9 @@ fn link(_target: &Path, _at: &Path) -> anyhow::Result<()> {
 fn setup(res: &Path, dir: &Path, name: &str) -> anyhow::Result<PathBuf> {
     if dir.metadata().is_ok_and(|m| !m.is_dir()) {
         bail!("{} is not a folder", dir.display());
+    }
+    if dir.is_dir() && !dir.join(MARKER).exists() && std::fs::read_dir(dir)?.next().is_some() {
+        bail!("{} holds other files. Move them, or set another folder in projects.toml: [skiff_agent] folder", dir.display());
     }
     let template = res.join("agent-template");
     let read = |f: &str| {
@@ -176,36 +206,27 @@ fn setup(res: &Path, dir: &Path, name: &str) -> anyhow::Result<PathBuf> {
     if missing(&skills.join("skiff-cli")) {
         link(&skill, &skills.join("skiff-cli"))?;
     }
-    let claude = dir.join(".claude");
-    if missing(&claude) {
-        link(Path::new(".agents"), &claude)?;
-    } else if claude.is_dir() && !claude.symlink_metadata()?.is_symlink() {
-        // The folder has its own .claude: Claude reads the skill from there.
-        let at = claude.join("skills");
-        std::fs::create_dir_all(&at).context("create .claude/skills")?;
-        if missing(&at.join("skiff-cli")) {
-            link(&skill, &at.join("skiff-cli"))?;
-        }
+    if missing(&dir.join(".claude")) {
+        link(Path::new(".agents"), &dir.join(".claude"))?;
+    }
+    if missing(&dir.join(MARKER)) {
+        write_new(&dir.join(MARKER), "1\n")?;
     }
     Ok(dir)
 }
 
-/// Settings › Skiff agent › Folder. Writes the missing template files with the
-/// name from Settings, then makes the folder the Skiff agent's, so its row
-/// shows. Returns the folder, without `~`.
+/// Makes the agent's folder ready: writes the template parts it lacks, with
+/// the name from Settings. Settings runs it when the user turns the agent on,
+/// and the row before it starts a session. Returns the folder.
+fn ensure(app: &AppHandle) -> anyhow::Result<PathBuf> {
+    let cfg = config::load()?;
+    let name = cfg.skiff_agent.name.clone().filter(|n| !n.trim().is_empty());
+    setup(&resources(app)?, &folder(&cfg)?, name.as_deref().unwrap_or(DEFAULT_NAME))
+}
+
 #[tauri::command]
-pub async fn setup_skiff_agent(app: AppHandle, path: String) -> Result<String, String> {
-    let handle = app.clone();
-    let dir = blocking(move || {
-        let dir = expand_home(&path)?;
-        let name = config::load()?.skiff_agent.name.filter(|n| !n.trim().is_empty());
-        let dir = setup(&resources(&app)?, &dir, name.as_deref().unwrap_or(DEFAULT_NAME))?;
-        config::set_skiff_agent(SkiffAgentKey::Folder(Some(&dir)))?;
-        Ok(dir.display().to_string())
-    })
-    .await?;
-    let _ = handle.emit(PROJECTS_CHANGED, ());
-    Ok(dir)
+pub async fn ensure_skiff_agent(app: AppHandle) -> Result<String, String> {
+    blocking(move || Ok(ensure(&app)?.display().to_string())).await
 }
 
 /// `[skiff_agent]` as the page reads it: the folder without `~`.
@@ -213,18 +234,22 @@ pub async fn setup_skiff_agent(app: AppHandle, path: String) -> Result<String, S
 pub struct SkiffAgent {
     name: Option<String>,
     agent: Option<String>,
+    enabled: bool,
+    /// The fixed folder, or the override. Absent when the override is refused.
     folder: Option<String>,
+    /// Why the override in projects.toml is refused.
+    folder_error: Option<String>,
     continue_on_restore: bool,
 }
 
 fn read() -> anyhow::Result<SkiffAgent> {
-    let a = config::load()?.skiff_agent;
-    Ok(SkiffAgent {
-        name: a.name,
-        agent: a.agent,
-        folder: a.folder.map(|f| f.display().to_string()),
-        continue_on_restore: a.continue_on_restore,
-    })
+    let cfg = config::load()?;
+    let (folder, folder_error) = match folder(&cfg) {
+        Ok(f) => (Some(f.display().to_string()), None),
+        Err(e) => (None, Some(format!("{e:#}"))),
+    };
+    let a = cfg.skiff_agent;
+    Ok(SkiffAgent { name: a.name, agent: a.agent, enabled: a.enabled, folder, folder_error, continue_on_restore: a.continue_on_restore })
 }
 
 /// One edit from Settings › Skiff agent. `null` or empty takes the default.
@@ -233,7 +258,7 @@ fn read() -> anyhow::Result<SkiffAgent> {
 pub enum Edit {
     Name(Option<String>),
     Agent(Option<String>),
-    Folder(Option<String>),
+    Enabled(bool),
     ContinueOnRestore(bool),
 }
 
@@ -253,23 +278,18 @@ pub async fn get_skiff_agent() -> Result<SkiffAgent, String> {
 /// projects on the event, so the row follows at once.
 #[tauri::command]
 pub async fn set_skiff_agent(app: AppHandle, edit: Edit) -> Result<SkiffAgent, String> {
+    let handle = app.clone();
     let out = blocking(move || {
         match edit {
             Edit::Name(v) => config::set_skiff_agent(SkiffAgentKey::Name(v.as_deref()))?,
             Edit::Agent(v) => config::set_skiff_agent(SkiffAgentKey::Agent(v.as_deref()))?,
             Edit::ContinueOnRestore(on) => config::set_skiff_agent(SkiffAgentKey::ContinueOnRestore(on))?,
-            Edit::Folder(v) => {
-                let dir = match v.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
-                    None => None,
-                    Some(v) => {
-                        let dir = expand_home(v)?;
-                        if !dir.is_dir() {
-                            bail!("{} is not a folder", dir.display());
-                        }
-                        Some(dir.canonicalize().with_context(|| format!("find {}", dir.display()))?)
-                    }
-                };
-                config::set_skiff_agent(SkiffAgentKey::Folder(dir.as_deref()))?
+            Edit::Enabled(on) => {
+                // On makes the folder ready first: a refused folder stays off.
+                if on {
+                    ensure(&handle)?;
+                }
+                config::set_skiff_agent(SkiffAgentKey::Enabled(on))?
             }
         }
         read()
@@ -277,31 +297,6 @@ pub async fn set_skiff_agent(app: AppHandle, edit: Edit) -> Result<SkiffAgent, S
     .await?;
     let _ = app.emit(PROJECTS_CHANGED, ());
     Ok(out)
-}
-
-/// Starts a git repository in the agent's folder, even inside another
-/// repository, such as a home folder kept in git. The project must be the
-/// folder itself. No files are staged and nothing is committed.
-#[tauri::command]
-pub async fn init_skiff_agent_repository(path: PathBuf) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        if path.join(".git").exists() {
-            return Ok(());
-        }
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&path)
-            .arg("init")
-            .output()
-            .context("run git")?;
-        if !out.status.success() {
-            bail!("git init: {}", String::from_utf8_lossy(&out.stderr).trim());
-        }
-        Ok(())
-    })
-    .await
-    .map_err(|e| e.to_string())?
-    .map_err(|e: anyhow::Error| format!("{e:#}"))
 }
 
 #[cfg(test)]
@@ -329,7 +324,25 @@ mod tests {
         std::fs::remove_file(dir.join("ledger.md")).unwrap();
         setup(&res, &dir, "Skipper").unwrap();
         assert_eq!(std::fs::read_to_string(dir.join("AGENTS.md")).unwrap(), "mine");
-        assert!(dir.join("ledger.md").is_file());
+        assert!(dir.join("ledger.md").is_file() && dir.join(MARKER).is_file());
+        // A folder with other files and no marker is refused.
+        let other = tmp.join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join("notes.md"), "x").unwrap();
+        assert!(setup(&res, &other, "Skipper").unwrap_err().to_string().contains("holds other files"));
         std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn refuses_a_folder_that_mixes_with_other_work() {
+        let home = std::env::temp_dir().join(format!("skiff-agent-home-{}", std::process::id()));
+        let project = home.join("code/app");
+        std::fs::create_dir_all(&project).unwrap();
+        let cfg = config::parse(&format!("[[project]]\nname = \"app\"\npath = \"{}\"\n", project.display())).unwrap();
+        for bad in [home.clone(), PathBuf::from("/"), home.join("code"), project.clone(), project.join("sub")] {
+            assert!(check(&bad, &home, &cfg).is_err(), "{}", bad.display());
+        }
+        assert!(check(&home.join("skiff-agent"), &home, &cfg).is_ok());
+        std::fs::remove_dir_all(&home).unwrap();
     }
 }

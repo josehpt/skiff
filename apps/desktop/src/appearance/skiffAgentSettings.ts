@@ -6,14 +6,15 @@ import { continueLine } from "../terminal/resume";
 
 /** One edit, as `set_skiff_agent` takes it. */
 export type SkiffAgentEdit =
-  | { key: "name" | "agent" | "folder"; value: string | null }
-  | { key: "continue_on_restore"; value: boolean };
+  | { key: "name" | "agent"; value: string | null }
+  | { key: "enabled" | "continue_on_restore"; value: boolean };
 
 /**
- * Settings › Skiff agent: its name, the agent it starts, its folder, and
- * whether a restored pane continues the last conversation.
+ * Settings › Skiff agent: on or off, its name, the agent it starts, and
+ * whether a restored pane continues the last conversation. The folder is
+ * fixed: `~/skiff-agent`, or an override in projects.toml.
  */
-export function skiffAgentSection(set: SkiffAgentSettings, agents: AgentInfo[], save: (e: SkiffAgentEdit) => void, choose: () => void): HTMLElement[] {
+export function skiffAgentSection(set: SkiffAgentSettings, agents: AgentInfo[], save: (e: SkiffAgentEdit) => void): HTMLElement[] {
   // Enabled agents and the user's own. A custom agent is on when the user added it.
   const choices = agents.filter((a) => a.enabled || a.custom);
   const chosen = skiffAgentChoice(agents, set.agent);
@@ -33,25 +34,9 @@ export function skiffAgentSection(set: SkiffAgentSettings, agents: AgentInfo[], 
   pick.disabled = !choices.length;
   pick.addEventListener("change", () => save({ key: "agent", value: pick.value }));
   agentRow.append(h("span", "c-name", "Agent"), pick, h("span", "c-mode", "At next start"));
-  // The folder picker. Skiff writes the agent's files into the folder it gets.
-  const folder = h("div", "set-row set-open set-agent on");
-  const path = h("input", "c-cmd");
-  path.readOnly = true;
-  path.value = set.folder ?? "";
-  path.placeholder = "Choose a folder to show the row";
-  path.setAttribute("aria-label", "Skiff agent folder. Enter chooses one");
-  path.addEventListener("click", choose);
-  path.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      choose();
-    }
-  });
-  const clear = h("button", "c-mode set-switch", set.folder ? "Clear" : "");
-  clear.type = "button";
-  clear.disabled = !set.folder;
-  clear.addEventListener("click", () => save({ key: "folder", value: null }));
-  folder.append(h("span", "c-name", "Folder"), path, clear);
+  // On sets up the fixed folder and shows the row. A refused override stays off, with the reason.
+  const onRow = switchRow("On", set.enabled && !!set.folder, !!set.folder, (on) => save({ key: "enabled", value: on }));
+  onRow.insertBefore(set.folder ? h("span", "c-cmd mono", set.folder) : h("span", "c-cmd", set.folder_error ?? ""), onRow.lastChild);
 
   // A custom agent has no continue line: the switch shows off, with the reason.
   const line = chosen ? continueLine(chosen.id, chosen.command) : null;
@@ -69,7 +54,22 @@ export function skiffAgentSection(set: SkiffAgentSettings, agents: AgentInfo[], 
     ? h("span", "c-cmd mono", line)
     : h("span", "c-cmd", chosen ? `${chosen.id} has no continue command. The pane restores as a shell.` : "No agent is on.");
   cont.append(h("span", "c-name", "Continue on restore"), what, sw);
-  return [name, agentRow, folder, cont];
+  return [onRow, name, agentRow, cont];
+}
+
+/** A label, a cell for the caller, and a switch. */
+function switchRow(label: string, on: boolean, enabled: boolean, set: (on: boolean) => void): HTMLElement {
+  const row = h("div", "set-row set-open set-agent" + (on ? " on" : "") + (enabled ? "" : " missing"));
+  const sw = h("button", "c-mode set-switch");
+  sw.type = "button";
+  sw.disabled = !enabled;
+  sw.setAttribute("role", "switch");
+  sw.setAttribute("aria-checked", String(on));
+  sw.setAttribute("aria-label", `${label} ${on ? "on" : "off"}`);
+  sw.appendChild(h("span", "switch"));
+  sw.addEventListener("click", () => set(!on));
+  row.append(h("span", "c-name", label), sw);
+  return row;
 }
 
 /** A label and a text field that saves on Enter or blur. Esc puts the old value back. */

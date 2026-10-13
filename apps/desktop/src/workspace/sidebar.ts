@@ -34,7 +34,7 @@ import { animateFold, growOpened } from "../ui/fold";
 import { dragTree } from "./treeDrag";
 import { bareWorktree, fleetKey, folded, isOpen, openToFocused, projectBadge, projectKey, rollup, toggleRow, treeDrag, treeSections, type Section } from "./tree";
 import { render } from "../app/renderRequest";
-import { openSkiffAgent, SKIFF_AGENT_KEY, skiffAgentChoice, skiffAgentName, skiffAgentSession, syncSkiffAgent } from "../app/skiffAgent";
+import { openSkiffAgent, SKIFF_AGENT_KEY, skiffAgentChoice, skiffAgentFolder, skiffAgentName, skiffAgentSession, syncSkiffAgent } from "../app/skiffAgent";
 
 /** 20px lines, flush against whatever follows. */
 function sessionBlock(lines: Line[], color: string): HTMLElement {
@@ -163,7 +163,7 @@ function sidebarSig(): string {
     ]),
   ]);
   // The agent icons are inked against the applied app theme: a new theme re-inks them.
-  const agent = S.skiffAgent?.folder ? [skiffAgentName(), skiffAgentSession()?.id ?? null, skiffAgentChoice()?.id ?? null] : null;
+  const agent = skiffAgentFolder() ? [skiffAgentName(), skiffAgentSession()?.id ?? null, skiffAgentChoice()?.id ?? null] : null;
   return JSON.stringify([
     listGen, appliedTheme(), S.selectedProject, [...folded],
     S.selection, S.renamingSession, S.renaming?.id ?? null, rows, groups, projects, agent,
@@ -195,7 +195,7 @@ export function renderSidebar() {
   const near = at < 0 ? [] : [...items.slice(at + 1), ...items.slice(0, at).reverse()].map(itemKey);
 
   side.replaceChildren();
-  if (S.skiffAgent?.folder) side.appendChild(skiffAgentRow());
+  if (skiffAgentFolder()) side.appendChild(skiffAgentRow());
   for (const sec of treeSections()) {
     side.appendChild(sectionHead(sec));
     if (sec.fleet && !isOpen(fleetKey(sec.fleet))) continue;

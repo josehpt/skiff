@@ -222,6 +222,7 @@ pub enum SkiffAgentKey<'a> {
     Name(Option<&'a str>),
     Agent(Option<&'a str>),
     Folder(Option<&'a std::path::Path>),
+    Enabled(bool),
     ContinueOnRestore(bool),
 }
 
@@ -234,6 +235,7 @@ pub fn set_skiff_agent(key: SkiffAgentKey) -> Result<()> {
             SkiffAgentKey::Name(v) => ("name", text(v).map(toml_edit::value)),
             SkiffAgentKey::Agent(v) => ("agent", text(v).map(toml_edit::value)),
             SkiffAgentKey::Folder(v) => ("folder", v.map(|p| toml_edit::value(super::persistence::home_relative(p)))),
+            SkiffAgentKey::Enabled(on) => ("enabled", on.then(|| toml_edit::value(true))),
             // Off is the default: the key goes.
             SkiffAgentKey::ContinueOnRestore(on) => ("continue_on_restore", on.then(|| toml_edit::value(true))),
         };

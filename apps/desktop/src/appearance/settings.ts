@@ -9,7 +9,6 @@ import { nextCard, themeGrid, type ThemeFilters } from "./themeCards";
 import { type Action, actionFor } from "../app/keys";
 import type { SkiffAgentSettings } from "../app/skiffAgent";
 import { type SkiffAgentEdit, skiffAgentSection } from "./skiffAgentSettings";
-import { open as openFolder } from "@tauri-apps/plugin-dialog";
 
 /**
  * Settings over the sidebar and terminal: agents, appearance, and Open with.
@@ -395,20 +394,6 @@ export function createSettings(onAgents: (a: AgentInfo[]) => void, onClose: () =
     render();
   }
 
-  /** The folder picker. Skiff writes the agent's missing files into the folder, then sets it. */
-  async function chooseSkiffAgentFolder() {
-    const dir = await openFolder({ directory: true, title: "Choose the Skiff agent's folder", defaultPath: agentSet?.folder ?? undefined }).catch(() => null);
-    if (typeof dir !== "string") return;
-    error = null;
-    try {
-      await invoke<string>("setup_skiff_agent", { path: dir });
-      agentSet = await invoke<SkiffAgentSettings>("get_skiff_agent");
-    } catch (e) {
-      error = String(e);
-    }
-    render();
-  }
-
   /** The one agent session that coordinates the others. */
   function skiffAgent(): HTMLElement {
     const main = h("div", "set-main");
@@ -418,7 +403,7 @@ export function createSettings(onAgents: (a: AgentInfo[]) => void, onClose: () =
       h("div", "set-sub", "One agent for all projects."),
     );
     main.append(intro);
-    if (agentSet) main.append(...skiffAgentSection(agentSet, agents, (e) => void setSkiffAgent(e), () => void chooseSkiffAgentFolder()));
+    if (agentSet) main.append(...skiffAgentSection(agentSet, agents, (e) => void setSkiffAgent(e)));
     if (error) {
       const err = h("div", "set-error", error);
       err.setAttribute("role", "alert");

@@ -156,6 +156,7 @@ export async function newSession(
   if (mark() === before) place();
   else if (where) inBackground(place, true);
   else render();
+  return info.id;
 }
 
 let projectsSeq = 0;

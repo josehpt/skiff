@@ -13,7 +13,8 @@
 
 .mission-lanes { flex: 1; min-height: 0; display: flex; overflow-x: auto; }
 .mission-lane { flex: 0 0 max(25%, calc(300 * var(--u))); min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--rule); overflow-y: auto; }
-.mission-lane-head { height: calc(40 * var(--u)); flex-shrink: 0; position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: calc(10 * var(--u)); padding: 0 calc(12 * var(--u)); border-bottom: 1px solid var(--rule); background: var(--bg-panel); }
+/* z-index 3: the sticky head stays over the lit screen's frame (z-index 1) that scrolls under it. */
+.mission-lane-head { height: calc(40 * var(--u)); flex-shrink: 0; position: sticky; top: 0; z-index: 3; display: flex; align-items: center; gap: calc(10 * var(--u)); padding: 0 calc(12 * var(--u)); border-bottom: 1px solid var(--rule); background: var(--bg-panel); }
 .mission-lane-name { flex-grow: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(11px * var(--zoom, 1)); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-2); }
 .mission-project { height: calc(40 * var(--u)); flex-shrink: 0; display: flex; align-items: center; gap: calc(8 * var(--u)); padding: 0 calc(12 * var(--u)); border-bottom: 1px solid var(--rule); }
 .mission-project .project-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(13px * var(--zoom, 1)); font-weight: 600; color: var(--text); }
@@ -41,11 +42,16 @@ body.kbd .mission:focus { outline: 0; }
 /* The last project fills its lane to the bottom, so no app-theme gap shows under it. */
 .mission-group:last-child { flex-grow: 1; }
 
-/* A chunky sideways scrollbar: easy to see, grab and drag. Lanes snap into place. */
-.mission-lanes { scroll-snap-type: x proximity; }
+/* Lanes snap into place. The strip below stands in for the native scrollbar. */
+.mission-lanes { scroll-snap-type: x proximity; scrollbar-width: none; }
+.mission-lanes::-webkit-scrollbar { display: none; height: 0; }
 .mission-lane { scroll-snap-align: start; }
-.mission-lanes::-webkit-scrollbar { height: 14px; }
-.mission-lanes::-webkit-scrollbar-track { background: var(--bg-deep); border-top: 1px solid var(--rule); }
-.mission-lanes::-webkit-scrollbar-thumb { background: var(--rule-strong); border: 3px solid var(--bg-deep); border-radius: 7px; min-width: 48px; }
-.mission-lanes::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
-.mission-lanes::-webkit-scrollbar-thumb:active { background: var(--text-3); }
+
+/* The strip: one segment per lane, as wide as the lane on the same scale, and a box over the lanes in view. */
+.mission-strip { position: relative; height: calc(20 * var(--u)); flex-shrink: 0; display: flex; border-top: 1px solid var(--rule); background: var(--bg-deep); cursor: pointer; user-select: none; touch-action: none; }
+.mission-seg { flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: calc(8 * var(--u)); padding: 0 calc(10 * var(--u)); border: 0; border-right: 1px solid var(--rule); background: none; color: var(--text-dim); font: inherit; font-size: calc(11px * var(--zoom, 1)); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; cursor: inherit; }
+.mission-seg:hover { color: var(--text-2); background: var(--hover, rgba(255, 255, 255, 0.05)); }
+.mission-seg-name { flex-grow: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.mission-view { position: absolute; top: 0; bottom: 0; box-sizing: border-box; border: calc(2 * var(--u)) solid var(--text-3); background: color-mix(in srgb, var(--text) 10%, transparent); pointer-events: auto; cursor: grab; }
+.mission-view:hover { border-color: var(--text-2); }
+.mission-strip.dragging .mission-view { border-color: var(--text); background: color-mix(in srgb, var(--text) 16%, transparent); cursor: grabbing; }

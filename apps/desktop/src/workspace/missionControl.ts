@@ -148,6 +148,73 @@ function themed(el: HTMLElement, p: Project | null) {
   for (const [k, v] of Object.entries(appThemeVars(t))) el.style.setProperty(k, v);
 }
 
+/**
+ * The strip under the lanes: one segment per lane, lined up with it, with its
+ * name and counts, and a box over the lanes in view. Drag the box or click a
+ * segment to scroll sideways. Stands in for the native scrollbar.
+ */
+function laneStrip(all: Lane[], board: HTMLElement): HTMLElement {
+  const el = h("div", "mission-strip");
+  for (const l of all) {
+    const seg = h("button", "mission-seg");
+    seg.type = "button";
+    seg.tabIndex = -1;
+    seg.dataset.lane = l.name;
+    seg.appendChild(h("span", "mission-seg-name", l.name));
+    roll(seg, l);
+    el.appendChild(seg);
+  }
+  const view = h("div", "mission-view");
+  el.appendChild(view);
+  const fit = () => {
+    const w = board.scrollWidth || 1;
+    view.style.left = `${(board.scrollLeft / w) * 100}%`;
+    view.style.width = `${(board.clientWidth / w) * 100}%`;
+    view.hidden = board.scrollWidth <= board.clientWidth;
+  };
+  board.addEventListener("scroll", fit, { passive: true });
+  new ResizeObserver(fit).observe(board);
+  // Press anywhere: the box centers there and follows the pointer until release.
+  el.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    const r = el.getBoundingClientRect();
+    const onBox = e.target === view;
+    const grab = onBox ? e.clientX - view.getBoundingClientRect().left : view.offsetWidth / 2;
+    const to = (x: number) => (board.scrollLeft = ((x - r.left - grab) / r.width) * board.scrollWidth);
+    // A click on a segment, not a drag, brings its lane in from the left.
+    const seg = (e.target as Element).closest<HTMLElement>(".mission-seg");
+    let moved = false;
+    el.setPointerCapture(e.pointerId);
+    el.classList.add("dragging");
+    const move = (m: PointerEvent) => {
+      moved = true;
+      to(m.clientX);
+    };
+    const up = () => {
+      el.removeEventListener("pointermove", move);
+      el.classList.remove("dragging");
+      if (!moved && seg && !onBox) {
+        const lane = board.querySelector<HTMLElement>(`.mission-lane[aria-label="${CSS.escape(seg.dataset.lane ?? "")}"]`);
+        if (lane) board.scrollTo({ left: lane.offsetLeft, behavior: "smooth" });
+      }
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", up, { once: true });
+    el.addEventListener("pointercancel", up, { once: true });
+    e.preventDefault();
+  });
+  el.addEventListener(
+    "wheel",
+    (e) => {
+      board.scrollLeft += e.deltaY || e.deltaX;
+      e.preventDefault();
+    },
+    { passive: false },
+  );
+  requestAnimationFrame(fit);
+  return el;
+}
+
 /** The lane head's rollup, put in or taken out in place. */
 function roll(head: Element, l: Lane) {
   const old = head.querySelector(".tree-roll");
@@ -197,7 +264,7 @@ function build(all = lanes()) {
   }
   if (!all.length) board.appendChild(h("div", "mission-empty", "No sessions"));
   themed(root, null);
-  root.replaceChildren(bar, board);
+  root.replaceChildren(bar, board, laneStrip(all, board));
 
   if (root.hidden || !old) return;
   board.scrollLeft = left;
@@ -214,8 +281,10 @@ function update(all: Lane[]) {
     if (p) themed(g, p);
   }
   const heads = root.querySelectorAll(".mission-lane-head");
+  const segs = root.querySelectorAll(".mission-seg");
   for (const [i, l] of all.entries()) {
     if (heads[i]) roll(heads[i], l);
+    if (segs[i]) roll(segs[i], l);
     for (const { p, list } of l.projects) {
       for (const s of list) {
         const b = tileOf(s.id);

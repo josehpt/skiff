@@ -38,3 +38,14 @@ body.kbd .mission:focus { outline: 0; }
 .mission-none { height: calc(40 * var(--u)); flex-shrink: 0; display: flex; align-items: center; padding: 0 calc(12 * var(--u)); font-size: calc(12px * var(--zoom, 1)); color: var(--text-dim); }
 /* A project's part of a lane, in that project's theme. */
 .mission-group { flex-shrink: 0; display: flex; flex-direction: column; background: var(--bg); color: var(--text); }
+/* The last project fills its lane to the bottom, so no app-theme gap shows under it. */
+.mission-group:last-child { flex-grow: 1; }
+
+/* A chunky sideways scrollbar: easy to see, grab and drag. Lanes snap into place. */
+.mission-lanes { scroll-snap-type: x proximity; }
+.mission-lane { scroll-snap-align: start; }
+.mission-lanes::-webkit-scrollbar { height: 14px; }
+.mission-lanes::-webkit-scrollbar-track { background: var(--bg-deep); border-top: 1px solid var(--rule); }
+.mission-lanes::-webkit-scrollbar-thumb { background: var(--rule-strong); border: 3px solid var(--bg-deep); border-radius: 7px; min-width: 48px; }
+.mission-lanes::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+.mission-lanes::-webkit-scrollbar-thumb:active { background: var(--text-3); }

@@ -2,7 +2,8 @@
  * Mission control (#88): every session's screen over the whole window, one
  * lane per fleet. Read-only text from skiffd; no pane, no PTY resize.
  * Ctrl+Shift+A or Esc closes it. A click or Enter goes to the session.
- * Ctrl+Shift+P searches the sessions on the board, and hides the rest.
+ * Ctrl+Shift+P searches the sessions on the board, and hides the rest. The
+ * search stays until Esc clears it, so a close and an open keep it.
  * This file is the board. missionMotion.ts opens and closes it.
  */
 
@@ -100,6 +101,8 @@ function filter(all: Lane[], scroll = false) {
   const board = root.querySelector(".mission-lanes");
   if (found && !found.size) board?.appendChild(noMatch);
   else noMatch.remove();
+  const bar = root.querySelector<HTMLElement>(".mission-bar");
+  if (bar) counts(bar, new Set(order.flat()));
   const first = shown().flat()[0];
   if (first && (scroll || !lit || (found && !found.has(lit)))) light(first, true);
   else if (scroll) root.querySelector<HTMLElement>(".mission-lanes")?.scrollTo({ left: 0 });
@@ -169,10 +172,10 @@ function tile(s: SessionInfo, p: Project): HTMLElement {
   return b;
 }
 
-/** The bar's counts: all sessions on the board, and those that wait. */
+/** The bar's counts: the sessions on the board, those the search shows, and all that wait. */
 function counts(bar: HTMLElement, ids: Set<string>) {
   const n = bar.querySelector(".mission-count");
-  if (n) n.textContent = `${ids.size} sessions`;
+  if (n) n.textContent = found ? `${found.size} of ${ids.size} sessions` : `${ids.size} sessions`;
   const waiting = [...sessions.values()].filter((s) => s.state === "waiting").length;
   let w = bar.querySelector(".mission-waiting");
   if (!waiting) w?.remove();
@@ -269,7 +272,6 @@ function build(all = lanes()) {
   const bar = h("div", "mission-bar");
   bar.append(h("span", "mission-name", "Mission control"), h("span", "mission-count"), find);
   findKey.textContent = keyLabel("palette");
-  counts(bar, ids);
 
   const board = h("div", "mission-lanes");
   for (const l of all) {
@@ -312,8 +314,6 @@ function build(all = lanes()) {
 
 /** Everything but the structure, brought up to date in place. */
 function update(all: Lane[]) {
-  const bar = root.querySelector<HTMLElement>(".mission-bar");
-  if (bar) counts(bar, new Set(order.flat()));
   themed(root, null);
   for (const g of root.querySelectorAll<HTMLElement>(".mission-group")) {
     const p = S.projects.find((x) => x.name === g.dataset.project);
@@ -419,7 +419,6 @@ export const board = {
   async prepare(focus: string | null) {
     paused = false;
     lit = focus;
-    search.value = "";
     const all = lanes();
     shape = signature(all);
     build(all);

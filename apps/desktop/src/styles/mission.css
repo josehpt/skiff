@@ -47,11 +47,9 @@ body.kbd .mission:focus { outline: 0; }
 .mission-lanes::-webkit-scrollbar { display: none; height: 0; }
 .mission-lane { scroll-snap-align: start; }
 
-/* The strip: one segment per lane, as wide as the lane on the same scale, and a box over the lanes in view. */
-.mission-strip { position: relative; height: calc(20 * var(--u)); flex-shrink: 0; display: flex; border-top: 1px solid var(--rule); background: var(--bg-deep); cursor: pointer; user-select: none; touch-action: none; }
-.mission-seg { flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: calc(8 * var(--u)); padding: 0 calc(10 * var(--u)); border: 0; border-right: 1px solid var(--rule); background: none; color: var(--text-dim); font: inherit; font-size: calc(11px * var(--zoom, 1)); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; cursor: inherit; }
-.mission-seg:hover { color: var(--text-2); background: var(--hover, rgba(255, 255, 255, 0.05)); }
-.mission-seg-name { flex-grow: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
-.mission-view { position: absolute; top: 0; bottom: 0; box-sizing: border-box; border: calc(2 * var(--u)) solid var(--text-3); background: color-mix(in srgb, var(--text) 10%, transparent); pointer-events: auto; cursor: grab; }
-.mission-view:hover { border-color: var(--text-2); }
-.mission-strip.dragging .mission-view { border-color: var(--text); background: color-mix(in srgb, var(--text) 16%, transparent); cursor: grabbing; }
+/* The sideways scrollbar: a wide track and a big thumb, easy to see and to grab. */
+.mission-scroll { position: relative; height: calc(16 * var(--u)); flex-shrink: 0; border-top: 1px solid var(--rule); background: var(--bg-deep); cursor: pointer; user-select: none; touch-action: none; }
+.mission-scroll[hidden] { display: none; }
+.mission-thumb { position: absolute; top: calc(3 * var(--u)); bottom: calc(3 * var(--u)); min-width: calc(64 * var(--u)); background: var(--rule-strong); cursor: grab; transition: background 120ms; }
+.mission-scroll:hover .mission-thumb { background: var(--text-dim); }
+.mission-scroll.dragging .mission-thumb { background: var(--text-3); cursor: grabbing; transition: none; }

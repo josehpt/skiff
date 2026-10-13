@@ -47,8 +47,8 @@ body.kbd .mission:focus { outline: 0; }
 .mission-lanes::-webkit-scrollbar { display: none; height: 0; }
 
 /* The sideways scrollbar: a wide track and a big thumb, easy to see and to grab. */
-.mission-scroll { position: relative; height: calc(16 * var(--u)); flex-shrink: 0; border-top: 1px solid var(--rule); background: var(--bg-deep); cursor: pointer; user-select: none; touch-action: none; }
+.mission-scroll { position: relative; height: calc(28 * var(--u)); flex-shrink: 0; border-top: 1px solid var(--rule); background: var(--bg-deep); cursor: pointer; user-select: none; touch-action: none; }
 .mission-scroll[hidden] { display: none; }
-.mission-thumb { position: absolute; top: calc(3 * var(--u)); bottom: calc(3 * var(--u)); min-width: calc(64 * var(--u)); background: var(--rule-strong); cursor: grab; transition: background 120ms; }
+.mission-thumb { position: absolute; top: calc(4 * var(--u)); bottom: calc(4 * var(--u)); min-width: calc(64 * var(--u)); background: var(--rule-strong); cursor: grab; transition: background 120ms; }
 .mission-scroll:hover .mission-thumb { background: var(--text-dim); }
 .mission-scroll.dragging .mission-thumb { background: var(--text-3); cursor: grabbing; transition: none; }

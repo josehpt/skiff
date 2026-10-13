@@ -130,7 +130,9 @@ fn link(_target: &Path, _at: &Path) -> anyhow::Result<()> {
     bail!("not supported on this platform")
 }
 
-/// Writes the template into `dir`. The folder must be empty or not exist.
+/// Writes the parts of the template that `dir` does not have yet. Any folder
+/// will do; a file or link already there stays as it is, so a second run
+/// keeps the user's edits and a folder set up before is used as it is.
 ///
 /// ```text
 /// AGENTS.md                    the instructions, with the agent's name
@@ -141,13 +143,8 @@ fn link(_target: &Path, _at: &Path) -> anyhow::Result<()> {
 /// results/                     long child reports
 /// ```
 fn setup(res: &Path, dir: &Path, name: &str) -> anyhow::Result<PathBuf> {
-    if let Ok(meta) = dir.metadata() {
-        if !meta.is_dir() {
-            bail!("{} is not a folder", dir.display());
-        }
-        if std::fs::read_dir(dir)?.next().is_some() {
-            bail!("{} is not empty. Pick an empty folder", dir.display());
-        }
+    if dir.metadata().is_ok_and(|m| !m.is_dir()) {
+        bail!("{} is not a folder", dir.display());
     }
     let template = res.join("agent-template");
     let read = |f: &str| {
@@ -160,21 +157,42 @@ fn setup(res: &Path, dir: &Path, name: &str) -> anyhow::Result<PathBuf> {
 
     std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
     let dir = dir.canonicalize().with_context(|| format!("find {}", dir.display()))?;
-    write_new(&dir.join("AGENTS.md"), &agents)?;
-    link(Path::new("AGENTS.md"), &dir.join("CLAUDE.md"))?;
-    link(Path::new("AGENTS.md"), &dir.join("GEMINI.md"))?;
-    write_new(&dir.join("ledger.md"), &ledger)?;
-    std::fs::create_dir(dir.join("results")).context("create results")?;
+    // A broken link counts as there: setup does not replace what the user made.
+    let missing = |p: &Path| p.symlink_metadata().is_err();
+    if missing(&dir.join("AGENTS.md")) {
+        write_new(&dir.join("AGENTS.md"), &agents)?;
+    }
+    for f in ["CLAUDE.md", "GEMINI.md"] {
+        if missing(&dir.join(f)) {
+            link(Path::new("AGENTS.md"), &dir.join(f))?;
+        }
+    }
+    if missing(&dir.join("ledger.md")) {
+        write_new(&dir.join("ledger.md"), &ledger)?;
+    }
+    std::fs::create_dir_all(dir.join("results")).context("create results")?;
     let skills = dir.join(".agents").join("skills");
     std::fs::create_dir_all(&skills).context("create .agents/skills")?;
-    link(&skill, &skills.join("skiff-cli"))?;
-    link(Path::new(".agents"), &dir.join(".claude"))?;
+    if missing(&skills.join("skiff-cli")) {
+        link(&skill, &skills.join("skiff-cli"))?;
+    }
+    let claude = dir.join(".claude");
+    if missing(&claude) {
+        link(Path::new(".agents"), &claude)?;
+    } else if claude.is_dir() && !claude.symlink_metadata()?.is_symlink() {
+        // The folder has its own .claude: Claude reads the skill from there.
+        let at = claude.join("skills");
+        std::fs::create_dir_all(&at).context("create .claude/skills")?;
+        if missing(&at.join("skiff-cli")) {
+            link(&skill, &at.join("skiff-cli"))?;
+        }
+    }
     Ok(dir)
 }
 
-/// The palette command. Writes the template with the name from Settings, then
-/// makes the folder the Skiff agent's, so its row shows. Returns the folder,
-/// without `~`.
+/// Settings › Skiff agent › Folder. Writes the missing template files with the
+/// name from Settings, then makes the folder the Skiff agent's, so its row
+/// shows. Returns the folder, without `~`.
 #[tauri::command]
 pub async fn setup_skiff_agent(app: AppHandle, path: String) -> Result<String, String> {
     let handle = app.clone();
@@ -291,7 +309,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn writes_the_template_and_refuses_a_full_folder() {
+    fn writes_the_template_and_fills_in_only_what_is_missing() {
         let tmp = std::env::temp_dir().join(format!("skiff-agent-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         // The resources as tauri.conf.json lays them out.
@@ -306,7 +324,12 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("GEMINI.md")).unwrap(), agents);
         assert!(dir.join(".claude/skills/skiff-cli/SKILL.md").is_file());
         assert!(dir.join("ledger.md").is_file() && dir.join("results").is_dir());
-        assert!(setup(&res, &dir, "Skipper").unwrap_err().to_string().contains("not empty"));
+        // A second run fills in what is missing and keeps the user's edits.
+        std::fs::write(dir.join("AGENTS.md"), "mine").unwrap();
+        std::fs::remove_file(dir.join("ledger.md")).unwrap();
+        setup(&res, &dir, "Skipper").unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("AGENTS.md")).unwrap(), "mine");
+        assert!(dir.join("ledger.md").is_file());
         std::fs::remove_dir_all(&tmp).unwrap();
     }
 }

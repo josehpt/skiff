@@ -56,6 +56,9 @@ export function skiffAgentSession(): SessionInfo | null {
   return here.find((s) => s.role === "agent") ?? here[0] ?? null;
 }
 
+/** True for the Skiff agent's session. It has no project, no splits and no rename: its name lives in Settings. */
+export const isSkiffAgent = (id: string | null | undefined) => !!id && skiffAgentSession()?.id === id;
+
 /** The row and the key: show the Skiff agent's pane, or start it in its folder. */
 export function openSkiffAgent() {
   const folder = S.skiffAgent?.folder;

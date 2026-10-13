@@ -1,4 +1,5 @@
 /** What the terminal area shows and which pane has the keys. */
+import { isSkiffAgent } from "../app/skiffAgent";
 import { beginDrag, type DropTarget } from "./drag";
 import { build, type Direction, leaf, neighbor, removePane, replacePane, sessionsOf, shape, splitPane } from "./layout";
 
@@ -65,9 +66,11 @@ export function focusPane(id: string, grab = true) {
   } else if (at) {
     S.selectedProject = at.project.name;
     selectedWorktree.set(at.project.name, at.worktree.path);
-  } else if (s) {
+  } else if (s && !isSkiffAgent(id)) {
     S.selectedProject = OTHER;
   }
+  // The Skiff agent is in no project: the project stays as it was, so the
+  // tree does not fall back to the first project and light it.
   render();
   requestAnimationFrame(() => {
     // A right-click focuses the pane, then opens a menu that keeps the keys.

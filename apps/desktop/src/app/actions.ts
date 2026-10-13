@@ -28,7 +28,7 @@ import { switcher } from "./commandUi";
 import { missionKey, missionOpen, toggleSearch } from "../workspace/missionControl";
 import { closeMission, goToSession, maximizeLit, toggleMission } from "../workspace/missionMotion";
 import { showShortcuts } from "../ui/infoDialogs";
-import { openSkiffAgent, skiffAgentSession } from "./skiffAgent";
+import { isSkiffAgent, openSkiffAgent, skiffAgentSession } from "./skiffAgent";
 import { groupThemeMenu, projectThemeMenu, sessionThemeMenu } from "../appearance/themes";
 function openNewSession() {
   // Its key works from inside a menu, such as the worktree menu that shows it: that menu goes.
@@ -95,7 +95,7 @@ export function runAction(a: Action) {
     }
     case "split-right":
     case "split-down": {
-      if (!S.focused || !shown || splitFull()) return;
+      if (!S.focused || !shown || splitFull() || isSkiffAgent(S.focused)) return;
       const [x, y] = paneCenter();
       return splitMenu(S.focused, a === "split-right" ? "row" : "col", x, y);
     }
@@ -111,7 +111,7 @@ export function runAction(a: Action) {
       // In the list, the row with the keys: arrowing to a row does not open it at once.
       if (renameListItem(document.activeElement as HTMLElement | null)) return;
       const pg = S.groups.find((x) => x.id === S.groupPicked);
-      return pg ? startRename(pg) : S.focused ? startSessionRename(S.focused) : undefined;
+      return pg ? startRename(pg) : S.focused && !isSkiffAgent(S.focused) ? startSessionRename(S.focused) : undefined;
     }
     case "theme": return openTheme();
     case "end-session": return endCurrentSession();

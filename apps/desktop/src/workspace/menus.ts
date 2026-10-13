@@ -1,5 +1,6 @@
 import { ctxMenu } from "../ui/contextMenu";
 /** Right-click menus for projects, sessions, panes and groups. */
+import { isSkiffAgent } from "../app/skiffAgent";
 import { launchIcon } from "../appearance/agentIcon";
 import { confirmAction, promptAction } from "../ui/confirm";
 import { pickColor } from "../appearance/colorPicker";
@@ -239,6 +240,7 @@ function sessionLabel(s: SessionInfo) {
 }
 
 export function rowMenu(s: SessionInfo, x: number, y: number) {
+  if (isSkiffAgent(s.id)) return skiffAgentMenu(s, x, y);
   const ids = S.selection.filter((id) => sessions.has(id));
   if (ids.length > 1 && ids.includes(s.id)) return selectionMenu(ids, x, y);
   ctxMenu.open(x, y, sessionLabel(s), [
@@ -390,6 +392,7 @@ export function paneMenu(id: string, x: number, y: number) {
   const s = sessions.get(id);
   if (!s) return;
   if (id !== S.focused) focusPane(id);
+  if (isSkiffAgent(id)) return skiffAgentMenu(s, x, y);
   const full = splitFull();
   const entries: MenuEntry[] = [
     { icon: "layouts-panel-left:flip", label: "Add pane right…", hint: keyLabel("split-right"), disabled: full, run: () => splitMenu(id, "row", x, y) },
@@ -409,6 +412,15 @@ export function paneMenu(id: string, x: number, y: number) {
   }
   entries.push(endEntry(s));
   ctxMenu.open(x, y, sessionLabel(s), entries);
+}
+
+/** The Skiff agent's row and pane menu: no splits, groups or rename. Its name is in Settings. */
+function skiffAgentMenu(s: SessionInfo, x: number, y: number) {
+  ctxMenu.open(x, y, sessionLabel(s), [
+    { icon: "view-focus", label: S.focusMode ? "Leave focus mode" : "Focus mode", hint: keyLabel("focus-mode"), run: toggleFocusMode },
+    themeEntry(s),
+    endEntry(s),
+  ]);
 }
 
 /** Second step of Split: a new agent in this pane's worktree, or a session not shown. */

@@ -1,6 +1,6 @@
 import { runAction, openProjectMenu } from "./actions";
 import { showAbout } from "../ui/infoDialogs";
-import { skiffAgentName, skiffAgentSession } from "./skiffAgent";
+import { isSkiffAgent, skiffAgentName, skiffAgentSession } from "./skiffAgent";
 
 /** One command list for the menu bar and the palette; key actions. */
 import { type Action, keyLabel, menuAccel } from "./keys";
@@ -57,7 +57,7 @@ function commands(): Cmd[] {
     { section: "Edit", label: "Copy", key: k("copy"), action: "copy", run: act("copy"), off: !s },
     { section: "Edit", label: "Paste", key: k("paste"), action: "paste", run: act("paste"), off: !s },
     { section: "Edit", label: "Find…", key: k("find"), action: "find", run: act("find"), off: !shown },
-    { section: "Edit", label: "Rename session", key: k("rename"), action: "rename", run: act("rename"), off: !s },
+    { section: "Edit", label: "Rename session", key: k("rename"), action: "rename", run: act("rename"), off: !s || isSkiffAgent(s.id) },
     { section: "Edit", label: "Session theme…", key: k("theme"), run: () => s && void sessionThemeMenu(s), off: !s },
     {
       section: "Edit", label: "End session…", key: k("end-session"), action: "end-session", off: !s,
@@ -67,8 +67,8 @@ function commands(): Cmd[] {
     { section: "View", label: "Next session", key: k("session-next"), action: "session-next", run: act("session-next") },
     { section: "View", label: "Previous session", key: k("session-prev"), action: "session-prev", run: act("session-prev") },
     { section: "View", label: "Main worktree", key: k("list-main"), action: "list-main", run: act("list-main") },
-    { section: "View", label: "Add pane right…", key: k("split-right"), action: "split-right", run: act("split-right"), off: !shown || splitFull() },
-    { section: "View", label: "Add pane below…", key: k("split-down"), action: "split-down", run: act("split-down"), off: !shown || splitFull() },
+    { section: "View", label: "Add pane right…", key: k("split-right"), action: "split-right", run: act("split-right"), off: !shown || splitFull() || isSkiffAgent(S.focused) },
+    { section: "View", label: "Add pane below…", key: k("split-down"), action: "split-down", run: act("split-down"), off: !shown || splitFull() || isSkiffAgent(S.focused) },
     { section: "View", label: "Remove from group", key: k("close-pane"), action: "close-pane", run: act("close-pane"), off: !(S.focused && inShownGroup(S.focused)) },
     ...groupCloseEntries(g).map((entry): Cmd => ({
       section: "View", label: entry.label, key: "", run: () => entry.run?.(), off: entry.disabled,

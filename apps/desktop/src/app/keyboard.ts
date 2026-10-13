@@ -1,4 +1,5 @@
 /** App keys, Tab order, F6 regions, arrows in the lists. */
+import { isSkiffAgent } from "./skiffAgent";
 import { type Action, actionFor } from "./keys";
 import { runAction } from "./actionDispatch";
 import { switcher } from "./commandUi";
@@ -246,6 +247,8 @@ export function toProject() {
   launchMenu.close(false);
   clearSelection();
   S.groupPicked = null;
+  // The Skiff agent has no project: its row stays the current one.
+  if (isSkiffAgent(S.focused) && currentRow()?.dataset.session === S.focused) return;
   const name = S.selectedProject;
   const row = listItems().find((el) => el.dataset.key === (name ? projectRowKey(name) : ""));
   if (!row) return;

@@ -2,6 +2,7 @@
  * Mission control (#88): every session's screen over the whole window, one
  * lane per fleet. Read-only text from skiffd; no pane, no PTY resize.
  * Ctrl+Shift+A or Esc closes it. A click or Enter goes to the session.
+ * This file is the board. missionMotion.ts opens and closes it.
  */
 
 import { invoke } from "@tauri-apps/api/core";
@@ -18,8 +19,7 @@ import { h } from "../ui/dom";
 import { branchName, taskTitle } from "./model";
 import { worktreeLines } from "./sidebarLines";
 import { bareWorktree, projectBadge, rollup, treeSections } from "./tree";
-import { refocusTerminal, revealSession } from "./view";
-import { drop, maxReturn, toggleMaximize } from "../app/modes";
+import { closeMission, maximizeLit } from "./missionMotion";
 
 /** Rows of text per screen. */
 const ROWS = 12;
@@ -44,7 +44,6 @@ let order: string[][] = [];
 let shape = "";
 let timer: number | undefined;
 let reading = false;
-let returnTo: HTMLElement | null = null;
 const screens = new Map<string, HTMLElement>();
 
 /** A project's sessions in tree order: each worktree's groups and their members, then the rest. */
@@ -203,142 +202,41 @@ export function missionOpen(): boolean {
   return !root.hidden;
 }
 
-let leaving = false;
-let starting = false;
-
-const still = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
-const EASE = "cubic-bezier(0.2, 0.8, 0.2, 1)";
-const FLY_MS = 200;
-
 const tileOf = (id: string | null) => (id ? root.querySelector<HTMLElement>(`.mission-tile[data-session="${CSS.escape(id)}"]`) : null);
 
-/** Where a session's pane is on screen: its cell, else the terminal area. */
-function paneRect(id: string): DOMRect {
-  const el = document.querySelector(`.cell[data-session="${CSS.escape(id)}"]`) ?? document.getElementById("terminal-host");
-  return el?.getBoundingClientRect() ?? new DOMRect(0, 0, innerWidth, innerHeight);
-}
-
-/** The transform that puts a box at `at` over the box at `to`. */
-function onto(at: DOMRect, to: DOMRect): string {
-  return `translate(${to.left - at.left}px, ${to.top - at.top}px) scale(${to.width / at.width}, ${to.height / at.height})`;
-}
-
-/** A copy of the screen, fixed where the screen is, to fly over the lanes, which clip. */
-function flier(tile: HTMLElement): { fly: HTMLElement; at: DOMRect } {
-  const at = tile.getBoundingClientRect();
-  const fly = tile.cloneNode(true) as HTMLElement;
-  fly.classList.add("mission-fly", "lit");
-  Object.assign(fly.style, { left: `${at.left}px`, top: `${at.top}px`, width: `${at.width}px`, height: `${at.height}px` });
-  root.appendChild(fly);
-  return { fly, at };
-}
-
-export async function openMission() {
-  if (missionOpen() || starting) return;
-  starting = true;
-  returnTo = document.activeElement as HTMLElement | null;
-  lit = S.focused;
-  // Measured before the board covers it: the pane the focused screen grows out of.
-  const pane = S.focused && document.querySelector(`.cell[data-session="${CSS.escape(S.focused)}"]`) ? paneRect(S.focused) : null;
-  shape = signature();
-  build();
-  // The text first, so the screens open full.
-  await read();
-  starting = false;
-  root.hidden = false;
-  root.classList.remove("opening");
-  void root.offsetWidth;
-  root.classList.add("opening");
-  // A lane rebuilt later does not rise again.
-  window.setTimeout(() => root.classList.remove("opening"), 600);
-  root.focus();
-  light(lit ?? "");
-  timer = window.setInterval(tick, TICK);
-  // The focused pane shrinks into its screen.
-  const tile = tileOf(lit);
-  if (!pane || !tile || still()) return;
-  const { fly, at } = flier(tile);
-  tile.style.visibility = "hidden";
-  fly.animate([{ transform: onto(at, pane) }, { transform: "none" }], { duration: FLY_MS, easing: EASE }).onfinish = () => {
-    fly.remove();
-    tile.style.visibility = "";
-  };
-}
-
-function finish() {
-  leaving = false;
-  root.hidden = true;
-  root.classList.remove("leaving", "opening");
-  window.clearInterval(timer);
-  screens.clear();
-  root.replaceChildren();
-}
-
 /**
- * The screen grows into its pane and the board fades around it. The pane
- * shows under the board from the start, so the screen lands on it.
- * `show` puts it there first: a picked session, or a maximize.
+ * What the motion code (missionMotion.ts) drives. The board owns what shows;
+ * the motion owns when and how it comes and goes.
  */
-function flyHome(id: string, show?: () => void, target?: () => DOMRect) {
-  const tile = tileOf(id);
-  if (!tile || still()) {
-    show?.();
-    return finish();
-  }
-  const { fly, at } = flier(tile);
-  root.classList.add("leaving");
-  show?.();
-  const go = (to: DOMRect) =>
-    (fly.animate([{ transform: "none", opacity: 1 }, { transform: onto(at, to), opacity: 1, offset: 0.8 }, { transform: onto(at, to), opacity: 0 }], {
-      duration: FLY_MS,
-      easing: EASE,
-      fill: "forwards",
-    }).onfinish = finish);
-  // A known target flies at once. A pane is laid out first: two frames.
-  if (target) return void go(target());
-  requestAnimationFrame(() => requestAnimationFrame(() => go(paneRect(id))));
-}
-
-/** `go`: the session to show. `max`: maximize its pane. Without `go`, back to the panes as they were. */
-export function closeMission(go?: string, max = false) {
-  if (!missionOpen() || leaving) return;
-  leaving = true;
-  // No rebuild under the animation.
-  window.clearInterval(timer);
-  if (go) {
-    const host = () => document.getElementById("terminal-host")!.getBoundingClientRect();
-    return flyHome(
-      go,
-      () => {
-        revealSession(go);
-        // Maximized from here, a restore comes back here.
-        if (max && !S.maximized) {
-          toggleMaximize();
-          drop();
-          maxReturn.to = () => void openMission();
-        }
-      },
-      max ? host : undefined,
-    );
-  }
-  if (returnTo?.isConnected) returnTo.focus();
-  else refocusTerminal();
-  // The focused pane's screen grows back into it.
-  const home = S.focused && document.querySelector(`.cell[data-session="${CSS.escape(S.focused)}"]`) ? S.focused : null;
-  if (home) return flyHome(home);
-  if (still()) return finish();
-  root.animate([{ opacity: 1 }, { opacity: 0, transform: "scale(1.015)" }], { duration: 140, easing: "ease-in" }).onfinish = finish;
-}
-
-/** Ctrl+Shift+Enter here: the lit session, maximized. */
-export function maximizeLit() {
-  if (lit) closeMission(lit, true);
-}
-
-export function toggleMission() {
-  if (missionOpen()) closeMission();
-  else void openMission();
-}
+export const board = {
+  root,
+  lit: () => lit,
+  tile: tileOf,
+  /** Builds the board lit on `focus` and reads every screen once. Shows nothing. */
+  async prepare(focus: string | null) {
+    lit = focus;
+    shape = signature();
+    build();
+    await read();
+  },
+  /** With the root shown: scroll the lit screen into view and keep the screens fresh. */
+  start() {
+    light(lit ?? "");
+    window.clearInterval(timer);
+    timer = window.setInterval(tick, TICK);
+  },
+  /** No rebuild or read from here on: an animation is about to measure. */
+  stop() {
+    window.clearInterval(timer);
+  },
+  /** Empty and hidden. */
+  clear() {
+    window.clearInterval(timer);
+    root.hidden = true;
+    screens.clear();
+    root.replaceChildren();
+  },
+};
 
 root.addEventListener("click", (e) => {
   const t = (e.target as Element).closest<HTMLElement>(".mission-tile");

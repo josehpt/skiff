@@ -25,7 +25,8 @@ import { fontTarget, setFontSize, stepPaneFont } from "../terminal/terminalFont"
 import { modeGate, modeKeyBlocked, toggleFocusMode, toggleMaximize } from "./modes";
 import { closePane, focusNextWaiting, goBack, moveFocus, removeFromGroup } from "../workspace/view";
 import { switcher } from "./commandUi";
-import { maximizeLit, missionOpen, toggleMission } from "../workspace/missionControl";
+import { missionOpen } from "../workspace/missionControl";
+import { maximizeLit, toggleMission } from "../workspace/missionMotion";
 import { showShortcuts } from "../ui/infoDialogs";
 import { groupThemeMenu, projectThemeMenu, sessionThemeMenu } from "../appearance/themes";
 function openNewSession() {

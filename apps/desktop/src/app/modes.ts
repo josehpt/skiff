@@ -78,7 +78,12 @@ function stepPane(dir: 1 | -1) {
   focusPane(next);
 }
 
+/** The view has one pane: focus mode and maximize look the same, so they are one state. */
+const onePane = () => shownIds().filter((id) => !isSlot(id)).length === 1;
+
 export function toggleFocusMode() {
+  // One pane: focus mode is maximize. A second press leaves it, never a step back to the other.
+  if (onePane() && !maxReturn.to) return hidden() ? leaveModes() : toggleMaximize();
   // From maximize, focus mode shows the view's panes again with the chrome still hidden.
   if (S.maximized) {
     S.focusMode = true;
@@ -101,7 +106,8 @@ export function toggleMaximize() {
   if (S.maximized) {
     const back = maxReturn.to;
     maxReturn.to = null;
-    if (!back) return restore();
+    // One pane: out of maximize is out of focus mode too.
+    if (!back) return onePane() ? leaveModes() : restore();
     back(() => {
       stillNext();
       restore();
@@ -109,6 +115,8 @@ export function toggleMaximize() {
     return;
   }
   if (!S.focused || !shownIds().includes(S.focused)) return;
+  // One pane in focus mode already fills the window: the key leaves it.
+  if (onePane() && S.focusMode) return leaveModes();
   S.maximized = S.focused;
   enter();
 }

@@ -192,7 +192,7 @@ export const DESCRIBE: [string, Action, string][] = [
   ["View", "focus-right", "Focus the pane to the right"],
   ["View", "focus-up", "Focus the pane above"],
   ["View", "focus-down", "Focus the pane below"],
-  ["View", "focus-mode", "Focus mode: hide the list and bars. On a session or group row, not a worktree, Changes or Files. From maximize it shows the view's panes again. Ctrl+Shift+Up/Down step through them. Going to another view ends it"],
+  ["View", "focus-mode", "Focus mode: hide the list and bars. On a session or group row, not a worktree, Changes or Files. From maximize it shows the view's panes again. Ctrl+Shift+Up/Down step through them. Going to another view ends it. With one pane it is maximize, and either key leaves it"],
   ["View", "maximize", "Maximize the focused pane, and hide the rest. On a session row only. Ctrl+Shift+Up/Down maximize the next pane of the view. Press again to go back. In mission control, the lit session; pressed again, back to mission control"],
   ["View", "mission-control", "Mission control: every session's screen, one lane per fleet. Click or Enter goes to a session. Press again or Esc to close"],
   ["View", "font-bigger", "Bigger text. On a session, its pane only: a terminal with the keys, or a session row"],

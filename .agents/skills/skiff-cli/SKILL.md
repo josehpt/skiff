@@ -74,6 +74,12 @@ after delivery is confirmed.
 - Use one `skiff wait S --for idle --timeout 45` at a time. Keep each wait below
   the shell tool's time limit and at most 60 seconds. Resume an outstanding shell
   call before starting another wait. Give a short progress update when needed.
+- For several children, use `skiff wait S1 S2 S3 --any --for idle --timeout 45`.
+  It returns when the first one stops and prints that session's id. Read that
+  screen, then wait again on the rest.
+- To keep your own turn free for the user, run `skiff events --json [S...]` as a
+  background job. It prints one line for each state change, exit or removal, and
+  no screen text. After any line, read that screen with `peek`.
 - After a successful wait, read the screen. `idle` can occur before the agent
   starts, during a tool call, or while it thinks. If the task still runs, wait again.
 - On timeout, read the screen and state. Continue when the task is still running.
@@ -110,6 +116,8 @@ the user's requested scope; a named existing pane can handle a single task.
 | Send a file or long prompt | `skiff send S - --enter < prompt.md` |
 | Read the screen | `skiff peek S [-n 40]` |
 | Wait for it to stop | `skiff wait S --for idle [--timeout 600]` |
+| Wait for the first of several to stop | `skiff wait S1 S2 --any --for idle [--timeout 600]` |
+| Follow state changes | `skiff events [--json] [S...] [--timeout N]` |
 | Wait for an approval prompt | `skiff wait S --for waiting` |
 | Rename | `skiff rename S "name"` |
 | Mark seen | `skiff seen S` |
@@ -148,12 +156,22 @@ After the bytes go in, one more check applies:
 
 | Exit | Meaning |
 |---|---|
-| 0 | Every session reached the state. |
+| 0 | Every session reached the state. With `--any`: one session reached it. Its id, name and state print on stdout. |
 | 1 | Timeout. |
-| 2 | A session closed or exited before it reached the state. |
+| 2 | A session closed or exited before it reached the state. With `--any`: every session did. |
 | 3 | A session is `waiting`. Check its pane. |
 
 With `--for idle`, `done` or `any-not-working`, `wait` stops at once with exit 3 when any session is `waiting`, at the start or later. `--for waiting` does not change.
+
+`events` prints one line for each state change, exit or removal. With `--json`, each line is one object: `{"event":"state","session":ID,"name":N,"state":"idle"}`, `{"event":"exit",...,"code":0}` or `{"event":"removed",...}`. It runs until Ctrl+C or `--timeout`.
+
+| Exit | Meaning |
+|---|---|
+| 0 | `--timeout` ran out, or every named session was removed. |
+| 1 | Error. |
+| 2 | A name matches no session. |
+
+`idle` in an event means quiet, not done. Read the screen with `peek` before you act on it.
 
 ## Recipes
 

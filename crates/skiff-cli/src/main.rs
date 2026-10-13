@@ -11,6 +11,7 @@ use layout::Side;
 mod attach;
 mod callsign;
 mod daemon;
+mod events;
 mod groups;
 mod info;
 mod layout;
@@ -111,14 +112,32 @@ enum Cmd {
     /// Wait until sessions reach a state. Exit 0 when all do, 1 on timeout,
     /// 2 when one closes or exits first, 3 when one is waiting.
     #[command(
-        after_help = "Exit codes:\n  0  every session reached the state\n  1  timeout\n  2  a session closed or exited before it reached the state\n  3  a session is waiting (approval prompt or bell). A person answers it in its pane.\nWith --for idle, done or any-not-working, wait stops at once when any session is waiting. --for waiting is not changed.\nGive each wait a --timeout. After exit 0, read the screen with `skiff peek`: idle does not prove that an agent finished."
+        after_help = "Exit codes:\n  0  every session reached the state. With --any: one session reached it. Its id, name and state print on stdout.\n  1  timeout\n  2  a session closed or exited before it reached the state. With --any: every session did.\n  3  a session is waiting (approval prompt or bell). A person answers it in its pane.\nWith --for idle, done or any-not-working, wait stops at once when any session is waiting. --for waiting is not changed.\nGive each wait a --timeout. After exit 0, read the screen with `skiff peek`: idle does not prove that an agent finished."
     )]
     Wait {
         #[arg(required = true)]
         sessions: Vec<String>,
         #[arg(long = "for", value_enum, value_name = "STATE")]
         target: wait::Target,
+        /// Stop when the first session reaches the state.
+        #[arg(long)]
+        any: bool,
         /// Give up after this many seconds.
+        #[arg(long, value_name = "SECS")]
+        timeout: Option<f64>,
+    },
+    /// Print each state change, exit and removal as one line, for every
+    /// session or for the named ones. Runs until Ctrl+C or --timeout.
+    #[command(
+        after_help = "Lines: a state change prints the new state, an exit prints `exit` and the code, a closed session prints `removed`. No output or screen text prints.\nWith --json, each line is one JSON object:\n  {\"event\":\"state\",\"session\":ID,\"name\":NAME,\"state\":\"idle\"}\n  {\"event\":\"exit\",\"session\":ID,\"name\":NAME,\"code\":0}\n  {\"event\":\"removed\",\"session\":ID,\"name\":NAME}\nExit codes:\n  0  --timeout ran out, or every named session was removed\n  1  error\n  2  a name matches no session\nRun it in the background so your own turn stays free. idle means quiet, not done. After any line, read the screen with `skiff peek`."
+    )]
+    Events {
+        /// Default: every session, also the ones started later.
+        sessions: Vec<String>,
+        /// One JSON object for each line.
+        #[arg(long)]
+        json: bool,
+        /// Stop after this many seconds.
         #[arg(long, value_name = "SECS")]
         timeout: Option<f64>,
     },
@@ -351,7 +370,7 @@ fn main() {
     }
 }
 
-/// The exit code. Only `wait` and `send` return other than 0.
+/// The exit code. Only `wait`, `events` and `send` return other than 0.
 async fn run(cli: Cli) -> Result<i32> {
     let socket = cli.socket.unwrap_or_else(skiff_core::socket::socket_path);
     match cli.cmd {
@@ -366,8 +385,11 @@ async fn run(cli: Cli) -> Result<i32> {
         _ => {}
     }
     let c = connect(&socket).await?;
-    if let Cmd::Wait { sessions, target, timeout } = &cli.cmd {
-        return wait::wait(&c, sessions, *target, *timeout).await;
+    if let Cmd::Wait { sessions, target, any, timeout } = &cli.cmd {
+        return wait::wait(&c, sessions, *target, *any, *timeout).await;
+    }
+    if let Cmd::Events { sessions, json, timeout } = &cli.cmd {
+        return events::events(&c, sessions, *json, *timeout).await;
     }
     if let Cmd::Send { session, text, enter, raw, shell } = &cli.cmd {
         let o = sessions::Send { text, enter: *enter, raw: *raw, shell: *shell };
@@ -387,7 +409,7 @@ async fn run(cli: Cli) -> Result<i32> {
         Cmd::Seen { session } => sessions::seen(&c, &session).await,
         Cmd::Agents { json } => info::agents(&c, json).await,
         Cmd::Theme { cmd: ThemeCmd::Session { cmd } } => theme::session(&c, cmd).await,
-        Cmd::Status | Cmd::Daemon(_) | Cmd::Projects { .. } | Cmd::Theme { .. } | Cmd::OpenWith { .. } | Cmd::Wait { .. } | Cmd::Send { .. } => {
+        Cmd::Status | Cmd::Daemon(_) | Cmd::Projects { .. } | Cmd::Theme { .. } | Cmd::OpenWith { .. } | Cmd::Wait { .. } | Cmd::Events { .. } | Cmd::Send { .. } => {
             unreachable!()
         }
     }

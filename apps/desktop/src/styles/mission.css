@@ -7,6 +7,8 @@
 .mission-frame { position: fixed; z-index: 61; box-sizing: border-box; border: calc(2 * var(--u)) solid var(--pc); pointer-events: none; transform: translateZ(0); }
 /* One frame at a time: the lit screen's own frame waits while the flying one moves. */
 .mission.flying .mission-tile.lit::after { visibility: hidden; }
+/* WebKitGTK paints overlay scrollbars above every layer, at full opacity. While the board fades, its lanes do not scroll. */
+.mission.fading .mission-lane { overflow-y: hidden; }
 
 .mission-lanes { flex: 1; min-height: 0; display: flex; overflow-x: auto; }
 .mission-lane { flex: 0 0 max(25%, calc(300 * var(--u))); min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--rule); overflow-y: auto; }

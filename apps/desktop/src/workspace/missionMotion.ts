@@ -35,7 +35,7 @@ function settle() {
   for (const a of running.splice(0)) a.cancel();
   frame?.remove();
   frame = null;
-  board.root.classList.remove("flying");
+  board.root.classList.remove("flying", "fading");
   board.root.style.removeProperty("opacity");
   board.root.style.removeProperty("pointer-events");
   end?.();
@@ -90,6 +90,7 @@ function fly(id: string, from: DOMRect, to: DOMRect): Animation {
 }
 
 function fade(from: number, to: number): Animation {
+  board.root.classList.add("fading");
   return board.root.animate([{ opacity: from }, { opacity: to }], { duration: MC_MS, easing: EASE, fill: "forwards" });
 }
 

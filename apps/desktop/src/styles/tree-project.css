@@ -132,6 +132,7 @@ body.dragging-tree, body.dragging-tree * { cursor: grabbing !important; user-sel
 .fleet-head:hover { color: var(--text-2); }
 
 /* The Skiff agent (#95): one session row above the projects, in line with the section heads. */
-.session-row.skiff-agent-row { margin-top: calc(4 * var(--u)); padding-left: calc(16 * var(--u)); }
+/* The Skiff agent: a full 40px row, flush at the top. The Projects divider's rule closes it, in line with the pane header. */
+.session-row.skiff-agent-row { height: var(--row); padding-left: calc(16 * var(--u)); }
 .skiff-agent-row .skiff-agent-name { flex-shrink: 0; font-size: calc(12px * var(--zoom, 1)); font-weight: 600; color: var(--text); }
 .skiff-agent-row:not([data-session]) .title { color: var(--text-dim); }

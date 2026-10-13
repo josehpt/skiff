@@ -90,8 +90,17 @@ export function toggleFocusMode() {
   enter();
 }
 
+/** Where a restore goes: set when mission control maximized the pane, so a restore reopens it. Another way out forgets it. */
+export const maxReturn = { to: null as (() => void) | null };
+
 export function toggleMaximize() {
-  if (S.maximized) return restore();
+  if (S.maximized) {
+    const back = maxReturn.to;
+    maxReturn.to = null;
+    restore();
+    back?.();
+    return;
+  }
   if (!S.focused || !shownIds().includes(S.focused)) return;
   S.maximized = S.focused;
   enter();
@@ -196,6 +205,7 @@ function enter() {
 export function leaveModes() {
   S.focusMode = false;
   S.maximized = null;
+  maxReturn.to = null;
   if (S.focused) focusPane(S.focused);
   else render();
 }
@@ -205,6 +215,7 @@ export function settleModes() {
   const shown = shownIds();
   if (S.maximized && (S.maximized !== S.focused || !shown.includes(S.maximized))) {
     S.maximized = null;
+    maxReturn.to = null;
   }
   // A split or a closed pane keeps some of the sessions. Another view keeps none.
   if (S.focusMode && !shown.some((id) => seen.includes(id))) S.focusMode = false;

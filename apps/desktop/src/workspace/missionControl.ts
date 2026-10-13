@@ -149,9 +149,9 @@ function themed(el: HTMLElement, p: Project | null) {
 }
 
 /**
- * A big sideways scrollbar under the lanes, in place of the thin native one:
- * drag the thumb; a press on the track pages toward it; the wheel over it
- * scrolls sideways.
+ * A big sideways scrollbar under the lanes, in place of the thin native one.
+ * Drag the thumb. A press on the track puts the thumb there and drags on.
+ * The wheel over it scrolls sideways. No snap, no pages: the board follows the pointer.
  */
 function scrollbar(board: HTMLElement): HTMLElement {
   const track = h("div", "mission-scroll");
@@ -168,14 +168,14 @@ function scrollbar(board: HTMLElement): HTMLElement {
   track.addEventListener("pointerdown", (e) => {
     if (e.button !== 0) return;
     e.preventDefault();
+    const scale = board.scrollWidth / track.clientWidth;
+    // On the track: the thumb's middle jumps under the pointer first.
     if (e.target !== thumb) {
-      const page = board.clientWidth * (e.clientX < thumb.getBoundingClientRect().left ? -1 : 1);
-      board.scrollBy({ left: page, behavior: "smooth" });
-      return;
+      const t = thumb.getBoundingClientRect();
+      board.scrollLeft += (e.clientX - (t.left + t.width / 2)) * scale;
     }
     const x0 = e.clientX;
     const left0 = board.scrollLeft;
-    const scale = board.scrollWidth / track.clientWidth;
     track.setPointerCapture(e.pointerId);
     track.classList.add("dragging");
     const move = (m: PointerEvent) => (board.scrollLeft = left0 + (m.clientX - x0) * scale);

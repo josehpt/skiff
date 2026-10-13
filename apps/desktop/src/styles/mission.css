@@ -42,10 +42,9 @@ body.kbd .mission:focus { outline: 0; }
 /* The last project fills its lane to the bottom, so no app-theme gap shows under it. */
 .mission-group:last-child { flex-grow: 1; }
 
-/* Lanes snap into place. The strip below stands in for the native scrollbar. */
-.mission-lanes { scroll-snap-type: x proximity; scrollbar-width: none; }
+/* The scrollbar below stands in for the native one. */
+.mission-lanes { scrollbar-width: none; }
 .mission-lanes::-webkit-scrollbar { display: none; height: 0; }
-.mission-lane { scroll-snap-align: start; }
 
 /* The sideways scrollbar: a wide track and a big thumb, easy to see and to grab. */
 .mission-scroll { position: relative; height: calc(16 * var(--u)); flex-shrink: 0; border-top: 1px solid var(--rule); background: var(--bg-deep); cursor: pointer; user-select: none; touch-action: none; }

@@ -2,16 +2,10 @@
 .mission { transform: translateZ(0); isolation: isolate; position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column; background: var(--bg); outline: none; }
 .mission[hidden] { display: none; }
 
-/* Open: the board zooms out from the window, then the lanes rise one after another. One shot, transforms only. */
-.mission.opening { animation: mission-in 180ms cubic-bezier(0.2, 0.8, 0.2, 1); }
-.mission.opening .mission-lane { animation: mission-lane-in 260ms cubic-bezier(0.2, 0.8, 0.2, 1) both; animation-delay: calc(var(--i, 0) * 40ms); }
-@keyframes mission-in { from { opacity: 0; transform: scale(1.04); } }
-@keyframes mission-lane-in { from { opacity: 0; transform: translateY(calc(24 * var(--u))); } }
-/* Go: the picked screen flies to its pane; the rest fades. */
-.mission.leaving { background: transparent; transition: background 200ms ease-in; }
-.mission.leaving > :not(.mission-fly) { opacity: 0; transition: opacity 160ms ease-in; }
-.mission-fly { position: fixed; z-index: 2; margin: 0; transform-origin: 0 0; box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5); }
-@media (prefers-reduced-motion: reduce) { .mission.opening, .mission.opening .mission-lane { animation: none; } }
+/* Open and close: the board only fades. The focus frame flies between the pane and its screen, over the board. */
+.mission-frame { position: fixed; z-index: 61; box-sizing: border-box; border: calc(2 * var(--u)) solid var(--pc); pointer-events: none; transform: translateZ(0); }
+/* One frame at a time: the lit screen's own frame waits while the flying one moves. */
+.mission.flying .mission-tile.lit::after { visibility: hidden; }
 
 .mission-bar { height: calc(40 * var(--u)); flex-shrink: 0; display: flex; align-items: center; gap: calc(16 * var(--u)); padding: 0 calc(16 * var(--u)); border-bottom: 1px solid var(--rule); background: var(--bg-deep); font-size: calc(12px * var(--zoom, 1)); color: var(--text-3); white-space: nowrap; overflow: hidden; }
 .mission-name { font-size: calc(13px * var(--zoom, 1)); font-weight: 600; color: var(--text); }

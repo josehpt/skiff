@@ -90,15 +90,22 @@ export function toggleFocusMode() {
   enter();
 }
 
-/** Where a restore goes: set when mission control maximized the pane, so a restore reopens it. Another way out forgets it. */
-export const maxReturn = { to: null as (() => void) | null };
+/**
+ * Where a restore goes: set when mission control maximized the pane, so a
+ * restore reopens it. Mission control opens over the maximized pane first and
+ * calls `restore` when it covers it. Another way out forgets it.
+ */
+export const maxReturn = { to: null as ((restore: () => void) => void) | null };
 
 export function toggleMaximize() {
   if (S.maximized) {
     const back = maxReturn.to;
     maxReturn.to = null;
-    restore();
-    back?.();
+    if (!back) return restore();
+    back(() => {
+      stillNext();
+      restore();
+    });
     return;
   }
   if (!S.focused || !shownIds().includes(S.focused)) return;
@@ -151,6 +158,12 @@ type Before = {
   ghosts: { el: HTMLElement; rect: DOMRect }[];
 };
 let before: Before | null = null;
+let quiet = false;
+
+/** The next render changes the mode without a slide: mission control covers the panes. */
+export function stillNext() {
+  quiet = true;
+}
 let wasHidden = false;
 let wasMaximized: string | null = null;
 
@@ -213,6 +226,8 @@ export function leaveModes() {
 
 /** Runs before each render: a move away from the view ends the mode. */
 export function settleModes() {
+  const still = quiet;
+  quiet = false;
   const shown = shownIds();
   if (S.maximized && (S.maximized !== S.focused || !shown.includes(S.maximized))) {
     S.maximized = null;
@@ -224,7 +239,7 @@ export function settleModes() {
   if (hidden() === wasHidden && S.maximized === wasMaximized) return;
   // Read the visible positions before cancelling an interrupted transition.
   const oldCells = cells();
-  before = reduced() ? null : {
+  before = still || reduced() ? null : {
     area: host.getBoundingClientRect(),
     panes: new Map(oldCells.map((cell) => [cell.dataset.session!, cell.getBoundingClientRect()])),
     chrome: new Map(chrome().map((el) => {

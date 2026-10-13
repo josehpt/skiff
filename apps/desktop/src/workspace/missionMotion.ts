@@ -1,118 +1,175 @@
 /**
  * How mission control (#88) comes and goes: open, close, go to a session,
  * maximize one, and come back from that maximize. missionControl.ts is the board.
+ *
+ * The board only fades. The one thing that moves is the focus frame: it flies
+ * from the focused pane to its screen on open, and back on close. All layout
+ * work happens first, under a board at opacity 0 or 1; then both rects are
+ * measured once, and the motion plays.
  */
 
 import { S } from "../app/state";
-import { drop, maxReturn, toggleMaximize } from "../app/modes";
+import { maxReturn, stillNext, toggleMaximize } from "../app/modes";
 import { board, missionOpen } from "./missionControl";
 import { refocusTerminal, revealSession } from "./view";
 
-let returnTo: HTMLElement | null = null;
-let leaving = false;
-let starting = false;
-
+const MC_MS = 160;
+const EASE = "cubic-bezier(0.2, 0, 0, 1)";
 const still = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
-const EASE = "cubic-bezier(0.2, 0.8, 0.2, 1)";
-const FLY_MS = 200;
 
-/** Where a session's pane is on screen: its cell, else the terminal area. */
-function paneRect(id: string): DOMRect {
-  const el = document.querySelector(`.cell[data-session="${CSS.escape(id)}"]`) ?? document.getElementById("terminal-host");
-  return el?.getBoundingClientRect() ?? new DOMRect(0, 0, innerWidth, innerHeight);
+let returnTo: HTMLElement | null = null;
+/** Each transition has a number. An async step that finds another number stops. */
+let gen = 0;
+/** An open waits for the board to read its screens. A second open waits with it. */
+let preparing = false;
+/** The end of the running transition, and its animations. */
+let done: (() => void) | null = null;
+let running: Animation[] = [];
+let frame: HTMLElement | null = null;
+
+/** Ends the running transition at once, in its end state. */
+function settle() {
+  gen++;
+  const end = done;
+  done = null;
+  for (const a of running.splice(0)) a.cancel();
+  frame?.remove();
+  frame = null;
+  board.root.classList.remove("flying");
+  board.root.style.removeProperty("opacity");
+  board.root.style.removeProperty("pointer-events");
+  end?.();
 }
 
-/** The transform that puts a box at `at` over the box at `to`. */
-function onto(at: DOMRect, to: DOMRect): string {
-  return `translate(${to.left - at.left}px, ${to.top - at.top}px) scale(${to.width / at.width}, ${to.height / at.height})`;
+/** Starts a transition: the running one ends first. Returns its number. */
+function begin(end: () => void): number {
+  settle();
+  done = end;
+  return gen;
 }
 
-/** A copy of the screen, fixed where the screen is, to fly over the lanes, which clip. */
-function flier(tile: HTMLElement): { fly: HTMLElement; at: DOMRect } {
-  const at = tile.getBoundingClientRect();
-  const fly = tile.cloneNode(true) as HTMLElement;
-  fly.classList.add("mission-fly", "lit");
-  Object.assign(fly.style, { left: `${at.left}px`, top: `${at.top}px`, width: `${at.width}px`, height: `${at.height}px` });
-  board.root.appendChild(fly);
-  return { fly, at };
+/** Plays the animations; the transition ends when they do. */
+function play(my: number, list: Animation[]) {
+  running = list;
+  Promise.all(list.map((a) => a.finished)).then(
+    () => my === gen && settle(),
+    () => {},
+  );
 }
 
-export async function openMission() {
-  if (missionOpen() || starting) return;
-  starting = true;
+/** A session's pane, when it is on screen. */
+function paneRect(id: string | null): DOMRect | null {
+  if (!id) return null;
+  const r = document.querySelector(`#terminal-host .cell[data-session="${CSS.escape(id)}"]`)?.getBoundingClientRect();
+  return r && r.width > 0 && r.height > 0 ? r : null;
+}
+
+/** A screen, when all of it shows in its lane: below the lane head and inside the lanes' sideways view. */
+function tileRect(id: string | null): DOMRect | null {
+  const tile = board.tile(id);
+  const lane = tile?.closest<HTMLElement>(".mission-lane");
+  const lanes = tile?.closest<HTMLElement>(".mission-lanes");
+  if (!tile || !lane || !lanes) return null;
+  const r = tile.getBoundingClientRect();
+  const l = lane.getBoundingClientRect();
+  const w = lanes.getBoundingClientRect();
+  const top = lane.querySelector(".mission-lane-head")?.getBoundingClientRect().bottom ?? l.top;
+  const fits = r.top >= top - 0.5 && r.bottom <= l.bottom + 0.5 && r.left >= Math.max(l.left, w.left) - 0.5 && r.right <= Math.min(l.right, w.right) + 0.5;
+  return fits ? r : null;
+}
+
+/** The 2px project-color frame, flown from one rect to the other over the board. */
+function fly(id: string, from: DOMRect, to: DOMRect): Animation {
+  frame = document.createElement("div");
+  frame.className = "mission-frame";
+  frame.style.setProperty("--pc", board.tile(id)?.style.getPropertyValue("--pc") ?? "");
+  document.body.appendChild(frame);
+  board.root.classList.add("flying");
+  const box = (r: DOMRect) => ({ left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` });
+  return frame.animate([box(from), box(to)], { duration: MC_MS, easing: EASE, fill: "forwards" });
+}
+
+function fade(from: number, to: number): Animation {
+  return board.root.animate([{ opacity: from }, { opacity: to }], { duration: MC_MS, easing: EASE, fill: "forwards" });
+}
+
+/** `after`: runs when the board covers the window, at the end of the open. */
+export async function openMission(after?: () => void) {
+  if (preparing) return;
+  settle();
+  if (missionOpen()) return after?.();
+  const my = gen;
+  preparing = true;
   returnTo = document.activeElement as HTMLElement | null;
-  const pane = S.focused && document.querySelector(`.cell[data-session="${CSS.escape(S.focused)}"]`) ? paneRect(S.focused) : null;
-  await board.prepare(S.focused);
-  starting = false;
+  const id = S.focused;
+  const pane = paneRect(id);
+  await board.prepare(id);
+  preparing = false;
+  if (my !== gen) {
+    // A close came first: nothing showed. A restore that waited on this open stays to be pressed again.
+    board.clear();
+    if (after) maxReturn.to = (restore) => void openMission(restore);
+    return;
+  }
+  const now = begin(() => after?.());
   const root = board.root;
+  const motion = !still();
+  if (motion) root.style.opacity = "0";
   root.hidden = false;
-  root.classList.remove("opening");
-  void root.offsetWidth;
-  root.classList.add("opening");
-  window.setTimeout(() => root.classList.remove("opening"), 600);
   root.focus();
   board.start();
-  const tile = board.tile(board.lit());
-  if (!pane || !tile || still()) return;
-  const { fly, at } = flier(tile);
-  tile.style.visibility = "hidden";
-  fly.animate([{ transform: onto(at, pane) }, { transform: "none" }], { duration: FLY_MS, easing: EASE }).onfinish = () => {
-    fly.remove();
-    tile.style.visibility = "";
-  };
-}
-
-function finish() {
-  leaving = false;
-  board.root.classList.remove("leaving", "opening");
-  board.clear();
-}
-
-function flyHome(id: string, show?: () => void, target?: () => DOMRect) {
-  const tile = board.tile(id);
-  if (!tile || still()) {
-    show?.();
-    return finish();
-  }
-  const { fly, at } = flier(tile);
-  board.root.classList.add("leaving");
-  show?.();
-  const go = (to: DOMRect) =>
-    (fly.animate([{ transform: "none", opacity: 1 }, { transform: onto(at, to), opacity: 1, offset: 0.8 }, { transform: onto(at, to), opacity: 0 }], {
-      duration: FLY_MS,
-      easing: EASE,
-      fill: "forwards",
-    }).onfinish = finish);
-  if (target) return void go(target());
-  requestAnimationFrame(() => requestAnimationFrame(() => go(paneRect(id))));
+  if (!motion) return settle();
+  const lit = board.lit();
+  const tile = pane ? tileRect(lit) : null;
+  play(now, pane && tile && lit ? [fade(0, 1), fly(lit, pane, tile)] : [fade(0, 1)]);
 }
 
 /** `go`: the session to show. `max`: maximize its pane. Without `go`, back to the panes as they were. */
 export function closeMission(go?: string, max = false) {
-  if (!missionOpen() || leaving) return;
-  leaving = true;
-  board.stop();
-  if (go) {
-    const host = () => document.getElementById("terminal-host")!.getBoundingClientRect();
-    return flyHome(
-      go,
-      () => {
-        revealSession(go);
-        if (max && !S.maximized) {
-          toggleMaximize();
-          drop();
-          maxReturn.to = () => void openMission();
-        }
-      },
-      max ? host : undefined,
-    );
+  if (preparing) {
+    gen++;
+    return;
   }
-  if (returnTo?.isConnected) returnTo.focus();
-  else refocusTerminal();
-  const home = S.focused && document.querySelector(`.cell[data-session="${CSS.escape(S.focused)}"]`) ? S.focused : null;
-  if (home) return flyHome(home);
-  if (still()) return finish();
-  board.root.animate([{ opacity: 1 }, { opacity: 0, transform: "scale(1.015)" }], { duration: 140, easing: "ease-in" }).onfinish = finish;
+  settle();
+  if (!missionOpen()) return;
+  board.stop();
+  const root = board.root;
+  const motion = !still();
+  if (!go) {
+    if (returnTo?.isConnected) returnTo.focus();
+    else refocusTerminal();
+    const id = S.focused;
+    const pane = motion ? paneRect(id) : null;
+    const tile = pane ? tileRect(id) : null;
+    const my = begin(() => board.clear());
+    if (!motion) return settle();
+    root.style.pointerEvents = "none";
+    play(my, pane && tile && id ? [fade(1, 0), fly(id, tile, pane)] : [fade(1, 0)]);
+    return;
+  }
+  // Under the opaque board: show the pane, maximize it, and let the layout settle. Nothing slides.
+  const my = begin(() => {
+    board.clear();
+    if (document.activeElement === root || document.activeElement === document.body) refocusTerminal();
+  });
+  stillNext();
+  revealSession(go);
+  if (max && !S.maximized) {
+    stillNext();
+    toggleMaximize();
+    maxReturn.to = (restore) => void openMission(restore);
+  }
+  refocusTerminal();
+  if (!motion) return settle();
+  requestAnimationFrame(() =>
+    requestAnimationFrame(() => {
+      if (my !== gen) return;
+      const pane = paneRect(go);
+      const tile = pane ? tileRect(go) : null;
+      root.style.pointerEvents = "none";
+      play(my, pane && tile ? [fade(1, 0), fly(go, tile, pane)] : [fade(1, 0)]);
+    }),
+  );
 }
 
 /** Ctrl+Shift+Enter here: the lit session, maximized. */
@@ -122,6 +179,6 @@ export function maximizeLit() {
 }
 
 export function toggleMission() {
-  if (missionOpen()) closeMission();
+  if (missionOpen() || preparing) closeMission();
   else void openMission();
 }

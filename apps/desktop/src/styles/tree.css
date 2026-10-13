@@ -8,7 +8,7 @@
 #sidebar-scroll { flex-grow: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
 /* WebKitGTK paints its overlay scrollbar above every layer, menus and dialogs too. While one is
    open the list cannot scroll anyway, so the scrollbar goes. It takes no room: nothing moves. */
-body:has(#ctx-menu:not([hidden]), #launch-menu:not([hidden]), #switcher:not([hidden]), #settings:not([hidden]), .confirm-overlay) #sidebar-scroll { overflow-y: hidden; }
+body:has(#ctx-menu:not([hidden]), #launch-menu:not([hidden]), #switcher:not([hidden]), #settings:not([hidden]), #mission-control:not([hidden]), .confirm-overlay) #sidebar-scroll { overflow-y: hidden; }
 
 .project-name { font-size: calc(22px * var(--zoom, 1)); font-weight: 700; color: var(--pc); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 

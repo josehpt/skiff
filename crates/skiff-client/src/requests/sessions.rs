@@ -101,6 +101,15 @@ impl Client {
         .await
     }
 
+    /// The session's last `rows` rows of text, without the agent's input box.
+    pub async fn screen(&self, session: &str, rows: u16) -> Result<Vec<String>> {
+        match self.request(Request::Screen { session: session.to_string(), rows }).await? {
+            Response::Screen { lines } => Ok(lines),
+            Response::Error { message } => bail!(message),
+            other => bail!("unexpected reply: {other:?}"),
+        }
+    }
+
     /// The session's pane has the keys. Clears its unread flag and agent exit.
     pub async fn seen(&self, session: &str) -> Result<()> {
         self.expect_ok(Request::Seen {

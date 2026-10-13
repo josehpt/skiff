@@ -72,6 +72,7 @@ function commands(): Cmd[] {
     ...groupCloseEntries(g).map((entry): Cmd => ({
       section: "View", label: entry.label, key: "", run: () => entry.run?.(), off: entry.disabled,
     })),
+    { section: "View", label: "Mission control", key: k("mission-control"), action: "mission-control", run: act("mission-control") },
     { section: "View", label: "Next waiting", key: k("next-waiting"), action: "next-waiting", run: act("next-waiting") },
     { section: "View", label: "Back to last session", key: k("back"), action: "back", run: act("back"), off: !S.previous },
     { section: "View", label: S.focusMode ? "Leave focus mode" : "Focus mode", key: k("focus-mode"), action: "focus-mode", run: act("focus-mode"), off: (!S.focusMode && !shown) || modeKeyBlocked("focus-mode") },

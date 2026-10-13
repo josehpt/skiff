@@ -78,7 +78,12 @@ function stepPane(dir: 1 | -1) {
   focusPane(next);
 }
 
+/** The view has one pane: focus mode and maximize look the same, so they are one state. */
+const onePane = () => shownIds().filter((id) => !isSlot(id)).length === 1;
+
 export function toggleFocusMode() {
+  // One pane: focus mode is maximize. A second press leaves it, never a step back to the other.
+  if (onePane() && !maxReturn.to) return hidden() ? leaveModes() : toggleMaximize();
   // From maximize, focus mode shows the view's panes again with the chrome still hidden.
   if (S.maximized) {
     S.focusMode = true;
@@ -90,9 +95,28 @@ export function toggleFocusMode() {
   enter();
 }
 
+/**
+ * Where a restore goes: set when mission control maximized the pane, so a
+ * restore reopens it. Mission control opens over the maximized pane first and
+ * calls `restore` when it covers it. Another way out forgets it.
+ */
+export const maxReturn = { to: null as ((restore: () => void) => void) | null };
+
 export function toggleMaximize() {
-  if (S.maximized) return restore();
+  if (S.maximized) {
+    const back = maxReturn.to;
+    maxReturn.to = null;
+    // One pane: out of maximize is out of focus mode too.
+    if (!back) return onePane() ? leaveModes() : restore();
+    back(() => {
+      stillNext();
+      restore();
+    });
+    return;
+  }
   if (!S.focused || !shownIds().includes(S.focused)) return;
+  // One pane in focus mode already fills the window: the key leaves it.
+  if (onePane() && S.focusMode) return leaveModes();
   S.maximized = S.focused;
   enter();
 }
@@ -123,7 +147,8 @@ function animate(el: HTMLElement, frames: Keyframe[], clean = () => {}) {
   };
 }
 
-function drop() {
+/** Ends the mode animations at once: under mission control nobody sees them. */
+export function drop() {
   for (const { animation, clean } of motion.splice(0)) {
     animation.cancel();
     clean();
@@ -141,6 +166,12 @@ type Before = {
   ghosts: { el: HTMLElement; rect: DOMRect }[];
 };
 let before: Before | null = null;
+let quiet = false;
+
+/** The next render changes the mode without a slide: mission control covers the panes. */
+export function stillNext() {
+  quiet = true;
+}
 let wasHidden = false;
 let wasMaximized: string | null = null;
 
@@ -196,15 +227,19 @@ function enter() {
 export function leaveModes() {
   S.focusMode = false;
   S.maximized = null;
+  maxReturn.to = null;
   if (S.focused) focusPane(S.focused);
   else render();
 }
 
 /** Runs before each render: a move away from the view ends the mode. */
 export function settleModes() {
+  const still = quiet;
+  quiet = false;
   const shown = shownIds();
   if (S.maximized && (S.maximized !== S.focused || !shown.includes(S.maximized))) {
     S.maximized = null;
+    maxReturn.to = null;
   }
   // A split or a closed pane keeps some of the sessions. Another view keeps none.
   if (S.focusMode && !shown.some((id) => seen.includes(id))) S.focusMode = false;
@@ -212,7 +247,7 @@ export function settleModes() {
   if (hidden() === wasHidden && S.maximized === wasMaximized) return;
   // Read the visible positions before cancelling an interrupted transition.
   const oldCells = cells();
-  before = reduced() ? null : {
+  before = still || reduced() ? null : {
     area: host.getBoundingClientRect(),
     panes: new Map(oldCells.map((cell) => [cell.dataset.session!, cell.getBoundingClientRect()])),
     chrome: new Map(chrome().map((el) => {

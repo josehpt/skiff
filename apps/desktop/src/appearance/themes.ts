@@ -44,6 +44,12 @@ function themeFor(p: Project | null | undefined): string {
   return knownTheme((p && projectThemes.get(p.name)) || S.appTheme);
 }
 
+/** The theme a project's part of the app takes: its own, else the app's. `null`: the app's. */
+export function appThemeOf(p: Project | null): TerminalTheme | null {
+  const id = themeFor(p);
+  return S.themes.find((t) => t.id === id) ?? null;
+}
+
 /** A terminal's theme: its own, else its project's, else the app's. */
 export function themeIdFor(s: SessionInfo | undefined): string {
   return s?.theme ? knownTheme(s.theme) : themeFor(s && place(s)?.project);

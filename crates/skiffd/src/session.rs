@@ -872,6 +872,17 @@ impl SessionPool {
         }
     }
 
+    /// The session's last rows of text, without the agent's input box.
+    pub fn tail_text(&self, id: &str, rows: usize) -> Result<Vec<String>> {
+        let session = self.get(id).ok_or_else(|| anyhow!("no such session: {id}"))?;
+        let agent = match session.front() {
+            Front::Agent(agent) => Some(agent),
+            _ => None,
+        };
+        let st = session.screen.lock().unwrap();
+        Ok(st.screen.tail_text(agent, rows))
+    }
+
     /// A client's pane for the session has the keys: the user has seen it.
     pub fn seen(&self, id: &str) -> Result<()> {
         let _change = self.change()?;

@@ -25,6 +25,8 @@ import { fontTarget, setFontSize, stepPaneFont } from "../terminal/terminalFont"
 import { modeGate, modeKeyBlocked, toggleFocusMode, toggleMaximize } from "./modes";
 import { closePane, focusNextWaiting, goBack, moveFocus, removeFromGroup } from "../workspace/view";
 import { switcher } from "./commandUi";
+import { missionOpen } from "../workspace/missionControl";
+import { maximizeLit, toggleMission } from "../workspace/missionMotion";
 import { showShortcuts } from "../ui/infoDialogs";
 import { groupThemeMenu, projectThemeMenu, sessionThemeMenu } from "../appearance/themes";
 function openNewSession() {
@@ -42,6 +44,9 @@ function openNewSession() {
 
 export function runAction(a: Action) {
   const shown = S.focused && shownIds().includes(S.focused);
+  // Mission control holds the keys as a dialog does. Its own key closes it; maximize opens the lit session.
+  if (missionOpen() && a === "maximize") return maximizeLit();
+  if (missionOpen() && a !== "mission-control" && a !== "quit") return;
   // The native menu runs its accelerators through here, not through the key handler.
   if (modeKeyBlocked(a) || modeGate(a)) return;
   // The open palette holds every other action; its own key closes it.
@@ -89,6 +94,7 @@ export function runAction(a: Action) {
     }
     case "close-pane": return closeKey(!!shown);
     case "next-waiting": return focusNextWaiting();
+    case "mission-control": return toggleMission();
     case "back": return goBack();
     case "rename": {
       // In the list, the row with the keys: arrowing to a row does not open it at once.

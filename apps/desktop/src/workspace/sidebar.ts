@@ -32,7 +32,7 @@ import { dragSessions, revealSession, selectWorktree, showGroup } from "./view";
 import { addProject } from "../app/panels";
 import { animateFold, growOpened } from "../ui/fold";
 import { dragTree } from "./treeDrag";
-import { fleetKey, folded, isOpen, openToFocused, projectBadge, projectKey, rollup, toggleRow, treeDrag, treeSections, type Section } from "./tree";
+import { bareWorktree, fleetKey, folded, isOpen, openToFocused, projectBadge, projectKey, rollup, toggleRow, treeDrag, treeSections, type Section } from "./tree";
 import { render } from "../app/renderRequest";
 
 /** 20px lines, flush against whatever follows. */
@@ -245,14 +245,6 @@ function sectionHead(sec: Section): HTMLElement {
   });
   head.addEventListener("mousedown", (e) => dragTree(e, head, sec.projects, name));
   return head;
-}
-
-/** A worktree that needs no row of its own: the only one, on its usual branch. Its sessions sit under the project. */
-function bareWorktree(p: Project): Worktree | null {
-  if (p.worktrees.length !== 1) return null;
-  const w = p.worktrees[0];
-  const usual = p.default_branch ? w.branch === p.default_branch : ["main", "master"].includes(w.branch ?? "");
-  return w.is_main && usual && !w.locked && !w.prunable && !removing.has(w.path) && !removeErrors.has(w.path) ? w : null;
 }
 
 /** A project: one 40px row, then its worktrees, groups and sessions while it is open. */

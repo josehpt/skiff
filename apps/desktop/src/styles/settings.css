@@ -1,5 +1,5 @@
-/* Settings covers the sidebar and the terminal, not the rail. */
-#settings { position: absolute; top: 0; bottom: 0; left: calc(72 * var(--u)); right: 0; z-index: 12; display: flex; background: var(--bg); }
+/* Settings covers the side panel and the terminal. */
+#settings { position: absolute; top: 0; bottom: 0; left: 0; right: 0; z-index: 12; display: flex; background: var(--bg); }
 #settings[hidden] { display: none; }
 .set-nav { width: calc(284 * var(--u)); flex-shrink: 0; display: flex; flex-direction: column; background: var(--bg-panel); border-right: 1px solid var(--rule); }
 .set-nav-head { height: calc(80 * var(--u)); display: flex; flex-direction: column; justify-content: center; gap: calc(4 * var(--u)); padding: 0 calc(16 * var(--u)); border-bottom: 1px solid var(--rule); }

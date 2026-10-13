@@ -1,0 +1,54 @@
+/* Mission control (#88): the whole window, one lane per fleet, one screen per session. Four lanes fit; more scroll sideways. */
+.mission { transform: translateZ(0); isolation: isolate; position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column; background: var(--bg); outline: none; }
+.mission[hidden] { display: none; }
+
+/* Open and close: the board only fades. The focus frame flies between the pane and its screen, over the board. */
+.mission-frame { position: fixed; z-index: 61; box-sizing: border-box; border: calc(2 * var(--u)) solid var(--pc); pointer-events: none; transform: translateZ(0); }
+/* One frame at a time: the lit screen's own frame waits while the flying one moves. */
+.mission.flying .mission-tile.lit::after { visibility: hidden; }
+
+.mission-bar { height: calc(40 * var(--u)); flex-shrink: 0; display: flex; align-items: center; gap: calc(16 * var(--u)); padding: 0 calc(16 * var(--u)); border-bottom: 1px solid var(--rule); background: var(--bg-deep); font-size: calc(12px * var(--zoom, 1)); color: var(--text-3); white-space: nowrap; overflow: hidden; }
+.mission-name { font-size: calc(13px * var(--zoom, 1)); font-weight: 600; color: var(--text); }
+.mission-waiting { color: var(--state-waiting-text); }
+
+.mission-lanes { flex: 1; min-height: 0; display: flex; overflow-x: auto; }
+.mission-lane { flex: 0 0 max(25%, calc(300 * var(--u))); min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--rule); overflow-y: auto; }
+/* z-index 3: the sticky head stays over the lit screen's frame (z-index 1) that scrolls under it. */
+.mission-lane-head { height: calc(40 * var(--u)); flex-shrink: 0; position: sticky; top: 0; z-index: 3; display: flex; align-items: center; gap: calc(10 * var(--u)); padding: 0 calc(12 * var(--u)); border-bottom: 1px solid var(--rule); background: var(--bg-panel); }
+.mission-lane-name { flex-grow: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(11px * var(--zoom, 1)); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-2); }
+.mission-project { height: calc(40 * var(--u)); flex-shrink: 0; display: flex; align-items: center; gap: calc(8 * var(--u)); padding: 0 calc(12 * var(--u)); border-bottom: 1px solid var(--rule); }
+.mission-project .project-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(13px * var(--zoom, 1)); font-weight: 600; color: var(--text); }
+
+.mission-tile { flex-shrink: 0; display: flex; flex-direction: column; width: 100%; padding: 0; border: 0; border-bottom: 1px solid var(--rule); background: var(--bg-deep); color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.mission-head { height: calc(20 * var(--u)); flex-shrink: 0; display: flex; align-items: center; gap: calc(6 * var(--u)); padding: 0 calc(10 * var(--u)); border-bottom: 1px solid var(--rule); background: var(--bg-panel); }
+.mission-head .title { flex-grow: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(12px * var(--zoom, 1)); color: var(--text-2); }
+.mission-head .where { font-size: calc(11px * var(--zoom, 1)); color: var(--text-dim); flex-shrink: 0; max-width: calc(90 * var(--u)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mission-tile.lit .mission-head { background: color-mix(in srgb, var(--pc) 12%, var(--bg-panel)); }
+.mission-tile.lit .mission-head .title { color: var(--text); }
+/* The lit screen is framed as the focused pane is: 2px of project color over the whole screen. */
+.mission-tile { position: relative; }
+.mission-tile.lit::after { content: ""; position: absolute; inset: 0; border: calc(2 * var(--u)) solid var(--pc); pointer-events: none; z-index: 1; }
+.mission-screen { margin: 0; height: calc(12 * 14 * var(--u) + 16 * var(--u)); padding: calc(8 * var(--u)) calc(10 * var(--u)); overflow: hidden; white-space: pre; font-family: var(--mono); font-size: calc(10px * var(--zoom, 1)); line-height: calc(14 * var(--u)); color: var(--text-3); }
+.mission-screen.note { color: var(--text-dim); white-space: normal; font-family: var(--font); }
+.mission-empty { margin: auto; color: var(--text-dim); }
+/* The board holds the keys; the lit screen is the only highlight. */
+body.kbd .mission:focus { outline: 0; }
+/* Scrolled to, a screen clears the sticky lane head. The first of a project brings its project row too. */
+.mission-tile { scroll-margin-top: calc(40 * var(--u)); }
+.mission-project + .mission-tile { scroll-margin-top: calc(80 * var(--u)); }
+.mission-none { height: calc(40 * var(--u)); flex-shrink: 0; display: flex; align-items: center; padding: 0 calc(12 * var(--u)); font-size: calc(12px * var(--zoom, 1)); color: var(--text-dim); }
+/* A project's part of a lane, in that project's theme. */
+.mission-group { flex-shrink: 0; display: flex; flex-direction: column; background: var(--bg); color: var(--text); }
+/* The last project fills its lane to the bottom, so no app-theme gap shows under it. */
+.mission-group:last-child { flex-grow: 1; }
+
+/* The scrollbar below stands in for the native one. */
+.mission-lanes { scrollbar-width: none; }
+.mission-lanes::-webkit-scrollbar { display: none; height: 0; }
+
+/* The sideways scrollbar: a wide track and a big thumb, easy to see and to grab. */
+.mission-scroll { position: relative; height: calc(28 * var(--u)); flex-shrink: 0; border-top: 1px solid var(--rule); background: var(--bg-deep); cursor: pointer; user-select: none; touch-action: none; }
+.mission-scroll[hidden] { display: none; }
+.mission-thumb { position: absolute; top: calc(4 * var(--u)); bottom: calc(4 * var(--u)); min-width: calc(64 * var(--u)); background: var(--rule-strong); cursor: grab; transition: background 120ms; }
+.mission-scroll:hover .mission-thumb { background: var(--text-dim); }
+.mission-scroll.dragging .mission-thumb { background: var(--text-3); cursor: grabbing; transition: none; }

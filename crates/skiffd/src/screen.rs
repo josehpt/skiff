@@ -227,6 +227,28 @@ impl Screen {
         }
     }
 
+    /// The last `n` rows of text above the agent's input box, for mission
+    /// control (#88). Reads the scrollback too, so a short screen still
+    /// fills. An approval prompt replaces the input box, so then nothing is
+    /// cut. Trailing blank rows are dropped.
+    pub fn tail_text(&self, agent: Option<&str>, n: usize) -> Vec<String> {
+        let grid = self.term.grid();
+        let rows: Vec<String> = (grid.topmost_line().0..grid.screen_lines() as i32)
+            .map(|l| row_text(&grid[Line(l)], grid.columns()))
+            .collect();
+        let screen_top = rows.len() - grid.screen_lines();
+        let mut end = rows.len();
+        if let Some(agent) = agent.filter(|a| !self.approval_prompt(a)) {
+            if let Some(cut) = input_box_top(&rows[screen_top..], agent, grid.columns()) {
+                end = screen_top + cut;
+            }
+        }
+        while end > 0 && rows[end - 1].is_empty() {
+            end -= 1;
+        }
+        rows[end.saturating_sub(n)..end].to_vec()
+    }
+
     pub fn resize(&mut self, cols: u16, rows: u16) {
         self.term.resize(size(cols, rows));
     }
@@ -368,6 +390,41 @@ pub fn has_busy_line(agent: &str) -> bool {
     matches!(agent, "claude" | "codex" | "opencode" | "gemini")
 }
 
+/// A row's characters, trailing spaces dropped.
+fn row_text(row: &alacritty_terminal::grid::Row<Cell>, cols: usize) -> String {
+    let mut s = String::with_capacity(cols);
+    for c in 0..cols {
+        let cell = &row[Column(c)];
+        if cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
+            continue;
+        }
+        s.push(if cell.c == '\0' { ' ' } else { cell.c });
+        if let Some(zw) = cell.zerowidth() {
+            s.extend(zw);
+        }
+    }
+    s.truncate(s.trim_end().len());
+    s
+}
+
+/// Where the agent's input box starts among the screen's rows, if it shows.
+/// Codex marks its input line with `›`. The others frame the box with a
+/// line of box-drawing characters (Claude Code's `───`, Gemini's `╭──╮`);
+/// the topmost such line near the bottom is the box's top.
+fn input_box_top(rows: &[String], agent: &str, cols: usize) -> Option<usize> {
+    let from = rows.len().saturating_sub(12);
+    let near = rows.iter().enumerate().skip(from);
+    if agent == "codex" {
+        return near.filter(|(_, r)| r.trim_start().starts_with('›')).map(|(i, _)| i).last();
+    }
+    let rule = |r: &str| {
+        let t = r.trim();
+        let n = t.chars().count();
+        n * 2 >= cols && t.chars().filter(|c| ('\u{2500}'..='\u{257f}').contains(c)).count() * 10 >= n * 8
+    };
+    near.filter(|(_, r)| rule(r)).map(|(i, _)| i).next()
+}
+
 fn size(cols: u16, rows: u16) -> TermSize {
     TermSize::new(cols.max(1) as usize, rows.max(1) as usize)
 }
@@ -501,6 +558,20 @@ mod tests {
         s.feed(b"an earlier line of the conversation\r\n\r\n");
         s.feed(rows.join("\r\n").as_bytes());
         s
+    }
+
+    #[test]
+    fn tail_text_cuts_the_input_box() {
+        let rule = "─".repeat(60);
+        let claude = screen_with(&["● Done. Tests pass.", "", &rule, "❯ ", &rule, "  ? for shortcuts"]);
+        assert_eq!(claude.tail_text(Some("claude"), 3), ["an earlier line of the conversation", "", "● Done. Tests pass."]);
+        let codex = screen_with(&["• Ran cargo test", "", "› Ask Codex to do anything", "", "  ? for shortcuts"]);
+        assert_eq!(codex.tail_text(Some("codex"), 1), ["• Ran cargo test"]);
+        // An approval prompt keeps the bottom rows.
+        let ask = screen_with(&[&rule, " Do you want to proceed?", " ❯ 1. Yes", "", " Esc to cancel · Tab to amend"]);
+        assert_eq!(ask.tail_text(Some("claude"), 1), [" Esc to cancel · Tab to amend"]);
+        // A shell keeps everything.
+        assert_eq!(claude.tail_text(None, 1), ["  ? for shortcuts"]);
     }
 
     // The rows below come from real screens: Claude Code 2.1.287, Codex

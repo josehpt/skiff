@@ -8,6 +8,7 @@ mod config;
 mod diagnostics;
 mod input;
 mod reload;
+mod skiff_agent;
 mod streaming;
 mod native_menu;
 #[cfg(target_os = "linux")]
@@ -50,6 +51,8 @@ pub fn run() {
         // The window starts hidden: GTK takes a header bar only before it shows.
         .setup(|app| {
             std::thread::spawn(cli_path::sync);
+            let handle = app.handle().clone();
+            std::thread::spawn(move || skiff_agent::sync(handle));
             let Some(window) = app.get_webview_window("main") else { return Ok(()) };
             #[cfg(target_os = "linux")]
             if header_bar::wanted() {
@@ -71,6 +74,8 @@ pub fn run() {
             clipboard::clipboard_read,
             connection::daemon_status,
             cli_path::install_cli,
+            skiff_agent::setup_skiff_agent,
+            skiff_agent::init_skiff_agent_repository,
             commands::list_sessions,
             commands::create_session,
             commands::pty_write,

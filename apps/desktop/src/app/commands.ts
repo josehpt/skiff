@@ -1,5 +1,6 @@
 import { runAction, openProjectMenu } from "./actions";
 import { showAbout } from "../ui/infoDialogs";
+import { setUpSkiffAgent } from "./skiffAgent";
 
 /** One command list for the menu bar and the palette; key actions. */
 import { type Action, keyLabel, menuAccel } from "./keys";
@@ -47,6 +48,7 @@ function commands(): Cmd[] {
     { section: "File", label: "New session…", key: k("new-session"), action: "new-session", run: act("new-session"), off: !currentWorktree() },
     { section: "File", label: "New worktree…", key: k("new-worktree"), action: "new-worktree", run: act("new-worktree"), off: !currentProject() },
     { section: "File", label: "Add project…", key: k("add-project"), action: "add-project", run: act("add-project") },
+    { section: "File", label: "Set up Skiff agent…", key: "", run: setUpSkiffAgent },
     { section: "File", label: "Open closed project…", key: "", run: openClosedMenu, off: !S.closedProjects.length },
     { section: "File", label: "Project menu…", key: "", run: openProjectMenu, off: !currentProject() },
     { section: "File", label: "Close project", key: "", run: () => withProject(closeProject), off: !currentProject() },

@@ -48,6 +48,13 @@ Keep task handoffs and result collection in this skill. No separate orchestratio
 skill is needed. The calling agent can run in Termius or any shell that can reach
 the same `skiffd`.
 
+The Skiff agent is the normal coordinator. It is one agent session in its own folder,
+default `~/skiff-agent`, set up with File › Set up Skiff agent… in Skiff. Its
+`AGENTS.md` is the user's standing authorization to send tasks to sessions in Skiff
+projects. Its `ledger.md` lists the open and pending tasks, with pane ids and result
+paths. Read the ledger before you send a task or report on pending work, and keep it
+current.
+
 ### Send a task
 
 1. Find the requested pane in the JSON list. Use its ID and confirm its working directory.
@@ -181,7 +188,8 @@ skiff g new --name pair "$a" "$b" --dir row
 
 - Never run `skiff attach`. It takes over the terminal and needs a person at the keys.
 - Do not `kill` a session, or remove a session from its group, unless the user asked for that session by name or you started it in this task.
-- Do not `send` into a session you did not start unless the user asked you to.
+- Do not `send` into a session you did not start unless the user asked you to. A request in the current conversation counts. A standing authorization in the instructions file of your own folder also counts, for example the Skiff agent's `AGENTS.md`. With it, you can send to any session in a Skiff project. All other checks stay: peek first, do not add to or submit a draft, do not retry, and obey every `send` and `wait` refusal.
+- A standing authorization covers `send` only. It does not cover `kill`, removal from a group, approvals or theme changes.
 - On exit 8 from `send`, run `skiff peek S`. If the text is in the input box, tell the user which pane holds it, with its name and id. Do not send the text again.
 - Only a person answers an approval. On exit 3 from `send` or `wait`, tell the user which pane needs them, with its name and id. End the turn. Do not answer the prompt. Do not retry until the user says to continue.
 - Give each `wait` a `--timeout` shorter than your shell tool's time limit.

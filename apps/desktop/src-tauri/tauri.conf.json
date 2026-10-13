@@ -43,6 +43,10 @@
     "shortDescription": "A minimalist workspace for coding agents",
     "longDescription": "Skiff keeps agent and shell sessions organized across projects and Git worktrees. Themes and terminal layouts help you keep track of your work. Editing and previews stay in the apps you already use. Sessions keep running when the window closes.",
     "license": "MIT",
+    "resources": {
+      "../../../.agents/skills/skiff-cli/": "skills/skiff-cli/",
+      "agent-template/": "agent-template/"
+    },
     "linux": {
       "deb": {
         "files": {

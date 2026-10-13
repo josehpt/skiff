@@ -233,8 +233,10 @@ function skiffAgentRow(): HTMLElement {
     row.setAttribute("aria-label", `${name}, the Skiff agent, not running`);
     row.append(launchIcon(a), h("span", "skiff-agent-name", name), h("span", "title", a ? `start ${a.id}` : "no agent on"));
     row.addEventListener("click", () => {
+      // The row is current before the start: newSession shows the pane only if
+      // the current row has not moved while the agent starts.
+      keepRow(SKIFF_AGENT_KEY);
       openSkiffAgent();
-      requestAnimationFrame(() => keepRow(SKIFF_AGENT_KEY));
     });
     return row;
   }

@@ -1,7 +1,7 @@
 import { h } from "../ui/dom";
 import type { AgentInfo } from "../platform/types";
 import type { SkiffAgentSettings } from "../app/skiffAgent";
-import { DEFAULT_NAME } from "../app/skiffAgent";
+import { DEFAULT_NAME, skiffAgentChoice } from "../app/skiffAgent";
 import { continueLine } from "../terminal/resume";
 
 /** One edit, as `set_skiff_agent` takes it. */
@@ -16,7 +16,7 @@ export type SkiffAgentEdit =
 export function skiffAgentSection(set: SkiffAgentSettings, agents: AgentInfo[], save: (e: SkiffAgentEdit) => void): HTMLElement[] {
   // Enabled agents and the user's own. A custom agent is on when the user added it.
   const choices = agents.filter((a) => a.enabled || a.custom);
-  const chosen = choices.find((a) => a.id === set.agent && a.installed) ?? agents.find((a) => a.enabled) ?? null;
+  const chosen = skiffAgentChoice(agents, set.agent);
 
   const name = textRow("Name", set.name ?? "", DEFAULT_NAME, (v) => save({ key: "name", value: v || null }));
 

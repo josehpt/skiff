@@ -40,10 +40,12 @@ export function skiffAgentName(): string {
   return S.skiffAgent?.name?.trim() || DEFAULT_NAME;
 }
 
-/** The agent the row starts: the one from Settings while it is installed, else the first enabled one. */
-export function skiffAgentChoice(): AgentInfo | null {
-  const id = S.skiffAgent?.agent;
-  return S.agents.find((a) => a.id === id && a.installed) ?? S.agents.find((a) => a.enabled) ?? null;
+/**
+ * The agent the row starts: the one from Settings while it is installed and
+ * on (a custom agent is on), else the first enabled one. Settings shows the same.
+ */
+export function skiffAgentChoice(agents: AgentInfo[] = S.agents, id = S.skiffAgent?.agent): AgentInfo | null {
+  return agents.find((a) => a.id === id && a.installed && (a.enabled || a.custom)) ?? agents.find((a) => a.enabled) ?? null;
 }
 
 /**

@@ -36,13 +36,14 @@ function offerProject(dir: string) {
     action: "Add project",
     tone: "go",
     submit: async () => {
+      // The folder gets its own repository, also inside another one.
       let folder = await invoke<FolderInfo>("inspect_folder", { path: dir });
-      if (!folder.root) {
-        await invoke("init_repository", { path: dir });
+      if (folder.root !== dir) {
+        await invoke("init_skiff_agent_repository", { path: dir });
         folder = await invoke<FolderInfo>("inspect_folder", { path: dir });
       }
       if (folder.error) throw folder.error;
-      if (folder.root !== dir) throw `${dir} is inside the git repository ${folder.root}. Add a project by hand.`;
+      if (folder.root !== dir) throw `Skiff could not start a git repository in ${dir}.`;
       const p = await invoke<Project>("add_project", { path: dir, name: folder.name, short: folder.short || null, color: folder.color, icon: null });
       const order = [p.name, ...S.projects.map((x) => x.name).filter((n) => n !== p.name)];
       await invoke("reorder_projects", { order });

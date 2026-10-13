@@ -11,7 +11,8 @@
 .mission.fading .mission-lane { overflow-y: hidden; }
 
 .mission-lanes { flex: 1; min-height: 0; display: flex; overflow-x: auto; }
-.mission-lane { flex: 0 0 max(25%, calc(300 * var(--u))); min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--rule); overflow-y: auto; }
+/* Lanes share the free width; past four they scroll sideways. */
+.mission-lane { flex: 1 0 max(25%, calc(300 * var(--u))); min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--rule); overflow-y: auto; }
 /* z-index 3: the sticky head stays over the lit screen's frame (z-index 1) that scrolls under it. */
 .mission-lane-head { height: calc(40 * var(--u)); flex-shrink: 0; position: sticky; top: 0; z-index: 3; display: flex; align-items: center; gap: calc(10 * var(--u)); padding: 0 calc(12 * var(--u)); border-bottom: 1px solid var(--rule); background: var(--bg-panel); }
 .mission-lane-name { flex-grow: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(11px * var(--zoom, 1)); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-2); }
@@ -35,7 +36,6 @@ body.kbd .mission:focus { outline: 0; }
 /* Scrolled to, a screen clears the sticky lane head. The first of a project brings its project row too. */
 .mission-tile { scroll-margin-top: calc(40 * var(--u)); }
 .mission-project + .mission-tile { scroll-margin-top: calc(80 * var(--u)); }
-.mission-none { height: calc(40 * var(--u)); flex-shrink: 0; display: flex; align-items: center; padding: 0 calc(12 * var(--u)); font-size: calc(12px * var(--zoom, 1)); color: var(--text-dim); }
 /* A project's part of a lane, in that project's theme. */
 .mission-group { flex-shrink: 0; display: flex; flex-direction: column; background: var(--bg); color: var(--text); }
 /* The last project fills its lane to the bottom, so no app-theme gap shows under it. */

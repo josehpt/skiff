@@ -119,14 +119,17 @@ function shown(): string[][] {
   return found ? order.map((l) => l.filter((id) => found!.has(id))) : order;
 }
 
-/** Each fleet is a lane, as in the tree; "Projects" only when it has sessions. Projects with no sessions are left out. */
+/**
+ * Each fleet is a lane, as in the tree, but only a fleet with sessions (#107).
+ * Projects with no sessions are left out too. The tree still shows both.
+ */
 function lanes(): Lane[] {
   return treeSections()
     .map((sec) => ({
       name: sec.fleet ?? "Projects",
       projects: sec.projects.map((p) => ({ p, list: projectSessions(p) })).filter((x) => x.list.length),
     }))
-    .filter((l, i) => l.projects.length || i > 0);
+    .filter((l) => l.projects.length);
 }
 
 /** The head's parts: state, agent, title, and the branch when it is not the main one. */
@@ -277,7 +280,6 @@ function build(all = lanes()) {
     head.appendChild(h("span", "mission-lane-name", l.name));
     roll(head, l);
     lane.appendChild(head);
-    if (!l.projects.length) lane.appendChild(h("div", "mission-none", "No sessions"));
     for (const { p, list } of l.projects) {
       const group = h("div", "mission-group");
       group.dataset.project = p.name;
@@ -375,7 +377,7 @@ function step(key: string): boolean {
   if (li < 0) return false;
   const at = order[li].indexOf(lit!);
   const near = (l: string[]) => l[Math.min(at, l.length - 1)];
-  // Left and Right skip a lane with no sessions.
+  // Left and Right skip a lane the search leaves empty.
   const next = (d: number) => {
     for (let i = li + d; i >= 0 && i < order.length; i += d) if (order[i].length) return near(order[i]);
     return lit!;

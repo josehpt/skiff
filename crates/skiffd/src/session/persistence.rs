@@ -1,6 +1,6 @@
 use super::{SessionPool, SavedSession, Workspace, SessionSpec, Arc, Path, SAVE_DELAY};
 use super::groups::prune;
-use crate::workspace;
+use crate::{paths, workspace};
 
 impl SessionPool {
     /// Every group and session as they stand. Exited sessions count: their
@@ -24,7 +24,7 @@ impl SessionPool {
 
     /// Writes the workspace file now. On shutdown, so the last changes count.
     pub fn save_now(&self) {
-        if let Err(e) = workspace::save(&workspace::path(), &self.workspace()) {
+        if let Err(e) = workspace::save(&paths::state(), &self.workspace()) {
             tracing::warn!("save workspace: {e:#}");
         }
     }
@@ -40,7 +40,7 @@ impl SessionPool {
                 // A reload saves on its own, and must not exec halfway through a save.
                 let saved = tokio::task::spawn_blocking(move || {
                     let Some(_quiet) = pool.quiet() else { return Ok(()) };
-                    workspace::save(&workspace::path(), &pool.workspace())
+                    workspace::save(&paths::state(), &pool.workspace())
                 })
                 .await;
                 if let Ok(Err(e)) = saved {
@@ -54,7 +54,7 @@ impl SessionPool {
     /// folder under its old id, so the layouts still point at it. A session
     /// that cannot start leaves its groups the way a kill would.
     pub fn restore(self: &Arc<Self>) {
-        let file = workspace::path();
+        let file = paths::state();
         let ws = match workspace::load(&file) {
             Ok(ws) => ws,
             Err(e) => {

@@ -55,6 +55,6 @@ pub(super) fn launch_command(spec: &SessionSpec, command: &str, cwd: &Path, id: 
     cmd.env("COLORTERM", "truecolor");
     // So the `skiff` CLI in a pane knows its own session and reaches this daemon.
     cmd.env("SKIFF_SESSION", id);
-    cmd.env("SKIFF_SOCKET", skiff_core::socket::socket_path());
+    cmd.env("SKIFF_SOCKET", crate::paths::socket());
     (cmd, is_shell)
 }

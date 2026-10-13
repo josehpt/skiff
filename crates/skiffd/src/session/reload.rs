@@ -49,7 +49,11 @@ use crate::{
 /// The handover file's format. Raise it when `Meta` or `SessionMeta` change
 /// in a way an older or newer daemon would misread. A change to the terminal
 /// state shows in [`fingerprint`] on its own.
-pub const HANDOVER: u32 = 1;
+pub const HANDOVER: u32 = 2;
+
+/// Handover versions this binary reads. Version 1 has no workspace file;
+/// the new image falls back to its own computed path.
+const READS: [u32; 2] = [1, HANDOVER];
 
 const MAGIC: &[u8; 8] = b"SKIFFHO\n";
 const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -69,7 +73,7 @@ pub struct ReloadInfo {
 pub fn reload_info() -> ReloadInfo {
     ReloadInfo {
         version: skiff_core::VERSION.to_string(),
-        handover: vec![HANDOVER],
+        handover: READS.to_vec(),
         fingerprint: fingerprint(),
     }
 }
@@ -99,6 +103,10 @@ fn fingerprint() -> String {
 #[derive(Serialize, Deserialize)]
 struct Meta {
     listener: i32,
+    /// The workspace file the old image saved to. The new image keeps it,
+    /// whatever a debug or release build would pick on its own.
+    #[serde(default)]
+    state: Option<PathBuf>,
     aliases: String,
     groups: Vec<Group>,
     sessions: Vec<SessionMeta>,
@@ -151,12 +159,16 @@ impl Handover {
     pub fn listener(&self) -> i32 {
         self.meta.listener
     }
+
+    pub fn state(&self) -> Option<&Path> {
+        self.meta.state.as_deref()
+    }
 }
 
 /// The handover file of this process, next to the socket. That folder is
 /// the daemon's own.
 fn handover_path() -> PathBuf {
-    let socket = skiff_core::socket::socket_path();
+    let socket = crate::paths::socket();
     socket.with_file_name(format!("skiffd-handover-{}", std::process::id()))
 }
 
@@ -292,6 +304,7 @@ impl SessionPool {
         );
         let meta = Meta {
             listener,
+            state: Some(crate::paths::state()),
             aliases: shellenv::aliases().to_string(),
             groups: self.groups.lock().unwrap().clone(),
             sessions: metas,
@@ -447,8 +460,8 @@ pub fn load(path: &Path) -> Result<Handover> {
         bail!("not a handover file");
     }
     let version = u32::from_le_bytes(bytes[take(4)?].try_into()?);
-    if version != HANDOVER {
-        bail!("handover version {version}; this skiffd reads {HANDOVER}");
+    if !READS.contains(&version) {
+        bail!("handover version {version}; this skiffd reads {READS:?}");
     }
     let len = word(take(8)?) as usize;
     let meta: Meta = serde_json::from_slice(&bytes[take(len)?])?;

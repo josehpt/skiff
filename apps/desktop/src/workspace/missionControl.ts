@@ -161,9 +161,8 @@ function build(all = lanes()) {
   counts(bar, ids);
 
   const board = h("div", "mission-lanes");
-  for (const [i, l] of all.entries()) {
+  for (const l of all) {
     const lane = h("section", "mission-lane");
-    lane.style.setProperty("--i", String(i));
     lane.setAttribute("aria-label", l.name);
     const head = h("div", "mission-lane-head");
     head.appendChild(h("span", "mission-lane-name", l.name));

@@ -295,7 +295,7 @@ async function read() {
       } catch (e) {
         if (paused) return;
         // An older skiffd does not know the request.
-        pre.textContent = /unknown variant|bad request/.test(String(e)) ? "Restart skiffd to see screens." : String(e);
+        pre.textContent = /unknown variant|bad request/.test(String(e)) ? "Update skiffd to see screens." : String(e);
         pre.classList.add("note");
       }
     }),

@@ -19,7 +19,7 @@ import { branchName, taskTitle } from "./model";
 import { worktreeLines } from "./sidebarLines";
 import { bareWorktree, projectBadge, rollup, treeSections } from "./tree";
 import { refocusTerminal, revealSession } from "./view";
-import { maxReturn, toggleMaximize } from "../app/modes";
+import { drop, maxReturn, toggleMaximize } from "../app/modes";
 
 /** Rows of text per screen. */
 const ROWS = 12;
@@ -203,12 +203,48 @@ export function missionOpen(): boolean {
   return !root.hidden;
 }
 
-export function openMission() {
-  if (missionOpen()) return;
+let leaving = false;
+let starting = false;
+
+const still = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+const EASE = "cubic-bezier(0.2, 0.8, 0.2, 1)";
+const FLY_MS = 200;
+
+const tileOf = (id: string | null) => (id ? root.querySelector<HTMLElement>(`.mission-tile[data-session="${CSS.escape(id)}"]`) : null);
+
+/** Where a session's pane is on screen: its cell, else the terminal area. */
+function paneRect(id: string): DOMRect {
+  const el = document.querySelector(`.cell[data-session="${CSS.escape(id)}"]`) ?? document.getElementById("terminal-host");
+  return el?.getBoundingClientRect() ?? new DOMRect(0, 0, innerWidth, innerHeight);
+}
+
+/** The transform that puts a box at `at` over the box at `to`. */
+function onto(at: DOMRect, to: DOMRect): string {
+  return `translate(${to.left - at.left}px, ${to.top - at.top}px) scale(${to.width / at.width}, ${to.height / at.height})`;
+}
+
+/** A copy of the screen, fixed where the screen is, to fly over the lanes, which clip. */
+function flier(tile: HTMLElement): { fly: HTMLElement; at: DOMRect } {
+  const at = tile.getBoundingClientRect();
+  const fly = tile.cloneNode(true) as HTMLElement;
+  fly.classList.add("mission-fly", "lit");
+  Object.assign(fly.style, { left: `${at.left}px`, top: `${at.top}px`, width: `${at.width}px`, height: `${at.height}px` });
+  root.appendChild(fly);
+  return { fly, at };
+}
+
+export async function openMission() {
+  if (missionOpen() || starting) return;
+  starting = true;
   returnTo = document.activeElement as HTMLElement | null;
   lit = S.focused;
+  // Measured before the board covers it: the pane the focused screen grows out of.
+  const pane = S.focused && document.querySelector(`.cell[data-session="${CSS.escape(S.focused)}"]`) ? paneRect(S.focused) : null;
   shape = signature();
   build();
+  // The text first, so the screens open full.
+  await read();
+  starting = false;
   root.hidden = false;
   root.classList.remove("opening");
   void root.offsetWidth;
@@ -217,13 +253,17 @@ export function openMission() {
   window.setTimeout(() => root.classList.remove("opening"), 600);
   root.focus();
   light(lit ?? "");
-  void read();
   timer = window.setInterval(tick, TICK);
+  // The focused pane shrinks into its screen.
+  const tile = tileOf(lit);
+  if (!pane || !tile || still()) return;
+  const { fly, at } = flier(tile);
+  tile.style.visibility = "hidden";
+  fly.animate([{ transform: onto(at, pane) }, { transform: "none" }], { duration: FLY_MS, easing: EASE }).onfinish = () => {
+    fly.remove();
+    tile.style.visibility = "";
+  };
 }
-
-let leaving = false;
-
-const still = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 function finish() {
   leaving = false;
@@ -234,60 +274,58 @@ function finish() {
   root.replaceChildren();
 }
 
-/** Where a session's pane is once it shows: its cell, else the terminal area. */
-function paneRect(id: string): DOMRect {
-  const el = document.querySelector(`.cell[data-session="${CSS.escape(id)}"]`) ?? document.getElementById("terminal-host");
-  return el?.getBoundingClientRect() ?? new DOMRect(0, 0, innerWidth, innerHeight);
-}
-
 /**
- * The picked screen flies to where its pane opens, and the board fades
- * around it. The session shows under the board from the start, so the
- * screen lands on it.
+ * The screen grows into its pane and the board fades around it. The pane
+ * shows under the board from the start, so the screen lands on it.
+ * `show` puts it there first: a picked session, or a maximize.
  */
-function flyTo(id: string, max: boolean) {
-  const tile = root.querySelector<HTMLElement>(`.mission-tile[data-session="${CSS.escape(id)}"]`);
-  revealSession(id);
-  // Maximized from here, a restore comes back here.
-  const maximize = () => {
-    if (!max || S.maximized) return;
-    toggleMaximize();
-    maxReturn.to = openMission;
-  };
+function flyHome(id: string, show?: () => void, target?: () => DOMRect) {
+  const tile = tileOf(id);
   if (!tile || still()) {
-    finish();
-    return requestAnimationFrame(maximize);
+    show?.();
+    return finish();
   }
-  const from = tile.getBoundingClientRect();
-  const fly = tile.cloneNode(true) as HTMLElement;
-  fly.classList.add("mission-fly", "lit");
-  Object.assign(fly.style, { left: `${from.left}px`, top: `${from.top}px`, width: `${from.width}px`, height: `${from.height}px` });
-  root.appendChild(fly);
+  const { fly, at } = flier(tile);
   root.classList.add("leaving");
-  // Two frames: the pane is laid out before it is measured.
-  requestAnimationFrame(() =>
-    requestAnimationFrame(() => {
-      maximize();
-      const to = max ? document.getElementById("terminal-host")!.getBoundingClientRect() : paneRect(id);
-      const move = `translate(${to.left - from.left}px, ${to.top - from.top}px) scale(${to.width / from.width}, ${to.height / from.height})`;
-      const a = fly.animate(
-        [{ transform: "none", opacity: 1 }, { transform: move, opacity: 1, offset: 0.8 }, { transform: move, opacity: 0 }],
-        { duration: 260, easing: "cubic-bezier(0.2, 0.8, 0.2, 1)", fill: "forwards" },
-      );
-      a.onfinish = finish;
-    }),
-  );
+  show?.();
+  const go = (to: DOMRect) =>
+    (fly.animate([{ transform: "none", opacity: 1 }, { transform: onto(at, to), opacity: 1, offset: 0.8 }, { transform: onto(at, to), opacity: 0 }], {
+      duration: FLY_MS,
+      easing: EASE,
+      fill: "forwards",
+    }).onfinish = finish);
+  // A known target flies at once. A pane is laid out first: two frames.
+  if (target) return void go(target());
+  requestAnimationFrame(() => requestAnimationFrame(() => go(paneRect(id))));
 }
 
-/** `go`: the session to show. `max`: maximize its pane. Without `go`, the keys go back where they were. */
+/** `go`: the session to show. `max`: maximize its pane. Without `go`, back to the panes as they were. */
 export function closeMission(go?: string, max = false) {
   if (!missionOpen() || leaving) return;
   leaving = true;
   // No rebuild under the animation.
   window.clearInterval(timer);
-  if (go) return void flyTo(go, max);
+  if (go) {
+    const host = () => document.getElementById("terminal-host")!.getBoundingClientRect();
+    return flyHome(
+      go,
+      () => {
+        revealSession(go);
+        // Maximized from here, a restore comes back here.
+        if (max && !S.maximized) {
+          toggleMaximize();
+          drop();
+          maxReturn.to = () => void openMission();
+        }
+      },
+      max ? host : undefined,
+    );
+  }
   if (returnTo?.isConnected) returnTo.focus();
   else refocusTerminal();
+  // The focused pane's screen grows back into it.
+  const home = S.focused && document.querySelector(`.cell[data-session="${CSS.escape(S.focused)}"]`) ? S.focused : null;
+  if (home) return flyHome(home);
   if (still()) return finish();
   root.animate([{ opacity: 1 }, { opacity: 0, transform: "scale(1.015)" }], { duration: 140, easing: "ease-in" }).onfinish = finish;
 }
@@ -299,7 +337,7 @@ export function maximizeLit() {
 
 export function toggleMission() {
   if (missionOpen()) closeMission();
-  else openMission();
+  else void openMission();
 }
 
 root.addEventListener("click", (e) => {

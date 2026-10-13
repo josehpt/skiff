@@ -132,7 +132,8 @@ function animate(el: HTMLElement, frames: Keyframe[], clean = () => {}) {
   };
 }
 
-function drop() {
+/** Ends the mode animations at once: under mission control nobody sees them. */
+export function drop() {
   for (const { animation, clean } of motion.splice(0)) {
     animation.cancel();
     clean();

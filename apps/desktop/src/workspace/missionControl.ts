@@ -374,6 +374,8 @@ function tick() {
 function light(id: string, scroll = true) {
   lit = id;
   for (const t of root.querySelectorAll<HTMLElement>(".mission-tile")) t.classList.toggle("lit", t.dataset.session === id);
+  // The search's focus frame takes the lit screen's project color.
+  find.style.setProperty("--pc", tileOf(id)?.style.getPropertyValue("--pc") ?? "");
   if (scroll) root.querySelector(".mission-tile.lit")?.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 

@@ -55,7 +55,9 @@ body.kbd .mission:focus { outline: 0; }
 
 /* The search, at the right of the bar. What it leaves out hides. */
 .mission-find { margin-left: auto; width: calc(260 * var(--u)); height: calc(28 * var(--u)); display: flex; align-items: center; gap: calc(8 * var(--u)); padding: 0 calc(8 * var(--u)); border: 1px solid var(--rule); background: var(--bg); cursor: text; }
-.mission-find:focus-within { border-color: var(--rule-strong); }
+/* With the keys, the search gets the focus frame, and the lit screen gives up its own: one frame shows where typing goes. */
+.mission-find:focus-within { border-color: transparent; background: var(--bg-panel); box-shadow: inset 0 0 0 calc(2 * var(--u)) var(--pc, var(--text-2)); }
+.mission:has(.mission-search:focus) .mission-tile.lit::after { visibility: hidden; }
 .mission-search { flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; font-size: calc(12px * var(--zoom, 1)); }
 .mission-search::placeholder { color: var(--text-dim); }
 .mission-find:focus-within .mission-find-key { visibility: hidden; }

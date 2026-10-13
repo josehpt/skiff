@@ -2,6 +2,7 @@
  * Mission control (#88): every session's screen over the whole window, one
  * lane per fleet. Read-only text from skiffd; no pane, no PTY resize.
  * Ctrl+Shift+A or Esc closes it. A click or Enter goes to the session.
+ * Ctrl+Shift+P searches the sessions on the board, and hides the rest.
  * This file is the board. missionMotion.ts opens and closes it.
  */
 
@@ -13,11 +14,11 @@ import { stateIcon } from "../appearance/stateIcon";
 import { DEFAULT_THEME, isLight } from "../appearance/colors";
 import { appThemeOf, themeIdFor, xtermTheme } from "../appearance/themes";
 import { appThemeVars } from "../appearance/appTheme";
-import { actionFor } from "../app/keys";
+import { actionFor, keyLabel } from "../app/keys";
 import { S, sessions } from "../app/state";
 import { accent, place } from "../app/stateQueries";
 import { h } from "../ui/dom";
-import { branchName, taskTitle } from "./model";
+import { agentName, branchName, fuzzy, taskTitle } from "./model";
 import { worktreeLines } from "./sidebarLines";
 import { bareWorktree, projectBadge, rollup, treeSections } from "./tree";
 import { closeMission, maximizeLit } from "./missionMotion";
@@ -49,6 +50,19 @@ let reading = false;
 let paused = false;
 const screens = new Map<string, HTMLElement>();
 
+/** The search in the bar. `found`: the sessions it matches; null with no search. */
+const search = h("input", "mission-search");
+search.type = "text";
+search.autocomplete = "off";
+search.spellcheck = false;
+search.placeholder = "Search sessions";
+search.setAttribute("aria-label", "Search sessions");
+const findKey = h("kbd", "mission-find-key");
+const find = h("label", "mission-find");
+find.append(search, findKey);
+const noMatch = h("div", "mission-empty", "No match");
+let found: Set<string> | null = null;
+
 /** A project's sessions in tree order: each worktree's groups and their members, then the rest. */
 function projectSessions(p: Project): SessionInfo[] {
   const seen = new Set<string>();
@@ -62,6 +76,38 @@ function projectSessions(p: Project): SessionInfo[] {
     }
   }
   return out;
+}
+
+/** What the search matches: project, branch, agent, title and state, as the palette does. */
+function matchText(s: SessionInfo, p: Project): string {
+  const w = place(s)?.worktree;
+  return `${p.name} ${w ? branchName(w) : ""} ${agentName(s)} ${taskTitle(s)} ${s.state}`;
+}
+
+/**
+ * Hides the screens the search leaves out, and the projects and lanes left
+ * with none. The light moves to the first match when its screen hides.
+ */
+function filter(all: Lane[], scroll = false) {
+  const q = search.value.trim();
+  found = null;
+  if (q) {
+    found = new Set();
+    for (const l of all) for (const { p, list } of l.projects) for (const s of list) if (fuzzy(q, matchText(s, p)) >= 0) found.add(s.id);
+  }
+  for (const t of root.querySelectorAll<HTMLElement>(".mission-tile")) t.hidden = !!found && !found.has(t.dataset.session ?? "");
+  for (const el of root.querySelectorAll<HTMLElement>(".mission-group, .mission-lane")) el.hidden = !!found && !el.querySelector(".mission-tile:not([hidden])");
+  const board = root.querySelector(".mission-lanes");
+  if (found && !found.size) board?.appendChild(noMatch);
+  else noMatch.remove();
+  const first = shown().flat()[0];
+  if (first && (scroll || !lit || (found && !found.has(lit)))) light(first, true);
+  else if (scroll) root.querySelector<HTMLElement>(".mission-lanes")?.scrollTo({ left: 0 });
+}
+
+/** The sessions the arrows move through: each lane's, less those the search hides. */
+function shown(): string[][] {
+  return found ? order.map((l) => l.filter((id) => found!.has(id))) : order;
 }
 
 /** Each fleet is a lane, as in the tree; "Projects" only when it has sessions. Projects with no sessions are left out. */
@@ -221,7 +267,8 @@ function build(all = lanes()) {
   for (const el of old?.querySelectorAll<HTMLElement>(".mission-lane") ?? []) tops.set(el.getAttribute("aria-label") ?? "", el.scrollTop);
 
   const bar = h("div", "mission-bar");
-  bar.append(h("span", "mission-name", "Mission control"), h("span", "mission-count"));
+  bar.append(h("span", "mission-name", "Mission control"), h("span", "mission-count"), find);
+  findKey.textContent = keyLabel("palette");
   counts(bar, ids);
 
   const board = h("div", "mission-lanes");
@@ -248,7 +295,15 @@ function build(all = lanes()) {
   }
   if (!all.length) board.appendChild(h("div", "mission-empty", "No sessions"));
   themed(root, null);
+  // The search moves into the new bar. Moved, it loses focus: give it back where the caret was.
+  const typing = document.activeElement === search;
+  const caret = [search.selectionStart, search.selectionEnd];
   root.replaceChildren(bar, board, scrollbar(board));
+  if (typing) {
+    search.focus({ preventScroll: true });
+    search.setSelectionRange(caret[0], caret[1]);
+  }
+  filter(all);
 
   if (root.hidden || !old) return;
   board.scrollLeft = left;
@@ -274,6 +329,7 @@ function update(all: Lane[]) {
       }
     }
   }
+  filter(all);
 }
 
 /** The board's structure: lanes, their projects, and the sessions in each. A change rebuilds it. */
@@ -323,6 +379,7 @@ function light(id: string, scroll = true) {
 
 /** Arrows: Up and Down in a lane, Left and Right to the same place in the next lane. */
 function step(key: string): boolean {
+  const order = shown();
   const li = order.findIndex((l) => l.includes(lit ?? ""));
   if (li < 0) return false;
   const at = order[li].indexOf(lit!);
@@ -360,6 +417,7 @@ export const board = {
   async prepare(focus: string | null) {
     paused = false;
     lit = focus;
+    search.value = "";
     const all = lanes();
     shape = signature(all);
     build(all);
@@ -415,9 +473,25 @@ root.addEventListener(
   },
   { passive: false },
 );
+/** Ctrl+Shift+P here: into the search, or back out to the board. The search stays. */
+export function toggleSearch() {
+  if (document.activeElement === search) root.focus();
+  else {
+    search.focus();
+    search.select();
+  }
+}
+
+search.addEventListener("input", () => filter(lanes(), true));
 root.addEventListener("keydown", (e) => {
   const a = actionFor(e);
-  if (e.key === "Escape" || a === "mission-control") closeMission();
+  if (a === "palette") toggleSearch();
+  // The first Esc clears the search; the next one closes.
+  else if (e.key === "Escape" && search.value) {
+    search.value = "";
+    filter(lanes());
+    if (lit) light(lit);
+  } else if (e.key === "Escape" || a === "mission-control") closeMission();
   else if (a === "maximize") maximizeLit();
   else if (e.key === "Enter" && lit) closeMission(lit);
   else if (e.ctrlKey || e.altKey || e.metaKey || !step(e.key)) return;

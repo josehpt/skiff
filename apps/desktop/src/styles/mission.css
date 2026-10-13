@@ -52,3 +52,11 @@ body.kbd .mission:focus { outline: 0; }
 .mission-thumb { position: absolute; top: calc(4 * var(--u)); bottom: calc(4 * var(--u)); min-width: calc(64 * var(--u)); background: var(--rule-strong); cursor: grab; transition: background 120ms; }
 .mission-scroll:hover .mission-thumb { background: var(--text-dim); }
 .mission-scroll.dragging .mission-thumb { background: var(--text-3); cursor: grabbing; transition: none; }
+
+/* The search, at the right of the bar. What it leaves out hides. */
+.mission-find { margin-left: auto; width: calc(260 * var(--u)); height: calc(28 * var(--u)); display: flex; align-items: center; gap: calc(8 * var(--u)); padding: 0 calc(8 * var(--u)); border: 1px solid var(--rule); background: var(--bg); cursor: text; }
+.mission-find:focus-within { border-color: var(--rule-strong); }
+.mission-search { flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; font-size: calc(12px * var(--zoom, 1)); }
+.mission-search::placeholder { color: var(--text-dim); }
+.mission-find:focus-within .mission-find-key { visibility: hidden; }
+.mission-tile[hidden], .mission-group[hidden], .mission-lane[hidden] { display: none; }

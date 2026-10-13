@@ -15,7 +15,7 @@ import { filesBlock, filesSig, showsFiles } from "./files";
 import { $, button, h } from "../ui/dom";
 import { branchIcon, chevron, icon, plusIcon } from "../ui/icons";
 
-import { fleetMenu, groupMenu, projectMenu, rowMenu, worktreeMenu } from "./menus";
+import { fleetMenu, groupMenu, projectMenu, rowMenu, skiffAgentMenu, worktreeMenu } from "./menus";
 
 import { launchMenu } from "../app/panels";
 
@@ -237,6 +237,10 @@ function skiffAgentRow(): HTMLElement {
       // the current row has not moved while the agent starts.
       keepRow(SKIFF_AGENT_KEY);
       openSkiffAgent();
+    });
+    row.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      skiffAgentMenu(null, e.clientX, e.clientY);
     });
     return row;
   }

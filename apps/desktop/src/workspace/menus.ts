@@ -1,6 +1,6 @@
 import { ctxMenu } from "../ui/contextMenu";
 /** Right-click menus for projects, sessions, panes and groups. */
-import { isSkiffAgent } from "../app/skiffAgent";
+import { isSkiffAgent, skiffAgentFolder, skiffAgentName } from "../app/skiffAgent";
 import { launchIcon } from "../appearance/agentIcon";
 import { confirmAction, promptAction } from "../ui/confirm";
 import { pickColor } from "../appearance/colorPicker";
@@ -414,13 +414,23 @@ export function paneMenu(id: string, x: number, y: number) {
   ctxMenu.open(x, y, sessionLabel(s), entries);
 }
 
-/** The Skiff agent's row and pane menu: no splits, groups or rename. Its name is in Settings. */
-function skiffAgentMenu(s: SessionInfo, x: number, y: number) {
-  ctxMenu.open(x, y, sessionLabel(s), [
-    { icon: "view-focus", label: S.focusMode ? "Leave focus mode" : "Focus mode", hint: keyLabel("focus-mode"), run: toggleFocusMode },
-    themeEntry(s),
-    endEntry(s),
-  ]);
+/**
+ * The Skiff agent's row and pane menu: no splits, groups or rename. Its name is in Settings.
+ * With no session, the row shows only its folder entries.
+ */
+export function skiffAgentMenu(s: SessionInfo | null, x: number, y: number) {
+  const folder = skiffAgentFolder();
+  const entries: MenuEntry[] = folder
+    ? [{ icon: "indicators-square-arrow-out-up-right", label: "Show in file manager", run: () => void openPath(folder).catch(showError) }]
+    : [];
+  if (s) {
+    entries.push(
+      { icon: "view-focus", label: S.focusMode ? "Leave focus mode" : "Focus mode", hint: keyLabel("focus-mode"), run: toggleFocusMode },
+      themeEntry(s),
+      endEntry(s),
+    );
+  }
+  if (entries.length) ctxMenu.open(x, y, s ? sessionLabel(s) : skiffAgentName(), entries);
 }
 
 /** Second step of Split: a new agent in this pane's worktree, or a session not shown. */

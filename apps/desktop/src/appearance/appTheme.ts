@@ -56,6 +56,28 @@ export function applyAppTheme(t: TerminalTheme | null) {
     void invoke("set_window_dark", { dark: true }).catch(() => {});
     return;
   }
+  const set = themeVars(t);
+  for (const [k, v] of Object.entries(set)) root.setProperty(k, v);
+  root.setProperty("color-scheme", lightScheme ? "light" : "dark");
+  // The GNOME header bar and its menu follow the app theme.
+  void invoke("set_window_dark", { dark: !lightScheme }).catch(() => {});
+}
+
+/**
+ * The app colors a theme gives, without applying them: for a part of the
+ * window in another project's theme, as mission control's lanes are.
+ * `color-scheme` is in the set too.
+ */
+export function appThemeVars(t: TerminalTheme): Record<string, string> {
+  const keep = [surfaces, lightScheme] as const;
+  const set = themeVars(t);
+  set["color-scheme"] = lightScheme ? "light" : "dark";
+  [surfaces, lightScheme] = keep;
+  return set;
+}
+
+/** The theme's app colors. Sets the surfaces the contrast checks use. */
+function themeVars(t: TerminalTheme): Record<string, string> {
   const bg = t.background;
   const fg = t.foreground;
   const light = isLight(bg);
@@ -89,10 +111,7 @@ export function applyAppTheme(t: TerminalTheme | null) {
   Object.assign(set, alerts(set, t.palette[2]));
   set["--hover"] = lightScheme ? "rgba(0, 0, 0, 0.05)" : "rgba(255, 255, 255, 0.05)";
   set["--press"] = lightScheme ? "rgba(0, 0, 0, 0.09)" : "rgba(255, 255, 255, 0.09)";
-  for (const [k, v] of Object.entries(set)) root.setProperty(k, v);
-  root.setProperty("color-scheme", lightScheme ? "light" : "dark");
-  // The GNOME header bar and its menu follow the app theme.
-  void invoke("set_window_dark", { dark: !lightScheme }).catch(() => {});
+  return set;
 }
 
 /** Error banners, the destructive button, the ok dot, and the modal scrim, from the theme's red and green. */

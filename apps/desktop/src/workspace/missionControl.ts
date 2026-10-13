@@ -11,7 +11,8 @@ import type { Project, SessionInfo } from "../platform/types";
 import { agentIcon } from "../appearance/agentIcon";
 import { stateIcon } from "../appearance/stateIcon";
 import { DEFAULT_THEME, isLight } from "../appearance/colors";
-import { themeIdFor, xtermTheme } from "../appearance/themes";
+import { appThemeOf, themeIdFor, xtermTheme } from "../appearance/themes";
+import { appThemeVars } from "../appearance/appTheme";
 import { actionFor } from "../app/keys";
 import { S, sessions } from "../app/state";
 import { accent, place } from "../app/stateQueries";
@@ -135,6 +136,18 @@ function counts(bar: HTMLElement, ids: Set<string>) {
   }
 }
 
+/**
+ * The app colors of a theme on one element and what is in it. The board
+ * takes the app theme, not the selected project's; each project's part of a
+ * lane takes its project's theme, as the window does when that project is selected.
+ */
+function themed(el: HTMLElement, p: Project | null) {
+  const t = appThemeOf(p);
+  if (!t || el.dataset.theme === t.id) return;
+  el.dataset.theme = t.id;
+  for (const [k, v] of Object.entries(appThemeVars(t))) el.style.setProperty(k, v);
+}
+
 /** The lane head's rollup, put in or taken out in place. */
 function roll(head: Element, l: Lane) {
   const old = head.querySelector(".tree-roll");
@@ -170,15 +183,20 @@ function build(all = lanes()) {
     lane.appendChild(head);
     if (!l.projects.length) lane.appendChild(h("div", "mission-none", "No sessions"));
     for (const { p, list } of l.projects) {
+      const group = h("div", "mission-group");
+      group.dataset.project = p.name;
+      themed(group, p);
       const row = h("div", "mission-project");
       row.style.setProperty("--pc", accent(p));
       row.append(projectBadge(p), h("span", "project-name", p.name));
-      lane.appendChild(row);
-      for (const s of list) lane.appendChild(tile(s, p));
+      group.appendChild(row);
+      for (const s of list) group.appendChild(tile(s, p));
+      lane.appendChild(group);
     }
     board.appendChild(lane);
   }
   if (!all.length) board.appendChild(h("div", "mission-empty", "No sessions"));
+  themed(root, null);
   root.replaceChildren(bar, board);
 
   if (root.hidden || !old) return;
@@ -190,6 +208,11 @@ function build(all = lanes()) {
 function update(all: Lane[]) {
   const bar = root.querySelector<HTMLElement>(".mission-bar");
   if (bar) counts(bar, new Set(order.flat()));
+  themed(root, null);
+  for (const g of root.querySelectorAll<HTMLElement>(".mission-group")) {
+    const p = S.projects.find((x) => x.name === g.dataset.project);
+    if (p) themed(g, p);
+  }
   const heads = root.querySelectorAll(".mission-lane-head");
   for (const [i, l] of all.entries()) {
     if (heads[i]) roll(heads[i], l);

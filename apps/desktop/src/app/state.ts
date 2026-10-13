@@ -1,6 +1,7 @@
 /** Shared app state. Query functions live in stateQueries.ts. */
 
 import type { AgentInfo, Group, Project, SessionInfo, TerminalTheme } from "../platform/types";
+import type { SkiffAgentSettings } from "./skiffAgent";
 
 /** Accent for sessions outside every project, and projects without `color`. */
 export const DEFAULT_ACCENT = "var(--project-default)";
@@ -70,6 +71,8 @@ export const S = {
   selectedProject: null as string | null,
   /** Known agents with installed and enabled state, from list_agents. */
   agents: [] as AgentInfo[],
+  /** `[skiff_agent]`. With a folder, its row shows above the projects. */
+  skiffAgent: null as SkiffAgentSettings | null,
   /** The project just added: the terminal area offers to start its first agent. */
   justAdded: null as string | null,
 

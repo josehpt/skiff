@@ -68,6 +68,9 @@ pub fn parse(text: &str) -> Result<Config> {
     for p in &mut cfg.projects {
         p.path = expand_home(&p.path);
     }
+    if let Some(f) = &mut cfg.skiff_agent.folder {
+        *f = expand_home(f);
+    }
     Ok(cfg)
 }
 

@@ -329,6 +329,9 @@ $("sidebar-scroll").addEventListener("keydown", (e) => {
     const p = S.projects.find((x) => `project:${x.name}` === el.dataset.key);
     const r = el.getBoundingClientRect();
     if (p) ctxMenu.open(r.left + 24, r.bottom, p.name, closeEntries(p));
+  } else if (el.dataset.key === "skiff-agent" && e.key === "Enter") {
+    // The Skiff agent row with no session: Enter starts it, as a click does.
+    el.click();
   } else if (isSection(el) && e.key === "Enter" && e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
     // Shift+Enter on a change opens the file itself.
     rowActs(itemKey(el))?.open?.();

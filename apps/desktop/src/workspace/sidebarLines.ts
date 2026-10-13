@@ -7,6 +7,7 @@ import { S, sessions } from "../app/state";
 import { groupedIds, place, visitors, worktreeSessions } from "../app/stateQueries";
 
 import { groupHome } from "./view";
+import { skiffAgentSession } from "../app/skiffAgent";
 /** One line in a session list: a session, a group's header, or a pointer to a session from another worktree that works here. */
 export type Line =
   | { session: SessionInfo; branch?: boolean; group?: undefined; pointer?: undefined; in?: Group; groupRail?: boolean }
@@ -31,11 +32,13 @@ export function worktreeLines(w: Worktree | null): Line[] {
       lines.push({ session, in: g, branch, groupRail: groupIndex < groups.length - 1 });
     });
   }
+  // The Skiff agent has its own row above the projects. In a group it stays there too.
   const grouped = groupedIds();
+  const agent = skiffAgentSession()?.id;
   const loose = w
     ? worktreeSessions(w)
     : [...sessions.values()].filter((x) => !place(x)).sort(byStart);
-  for (const m of loose) if (!grouped.has(m.id)) lines.push({ session: m });
+  for (const m of loose) if (!grouped.has(m.id) && m.id !== agent) lines.push({ session: m });
   if (w) for (const m of visitors(w)) lines.push({ pointer: m });
   return lines;
 }

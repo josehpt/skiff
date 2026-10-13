@@ -8,7 +8,7 @@ mod settings;
 pub use types::*;
 pub use persistence::{config_path, write_atomic, load, load_from, parse};
 pub use projects::{inspect_folder, add_project, set_project_icon, set_project_short, set_project_fleet, set_project_background, set_project_background_opacity, set_project_color, set_project_changes, set_project_theme, set_project_files, set_project_closed, remove_project, reorder_projects, arrange_projects};
-pub use settings::{set_enabled_agents, set_agent_command, remove_agent, rename_agent, restore_agents, set_app_theme, set_font_size, set_menu_layout, MENU_LAYOUTS, OPEN_KEYS, set_open, set_open_peek};
+pub use settings::{set_enabled_agents, set_agent_command, remove_agent, rename_agent, restore_agents, set_app_theme, set_font_size, set_menu_layout, MENU_LAYOUTS, OPEN_KEYS, set_open, set_open_peek, set_skiff_agent, SkiffAgentKey};
 
 #[cfg(test)]
 mod tests {
@@ -53,6 +53,14 @@ server = { cmd = "npm run dev", port_env = "PORT" }
             cfg.projects[1].server.as_ref().unwrap().port_env.as_deref(),
             Some("PORT")
         );
+    }
+
+    #[test]
+    fn reads_the_skiff_agent() {
+        let cfg = parse("[skiff_agent]\nname = \"Bosun\"\nfolder = \"~/skiff-agent\"\n").unwrap();
+        assert_eq!(cfg.skiff_agent.name.as_deref(), Some("Bosun"));
+        assert!(!cfg.skiff_agent.folder.unwrap().to_string_lossy().starts_with('~'));
+        assert!(!cfg.skiff_agent.continue_on_restore);
     }
 
     #[test]

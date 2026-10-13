@@ -217,6 +217,36 @@ pub fn set_open(key: &str, command: Option<&str>) -> Result<()> {
     })
 }
 
+/// One `[skiff_agent]` key. `None` removes it, so its default applies.
+pub enum SkiffAgentKey<'a> {
+    Name(Option<&'a str>),
+    Agent(Option<&'a str>),
+    Folder(Option<&'a std::path::Path>),
+    ContinueOnRestore(bool),
+}
+
+/// Sets one `[skiff_agent]` key, keeping the rest of the file. The folder is
+/// written as `~/x` under the home directory.
+pub fn set_skiff_agent(key: SkiffAgentKey) -> Result<()> {
+    let text = |v: Option<&str>| v.map(str::trim).filter(|v| !v.is_empty()).map(str::to_owned);
+    edit_table("skiff_agent", |t| {
+        let (k, v) = match key {
+            SkiffAgentKey::Name(v) => ("name", text(v).map(toml_edit::value)),
+            SkiffAgentKey::Agent(v) => ("agent", text(v).map(toml_edit::value)),
+            SkiffAgentKey::Folder(v) => ("folder", v.map(|p| toml_edit::value(super::persistence::home_relative(p)))),
+            // Off is the default: the key goes.
+            SkiffAgentKey::ContinueOnRestore(on) => ("continue_on_restore", on.then(|| toml_edit::value(true))),
+        };
+        match v {
+            Some(v) => t[k] = v,
+            None => {
+                t.remove(k);
+            }
+        }
+        Ok(())
+    })
+}
+
 fn edit_agents(f: impl FnOnce(&mut toml_edit::Table) -> Result<()>) -> Result<()> {
     edit_table("agents", f)
 }

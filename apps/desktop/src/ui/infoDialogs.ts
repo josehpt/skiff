@@ -1,5 +1,5 @@
 import { dialogFrame, dialogHeader } from "./dialogParts";
-import { DESCRIBE, keyLabel } from "../app/keys";
+import { DESCRIBE, describeText, keyLabel } from "../app/keys";
 
 import type { DaemonStatus } from "../platform/types";
 import { getVersion } from "@tauri-apps/api/app";
@@ -96,7 +96,7 @@ export function showShortcuts() {
   search.setAttribute("aria-label", "Find a shortcut");
   const table = h("div", "keys-table");
   const shortcuts: Shortcut[] = [
-    ...DESCRIBE.map(([section, action, what]): Shortcut => [section, what, keyLabel(action)]),
+    ...DESCRIBE.map(([section, action, what]): Shortcut => [section, describeText(what), keyLabel(action)]),
     ...FIXED_SHORTCUTS,
   ];
   const render = () => {

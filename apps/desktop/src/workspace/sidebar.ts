@@ -3,7 +3,7 @@ import { groupRenameInput } from "./rename";
 /** The session tree and its focus, caret, and hover restoration. */
 
 import { filledOf } from "./layoutSlots";
-import { agentIcon, agentKind } from "../appearance/agentIcon";
+import { agentIcon, agentKind, launchIcon } from "../appearance/agentIcon";
 import { ink } from "../appearance/appTheme";
 import { appliedTheme, ownTheme, signatureColor } from "../appearance/themes";
 import { glyph } from "./layoutIcon";
@@ -34,6 +34,7 @@ import { animateFold, growOpened } from "../ui/fold";
 import { dragTree } from "./treeDrag";
 import { bareWorktree, fleetKey, folded, isOpen, openToFocused, projectBadge, projectKey, rollup, toggleRow, treeDrag, treeSections, type Section } from "./tree";
 import { render } from "../app/renderRequest";
+import { openSkiffAgent, SKIFF_AGENT_KEY, skiffAgentChoice, skiffAgentName, skiffAgentSession, syncSkiffAgent } from "../app/skiffAgent";
 
 /** 20px lines, flush against whatever follows. */
 function sessionBlock(lines: Line[], color: string): HTMLElement {
@@ -162,15 +163,17 @@ function sidebarSig(): string {
     ]),
   ]);
   // The agent icons are inked against the applied app theme: a new theme re-inks them.
+  const agent = S.skiffAgent?.folder ? [skiffAgentName(), skiffAgentSession()?.id ?? null, skiffAgentChoice()?.id ?? null] : null;
   return JSON.stringify([
     listGen, appliedTheme(), S.selectedProject, [...folded],
-    S.selection, S.renamingSession, S.renaming?.id ?? null, rows, groups, projects,
+    S.selection, S.renamingSession, S.renaming?.id ?? null, rows, groups, projects, agent,
   ]);
 }
 
 export function renderSidebar() {
   const side = $<HTMLElement>("sidebar-scroll");
   if (treeDrag.active) return;
+  syncSkiffAgent();
   openToFocused();
   const sig = sidebarSig();
   if (side.dataset.sig === sig) return;
@@ -192,6 +195,7 @@ export function renderSidebar() {
   const near = at < 0 ? [] : [...items.slice(at + 1), ...items.slice(0, at).reverse()].map(itemKey);
 
   side.replaceChildren();
+  if (S.skiffAgent?.folder) side.appendChild(skiffAgentRow());
   for (const sec of treeSections()) {
     side.appendChild(sectionHead(sec));
     if (sec.fleet && !isOpen(fleetKey(sec.fleet))) continue;
@@ -210,6 +214,45 @@ export function renderSidebar() {
   }
   growOpened();
   restoreFocus(side, activeKey, caret, near);
+}
+
+/**
+ * The Skiff agent: one fixed row above the projects, with its name from
+ * Settings, its agent's glyph and title, and its state mark. Its session is
+ * left out of the tree below. With no session, a click or Enter starts one.
+ */
+function skiffAgentRow(): HTMLElement {
+  const s = skiffAgentSession();
+  const name = skiffAgentName();
+  const row = h("button", "session-row skiff-agent-row" + (s ? ` st-${s.state}` : "") + (s && S.selection.includes(s.id) ? " selected" : ""));
+  row.type = "button";
+  row.style.setProperty("--pc", DEFAULT_ACCENT);
+  if (!s) {
+    const a = skiffAgentChoice();
+    row.dataset.key = SKIFF_AGENT_KEY;
+    row.setAttribute("aria-label", `${name}, the Skiff agent, not running`);
+    row.append(launchIcon(a), h("span", "skiff-agent-name", name), h("span", "title", a ? `start ${a.id}` : "no agent on"));
+    row.addEventListener("click", () => {
+      openSkiffAgent();
+      requestAnimationFrame(() => keepRow(SKIFF_AGENT_KEY));
+    });
+    return row;
+  }
+  row.dataset.session = s.id;
+  row.setAttribute("aria-label", `${name}, the Skiff agent, ${s.title ?? agentName(s)}, ${s.state}`);
+  row.append(agentIcon(s), h("span", "skiff-agent-name", name), h("span", "title", s.title?.replace(/^[^\p{L}\p{N}]+/u, "") ?? ""), stateIcon(s));
+  row.addEventListener("mousedown", (e) => {
+    if (e.button === 0) row.focus();
+  });
+  row.addEventListener("click", () => {
+    clearSelection();
+    openSkiffAgent();
+  });
+  row.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    rowMenu(s, e.clientX, e.clientY);
+  });
+  return row;
 }
 
 /** A section head: "Projects" with its +, or a fleet that folds and opens. */

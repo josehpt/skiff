@@ -75,6 +75,8 @@ pub fn run() {
             connection::daemon_status,
             cli_path::install_cli,
             skiff_agent::setup_skiff_agent,
+            skiff_agent::get_skiff_agent,
+            skiff_agent::set_skiff_agent,
             commands::list_sessions,
             commands::create_session,
             commands::pty_write,

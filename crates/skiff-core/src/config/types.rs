@@ -13,6 +13,8 @@ pub struct Config {
     pub appearance: Appearance,
     #[serde(default)]
     pub open: Open,
+    #[serde(default)]
+    pub skiff_agent: SkiffAgent,
     #[serde(default, rename = "project")]
     pub projects: Vec<ProjectConfig>,
 }
@@ -44,6 +46,21 @@ pub struct Open {
     pub markdown: Option<String>,
     /// Opens `.html` files. Absent: the OS default app.
     pub html: Option<String>,
+}
+
+/// `[skiff_agent]`: the one agent session that coordinates the others. The
+/// app reads and writes it; the daemon passes it by.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+pub struct SkiffAgent {
+    /// The label on its row, its pane and its key. Absent: Skipper.
+    pub name: Option<String>,
+    /// The agent id it starts. Absent: the first enabled agent.
+    pub agent: Option<String>,
+    /// Its folder. Absent: no Skiff agent row.
+    pub folder: Option<PathBuf>,
+    /// A restored pane continues the last conversation in the folder.
+    #[serde(default)]
+    pub continue_on_restore: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]

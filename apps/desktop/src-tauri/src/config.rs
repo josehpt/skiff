@@ -16,7 +16,7 @@ use tauri::{AppHandle, Emitter, State};
 use crate::connection::{App, ensure_client, err};
 
 /// The page reloads projects on this event.
-const PROJECTS_CHANGED: &str = "skiff:projects-changed";
+pub(crate) const PROJECTS_CHANGED: &str = "skiff:projects-changed";
 
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> anyhow::Result<T> + Send + 'static) -> Result<T, String> {
     tokio::task::spawn_blocking(f).await.map_err(|e| e.to_string())?.map_err(err)

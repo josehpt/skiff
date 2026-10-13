@@ -7,9 +7,13 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context};
-use tauri::{AppHandle, Manager};
+use serde::{Deserialize, Serialize};
+use skiff_core::config::{self, SkiffAgentKey};
+use tauri::{AppHandle, Emitter, Manager};
 
-/// Written into `AGENTS.md` until Settings has a name for the agent.
+use crate::config::PROJECTS_CHANGED;
+
+/// The name until Settings has one. The app keeps the same default.
 const DEFAULT_NAME: &str = "Skipper";
 
 fn resources(app: &AppHandle) -> anyhow::Result<PathBuf> {
@@ -168,17 +172,93 @@ fn setup(res: &Path, dir: &Path, name: &str) -> anyhow::Result<PathBuf> {
     Ok(dir)
 }
 
-/// The palette command. Returns the folder it wrote, without `~`.
+/// The palette command. Writes the template with the name from Settings, then
+/// makes the folder the Skiff agent's, so its row shows. Returns the folder,
+/// without `~`.
 #[tauri::command]
-pub async fn setup_skiff_agent(app: AppHandle, path: String, name: Option<String>) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+pub async fn setup_skiff_agent(app: AppHandle, path: String) -> Result<String, String> {
+    let handle = app.clone();
+    let dir = blocking(move || {
         let dir = expand_home(&path)?;
-        let name = name.as_deref().map(str::trim).filter(|n| !n.is_empty()).unwrap_or(DEFAULT_NAME);
-        setup(&resources(&app)?, &dir, name).map(|d| d.display().to_string())
+        let name = config::load()?.skiff_agent.name.filter(|n| !n.trim().is_empty());
+        let dir = setup(&resources(&app)?, &dir, name.as_deref().unwrap_or(DEFAULT_NAME))?;
+        config::set_skiff_agent(SkiffAgentKey::Folder(Some(&dir)))?;
+        Ok(dir.display().to_string())
     })
-    .await
-    .map_err(|e| e.to_string())?
-    .map_err(|e| format!("{e:#}"))
+    .await?;
+    let _ = handle.emit(PROJECTS_CHANGED, ());
+    Ok(dir)
+}
+
+/// `[skiff_agent]` as the page reads it: the folder without `~`.
+#[derive(Serialize)]
+pub struct SkiffAgent {
+    name: Option<String>,
+    agent: Option<String>,
+    folder: Option<String>,
+    continue_on_restore: bool,
+}
+
+fn read() -> anyhow::Result<SkiffAgent> {
+    let a = config::load()?.skiff_agent;
+    Ok(SkiffAgent {
+        name: a.name,
+        agent: a.agent,
+        folder: a.folder.map(|f| f.display().to_string()),
+        continue_on_restore: a.continue_on_restore,
+    })
+}
+
+/// One edit from Settings › Skiff agent. `null` or empty takes the default.
+#[derive(Deserialize)]
+#[serde(tag = "key", content = "value", rename_all = "snake_case")]
+pub enum Edit {
+    Name(Option<String>),
+    Agent(Option<String>),
+    Folder(Option<String>),
+    ContinueOnRestore(bool),
+}
+
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> anyhow::Result<T> + Send + 'static) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+pub async fn get_skiff_agent() -> Result<SkiffAgent, String> {
+    blocking(read).await
+}
+
+/// Saves one setting and answers with all of them. The page reloads its
+/// projects on the event, so the row follows at once.
+#[tauri::command]
+pub async fn set_skiff_agent(app: AppHandle, edit: Edit) -> Result<SkiffAgent, String> {
+    let out = blocking(move || {
+        match edit {
+            Edit::Name(v) => config::set_skiff_agent(SkiffAgentKey::Name(v.as_deref()))?,
+            Edit::Agent(v) => config::set_skiff_agent(SkiffAgentKey::Agent(v.as_deref()))?,
+            Edit::ContinueOnRestore(on) => config::set_skiff_agent(SkiffAgentKey::ContinueOnRestore(on))?,
+            Edit::Folder(v) => {
+                let dir = match v.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+                    None => None,
+                    Some(v) => {
+                        let dir = expand_home(v)?;
+                        if !dir.is_dir() {
+                            bail!("{} is not a folder", dir.display());
+                        }
+                        Some(dir.canonicalize().with_context(|| format!("find {}", dir.display()))?)
+                    }
+                };
+                config::set_skiff_agent(SkiffAgentKey::Folder(dir.as_deref()))?
+            }
+        }
+        read()
+    })
+    .await?;
+    let _ = app.emit(PROJECTS_CHANGED, ());
+    Ok(out)
 }
 
 #[cfg(test)]

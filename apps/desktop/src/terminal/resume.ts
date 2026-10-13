@@ -41,16 +41,35 @@ interface Adapter {
 /** Quotes one word for the shell. */
 const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
+/** A subcommand goes after the program and before the user's flags: `codex resume --dangerously-…`. */
+function sub(cmd: string, ...words: string[]): string {
+  const [program, ...flags] = cmd.split(/\s+/);
+  return [program, ...words, ...flags].join(" ");
+}
+
+/**
+ * The line that continues the newest conversation in the folder, from each
+ * CLI's help (2026-10-13). Only the Skiff agent's own folder runs it on
+ * restore: it holds no other conversation. A custom agent has none.
+ */
+const CONTINUE: Record<string, (cmd: string) => string> = {
+  claude: (cmd) => `${cmd} --continue`,
+  codex: (cmd) => sub(cmd, "resume", "--last"),
+  opencode: (cmd) => `${cmd} --continue`,
+  grok: (cmd) => `${cmd} --continue`,
+  gemini: (cmd) => `${cmd} --continue`,
+};
+
+/** The agent's continue line for `cmd`, its command line from Settings. Null: it has none. */
+export function continueLine(agent: string, cmd: string): string | null {
+  return CONTINUE[agent]?.(cmd) ?? null;
+}
+
 const ADAPTERS: Record<string, Adapter> = {
   // claude 2.1: --resume opens the picker, and a word that is not an id fills its search.
   claude: { picker: (cmd, title) => `${cmd} --resume${title ? " " + q(title) : ""}` },
   // codex 0.159: `codex resume` opens the picker for this folder. Flags go after `resume`.
-  codex: {
-    picker: (cmd) => {
-      const [program, ...flags] = cmd.split(/\s+/);
-      return [program, "resume", ...flags].join(" ");
-    },
-  },
+  codex: { picker: (cmd) => sub(cmd, "resume") },
   // opencode 1.18: no picker flag, a JSON list with each session's folder.
   opencode: {
     list: {
@@ -78,7 +97,7 @@ const ADAPTERS: Record<string, Adapter> = {
     },
   },
   // gemini (agy 1.2): no list and no picker. Only the newest conversation, on request.
-  gemini: { latest: (cmd) => `${cmd} --continue` },
+  gemini: { latest: CONTINUE.gemini },
 };
 
 /** How many sessions the list shows first, and after Show more. */

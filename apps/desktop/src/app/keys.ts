@@ -16,7 +16,7 @@ export type Action =
   | "focus-left" | "focus-right" | "focus-up" | "focus-down"
   | "project-menu" | "project-folder" | "project-copy-path" | "project-color" | "project-changes" | "project-files"
   | "region-next" | "region-prev" | "session-next" | "session-prev" | "list-project" | "list-back" | "list-main" | "shortcuts"
-  | "focus-mode" | "maximize" | "mission-control";
+  | "focus-mode" | "maximize" | "mission-control" | "skiff-agent";
 
 const isMac = navigator.userAgent.includes("Macintosh");
 
@@ -65,6 +65,7 @@ export const DEFAULTS: Record<Action, string> = {
   "focus-mode": "ctrl+shift+e",
   maximize: "ctrl+shift+enter",
   "mission-control": "ctrl+shift+a",
+  "skiff-agent": "ctrl+shift+l",
 };
 
 interface Combo { ctrl: boolean; shift: boolean; alt: boolean; key: string }
@@ -158,6 +159,13 @@ export function menuAccel(action: Action): string {
   return [c.ctrl && "CmdOrCtrl", c.alt && "Alt", c.shift && "Shift", k].filter(Boolean).join("+");
 }
 
+/** The Skiff agent's name from Settings. Its F1 line reads it. */
+let skiffAgentName = "Skipper";
+export const setSkiffAgentName = (name: string) => void (skiffAgentName = name);
+
+/** A DESCRIBE line with the names Settings sets filled in. */
+export const describeText = (what: string) => what.replaceAll("{skiff-agent}", skiffAgentName);
+
 /** What each action does, for the shortcut sheet. Grouped as the menu bar is. */
 export const DESCRIBE: [string, Action, string][] = [
   ["File", "new-session", "New session in the highlighted worktree, as its + does"],
@@ -182,6 +190,7 @@ export const DESCRIBE: [string, Action, string][] = [
   ["View", "split-down", "Add pane below"],
   ["View", "close-pane", "Take the session out of its group: the focused pane, or the session row in the list. It stays selected. On a group row, ungroup. Sessions keep running"],
   ["View", "next-waiting", "Next waiting session"],
+  ["View", "skiff-agent", "{skiff-agent}, the Skiff agent: show its pane. With none running, start it in its folder"],
   ["View", "back", "Back to the last session"],
   ["View", "session-next", "Next row in the list: worktree, group, session, Changes or Files. A change or file shows its preview, which takes the keys. Changes, Files and folders keep the keys: Space opens or closes them. In Settings, the next section. In mission control, the next screen in the lane"],
   ["View", "session-prev", "Previous row in the list. In Settings, the previous section. In mission control, the previous screen in the lane"],

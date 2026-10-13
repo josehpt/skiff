@@ -44,6 +44,8 @@ let order: string[][] = [];
 let shape = "";
 let timer: number | undefined;
 let reading = false;
+// Set by board.stop(): no rebuild, update or read until board.start().
+let paused = false;
 const screens = new Map<string, HTMLElement>();
 
 /** A project's sessions in tree order: each worktree's groups and their members, then the rest. */
@@ -71,46 +73,92 @@ function lanes(): Lane[] {
     .filter((l, i) => l.projects.length || i > 0);
 }
 
+/** The head's parts: state, agent, title, and the branch when it is not the main one. */
+function headParts(s: SessionInfo, p: Project): HTMLElement[] {
+  const out = [stateIcon(s), agentIcon(s), h("span", "title", taskTitle(s))];
+  const w = place(s)?.worktree;
+  if (w && !bareWorktree(p) && !w.is_main) out.push(h("span", "where mono", branchName(w)));
+  return out;
+}
+
+/** Markup to compare, less the busy icon's phase, which is new on each call. */
+const same = (a: Element, b: Element) => strip(a.outerHTML) === strip(b.outerHTML);
+const strip = (html: string) => html.replace(/--(water|skiff)-delay:[^;"]*;?\s*/g, "");
+
+/** The session's terminal theme, as its pane shows it. */
+function paint(pre: HTMLElement, s: SessionInfo) {
+  const id = themeIdFor(s);
+  const t = S.themes.find((x) => x.id === id) ?? S.themes.find((x) => x.id === DEFAULT_THEME);
+  if (!t) return;
+  pre.style.background = t.background;
+  pre.style.color = xtermTheme(t).foreground;
+  pre.style.colorScheme = isLight(t.background) ? "light" : "dark";
+}
+
+/** Brings a tile up to date in place. The tile stays, so its light does not flicker. */
+function fresh(b: HTMLElement, s: SessionInfo, p: Project) {
+  b.style.setProperty("--pc", accent(p));
+  const label = `${taskTitle(s)}, ${s.state}`;
+  if (b.getAttribute("aria-label") !== label) b.setAttribute("aria-label", label);
+  const head = b.querySelector<HTMLElement>(".mission-head");
+  if (head) {
+    const next = h("span", "mission-head");
+    next.append(...headParts(s, p));
+    if (!same(head, next)) head.replaceChildren(...next.childNodes);
+  }
+  const pre = screens.get(s.id);
+  if (pre) paint(pre, s);
+}
+
 function tile(s: SessionInfo, p: Project): HTMLElement {
   const b = h("button", "mission-tile" + (s.id === lit ? " lit" : ""));
   b.type = "button";
   b.tabIndex = -1;
   b.dataset.session = s.id;
-  b.style.setProperty("--pc", accent(p));
-  b.setAttribute("aria-label", `${taskTitle(s)}, ${s.state}`);
-  const head = h("span", "mission-head");
-  head.append(stateIcon(s), agentIcon(s), h("span", "title", taskTitle(s)));
-  const w = place(s)?.worktree;
-  if (w && !bareWorktree(p) && !w.is_main) head.appendChild(h("span", "where mono", branchName(w)));
   const pre = screens.get(s.id) ?? h("pre", "mission-screen");
   screens.set(s.id, pre);
-  // The session's terminal theme, as its pane shows it.
-  const id = themeIdFor(s);
-  const t = S.themes.find((x) => x.id === id) ?? S.themes.find((x) => x.id === DEFAULT_THEME);
-  if (t) {
-    pre.style.background = t.background;
-    pre.style.color = xtermTheme(t).foreground;
-    pre.style.colorScheme = isLight(t.background) ? "light" : "dark";
-  }
-  b.append(head, pre);
+  b.append(h("span", "mission-head"), pre);
+  fresh(b, s, p);
   return b;
 }
 
-function build() {
-  const all = lanes();
+/** The bar's counts: all sessions on the board, and those that wait. */
+function counts(bar: HTMLElement, ids: Set<string>) {
+  const n = bar.querySelector(".mission-count");
+  if (n) n.textContent = `${ids.size} sessions`;
+  const waiting = [...sessions.values()].filter((s) => s.state === "waiting").length;
+  let w = bar.querySelector(".mission-waiting");
+  if (!waiting) w?.remove();
+  else {
+    if (!w) bar.appendChild((w = h("span", "mission-waiting")));
+    w.textContent = `${waiting} waiting`;
+  }
+}
+
+/** The lane head's rollup, put in or taken out in place. */
+function roll(head: Element, l: Lane) {
+  const old = head.querySelector(".tree-roll");
+  const next = rollup(l.projects.map((x) => x.p));
+  if (!next) old?.remove();
+  else if (!old) head.appendChild(next);
+  else if (!same(old, next)) old.replaceWith(next);
+}
+
+function build(all = lanes()) {
   order = all.map((l) => l.projects.flatMap((x) => x.list.map((s) => s.id)));
   const ids = new Set(order.flat());
   for (const id of screens.keys()) if (!ids.has(id)) screens.delete(id);
   if (!lit || !ids.has(lit)) lit = order.flat()[0] ?? null;
 
+  // A rebuild on the shown board keeps where each lane and the board are scrolled.
+  const old = root.querySelector<HTMLElement>(".mission-lanes");
+  const left = old?.scrollLeft ?? 0;
+  const tops = new Map<string, number>();
+  for (const el of old?.querySelectorAll<HTMLElement>(".mission-lane") ?? []) tops.set(el.getAttribute("aria-label") ?? "", el.scrollTop);
+
   const bar = h("div", "mission-bar");
-  const count = (f: (s: SessionInfo) => boolean) => [...sessions.values()].filter(f).length;
-  bar.append(
-    h("span", "mission-name", "Mission control"),
-    h("span", "", `${ids.size} sessions`),
-  );
-  const waiting = count((s) => s.state === "waiting");
-  if (waiting) bar.appendChild(h("span", "mission-waiting", `${waiting} waiting`));
+  bar.append(h("span", "mission-name", "Mission control"), h("span", "mission-count"));
+  counts(bar, ids);
 
   const board = h("div", "mission-lanes");
   for (const [i, l] of all.entries()) {
@@ -119,8 +167,7 @@ function build() {
     lane.setAttribute("aria-label", l.name);
     const head = h("div", "mission-lane-head");
     head.appendChild(h("span", "mission-lane-name", l.name));
-    const roll = rollup(l.projects.map((x) => x.p));
-    if (roll) head.appendChild(roll);
+    roll(head, l);
     lane.appendChild(head);
     if (!l.projects.length) lane.appendChild(h("div", "mission-none", "No sessions"));
     for (const { p, list } of l.projects) {
@@ -134,13 +181,31 @@ function build() {
   }
   if (!all.length) board.appendChild(h("div", "mission-empty", "No sessions"));
   root.replaceChildren(bar, board);
+
+  if (root.hidden || !old) return;
+  board.scrollLeft = left;
+  for (const el of board.querySelectorAll<HTMLElement>(".mission-lane")) el.scrollTop = tops.get(el.getAttribute("aria-label") ?? "") ?? 0;
 }
 
-/** What the board shows besides the text. A change rebuilds it. */
-function signature(): string {
-  return lanes()
-    .map((l) => l.name + ":" + l.projects.map((x) => x.p.name + "=" + x.list.map((s) => `${s.id}/${s.state}/${s.unread}/${taskTitle(s)}`).join(",")).join(";"))
-    .join("|");
+/** Everything but the structure, brought up to date in place. */
+function update(all: Lane[]) {
+  const bar = root.querySelector<HTMLElement>(".mission-bar");
+  if (bar) counts(bar, new Set(order.flat()));
+  const heads = root.querySelectorAll(".mission-lane-head");
+  for (const [i, l] of all.entries()) {
+    if (heads[i]) roll(heads[i], l);
+    for (const { p, list } of l.projects) {
+      for (const s of list) {
+        const b = tileOf(s.id);
+        if (b) fresh(b, s, p);
+      }
+    }
+  }
+}
+
+/** The board's structure: lanes, their projects, and the sessions in each. A change rebuilds it. */
+function signature(all: Lane[]): string {
+  return all.map((l) => l.name + ":" + l.projects.map((x) => x.p.name + "=" + x.list.map((s) => s.id).join(",")).join(";")).join("|");
 }
 
 async function read() {
@@ -150,10 +215,12 @@ async function read() {
     [...screens].map(async ([id, pre]) => {
       try {
         const lines = await invoke<string[]>("session_screen", { session: id, rows: ROWS });
+        if (paused) return;
         const text = lines.join("\n");
         if (pre.textContent !== text) pre.textContent = text;
         pre.classList.remove("note");
       } catch (e) {
+        if (paused) return;
         // An older skiffd does not know the request.
         pre.textContent = /unknown variant|bad request/.test(String(e)) ? "Restart skiffd to see screens." : String(e);
         pre.classList.add("note");
@@ -164,11 +231,13 @@ async function read() {
 }
 
 function tick() {
-  const sig = signature();
+  if (paused) return;
+  const all = lanes();
+  const sig = signature(all);
   if (sig !== shape) {
     shape = sig;
-    build();
-  }
+    build(all);
+  } else update(all);
   void read();
 }
 
@@ -202,7 +271,9 @@ export function missionOpen(): boolean {
   return !root.hidden;
 }
 
-const tileOf = (id: string | null) => (id ? root.querySelector<HTMLElement>(`.mission-tile[data-session="${CSS.escape(id)}"]`) : null);
+function tileOf(id: string | null): HTMLElement | null {
+  return id ? root.querySelector<HTMLElement>(`.mission-tile[data-session="${CSS.escape(id)}"]`) : null;
+}
 
 /**
  * What the motion code (missionMotion.ts) drives. The board owns what shows;
@@ -214,19 +285,23 @@ export const board = {
   tile: tileOf,
   /** Builds the board lit on `focus` and reads every screen once. Shows nothing. */
   async prepare(focus: string | null) {
+    paused = false;
     lit = focus;
-    shape = signature();
-    build();
+    const all = lanes();
+    shape = signature(all);
+    build(all);
     await read();
   },
   /** With the root shown: scroll the lit screen into view and keep the screens fresh. */
   start() {
+    paused = false;
     light(lit ?? "");
     window.clearInterval(timer);
     timer = window.setInterval(tick, TICK);
   },
-  /** No rebuild or read from here on: an animation is about to measure. */
+  /** No rebuild, update or read from here on: an animation is about to measure. */
   stop() {
+    paused = true;
     window.clearInterval(timer);
   },
   /** Empty and hidden. */

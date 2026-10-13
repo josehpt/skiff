@@ -2,7 +2,7 @@ use std::{os::fd::{AsRawFd, FromRawFd}, path::PathBuf};
 
 use anyhow::{bail, Context, Result};
 use skiff_core::socket::socket_path;
-use skiffd::{pty, server, session::{reload, SessionPool}, shellenv};
+use skiffd::{paths, pty, server, session::{reload, SessionPool}, shellenv};
 use tokio::net::{UnixListener, UnixStream};
 use tracing_subscriber::filter::LevelFilter;
 
@@ -46,11 +46,12 @@ async fn run(start: Start) -> Result<()> {
         )
         .init();
 
-    let path = socket_path();
     let pool = SessionPool::new();
     let listener = match start {
         Start::Fresh => {
+            let path = socket_path();
             let listener = bind(&path).await?;
+            paths::set_socket(bound(&listener).unwrap_or(path));
             pool.restore();
             listener
         }
@@ -61,7 +62,11 @@ async fn run(start: Start) -> Result<()> {
                 // still has their layout for the next start.
                 tracing::error!("reload failed after exec; sessions are lost: {e:#}");
                 let _ = std::fs::remove_file(&file);
-                let _ = std::fs::remove_file(&path);
+                // Only the socket the old image listened on. A computed
+                // path may belong to another daemon.
+                if let Some(path) = paths::listening() {
+                    let _ = std::fs::remove_file(path);
+                }
                 return Err(e);
             }
         },
@@ -71,6 +76,7 @@ async fn run(start: Start) -> Result<()> {
     pool.spawn_idle_watcher();
     pool.spawn_away_watcher();
     pool.spawn_foreground_watcher();
+    let path = paths::socket();
     tracing::info!("skiffd {} listening on {}", skiff_core::VERSION, path.display());
 
     let ctrl_c = tokio::signal::ctrl_c();
@@ -128,6 +134,11 @@ async fn bind(path: &std::path::Path) -> Result<UnixListener> {
     Ok(listener)
 }
 
+/// The path the listener is bound to.
+fn bound(listener: &UnixListener) -> Option<PathBuf> {
+    listener.local_addr().ok()?.as_pathname().map(PathBuf::from)
+}
+
 /// Takes over the sessions and the listening socket from the image this
 /// process replaced. Skips the shell probe, the bind and the restore.
 fn adopt(pool: &std::sync::Arc<SessionPool>, file: &std::path::Path) -> Result<UnixListener> {
@@ -140,6 +151,14 @@ fn adopt(pool: &std::sync::Arc<SessionPool>, file: &std::path::Path) -> Result<U
     // SAFETY: the old image passed this fd on as its listener, and nothing
     // else here owns it.
     let listener = unsafe { std::os::unix::net::UnixListener::from_raw_fd(fd) };
+    // The path the old image bound, which this build may not compute itself.
+    match listener.local_addr().ok().and_then(|a| a.as_pathname().map(PathBuf::from)) {
+        Some(socket) => paths::set_socket(socket),
+        None => tracing::warn!("the handed-over listener has no path; panes get {}", paths::socket().display()),
+    }
+    if let Some(state) = handover.state() {
+        paths::set_state(state.to_path_buf());
+    }
     pty::set_inherit(fd, false)?;
     listener.set_nonblocking(true)?;
     let listener = UnixListener::from_std(listener)?;

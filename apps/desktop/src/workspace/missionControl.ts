@@ -15,7 +15,7 @@ import { stateIcon } from "../appearance/stateIcon";
 import { DEFAULT_THEME, isLight } from "../appearance/colors";
 import { appThemeOf, themeIdFor, xtermTheme } from "../appearance/themes";
 import { appThemeVars } from "../appearance/appTheme";
-import { actionFor, keyLabel } from "../app/keys";
+import { type Action, actionFor, keyLabel } from "../app/keys";
 import { S, sessions } from "../app/state";
 import { accent, place } from "../app/stateQueries";
 import { h } from "../ui/dom";
@@ -379,7 +379,7 @@ function light(id: string, scroll = true) {
   if (scroll) root.querySelector(".mission-tile.lit")?.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
-/** Arrows: Up and Down in a lane, Left and Right to the same place in the next lane. */
+/** Arrows and list keys: Up and Down in a lane, Left and Right to the same place in the next lane. */
 function step(key: string): boolean {
   const order = shown();
   const li = order.findIndex((l) => l.includes(lit ?? ""));
@@ -474,6 +474,22 @@ root.addEventListener(
   },
   { passive: false },
 );
+/** The list keys step the screens as the arrows do: Ctrl+Shift+Up/Down in a lane, Ctrl+Shift+Left/Right across. */
+const LIST_KEYS: Partial<Record<Action, string>> = {
+  "session-next": "ArrowDown",
+  "session-prev": "ArrowUp",
+  "list-back": "ArrowRight",
+  "list-project": "ArrowLeft",
+};
+
+/** A list key on the open board. The menu bar sends its accelerators here through `runAction()`. */
+export function missionKey(a: Action | null): boolean {
+  const key = a && LIST_KEYS[a];
+  if (!key || !missionOpen()) return false;
+  step(key);
+  return true;
+}
+
 /** Ctrl+Shift+P here: into the search, or back out to the board. The search stays. */
 export function toggleSearch() {
   if (document.activeElement === search) root.focus();
@@ -494,8 +510,12 @@ root.addEventListener("keydown", (e) => {
     if (lit) light(lit);
   } else if (e.key === "Escape" || a === "mission-control") closeMission();
   else if (a === "maximize") maximizeLit();
-  else if (e.key === "Enter" && lit) closeMission(lit);
-  else if (e.ctrlKey || e.altKey || e.metaKey || !step(e.key)) return;
+  else if (missionKey(a)) {
+    // Stepped. The list keys work in the search too.
+  } else if (e.key === "Enter" && lit) closeMission(lit);
+  // Plain arrows step too. In the search, Left and Right move the caret.
+  else if (e.ctrlKey || e.shiftKey || e.altKey || e.metaKey) return;
+  else if ((e.target === search && (e.key === "ArrowLeft" || e.key === "ArrowRight")) || !step(e.key)) return;
   e.preventDefault();
   e.stopPropagation();
 });

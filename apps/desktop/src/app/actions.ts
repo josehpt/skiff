@@ -25,7 +25,7 @@ import { fontTarget, setFontSize, stepPaneFont } from "../terminal/terminalFont"
 import { modeGate, modeKeyBlocked, toggleFocusMode, toggleMaximize } from "./modes";
 import { closePane, focusNextWaiting, goBack, moveFocus, removeFromGroup } from "../workspace/view";
 import { switcher } from "./commandUi";
-import { missionOpen, toggleSearch } from "../workspace/missionControl";
+import { missionKey, missionOpen, toggleSearch } from "../workspace/missionControl";
 import { maximizeLit, toggleMission } from "../workspace/missionMotion";
 import { showShortcuts } from "../ui/infoDialogs";
 import { groupThemeMenu, projectThemeMenu, sessionThemeMenu } from "../appearance/themes";
@@ -45,9 +45,10 @@ function openNewSession() {
 export function runAction(a: Action) {
   const shown = S.focused && shownIds().includes(S.focused);
   // Mission control holds the keys as a dialog does. Its own key closes it; maximize opens the lit session;
-  // the palette key searches its sessions.
+  // the palette key searches its sessions; the list keys step its screens.
   if (missionOpen() && a === "maximize") return maximizeLit();
   if (missionOpen() && a === "palette") return toggleSearch();
+  if (missionKey(a)) return;
   if (missionOpen() && a !== "mission-control" && a !== "quit") return;
   // The native menu runs its accelerators through here, not through the key handler.
   if (modeKeyBlocked(a) || modeGate(a)) return;

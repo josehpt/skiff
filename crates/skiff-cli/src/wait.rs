@@ -172,6 +172,11 @@ pub async fn wait(c: &Client, args: &[String], target: Target, any: bool, timeou
             vec![print::short_id(id).to_string(), names[id].clone(), state.to_string()]
         })
         .collect();
+    // With `any`, a session that went away first does not count while
+    // another can still get there: that is a timeout, not 2.
+    if any && timed_out {
+        code = 1;
+    }
     print::table(&["", "", ""], &rows);
     if timed_out && code == 1 {
         eprintln!("skiff: timed out");

@@ -180,6 +180,9 @@ pub enum Response {
         /// The daemon's process id, which a reload keeps.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pid: Option<u32>,
+        /// The daemon is a debug build. `None` from daemons that predate the field.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        debug: Option<bool>,
     },
     Sessions { sessions: Vec<SessionInfo> },
     Session { session: SessionInfo },
@@ -210,6 +213,9 @@ pub enum Event {
         session: SessionId,
         #[serde(with = "b64")]
         data: Vec<u8>,
+        /// Set on the first output read after input, for the latency trace.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        echo: Option<EchoTimes>,
     },
     /// Bytes that redraw the current screen and scrollback. Starts with a
     /// full reset. Sized for the session's current `cols` x `rows`.
@@ -258,6 +264,43 @@ pub enum Event {
     GroupsChanged {},
 }
 
+/// When skiffd wrote input to the PTY, and when it read the first output
+/// after that write. Unix time in microseconds.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EchoTimes {
+    pub wrote: u64,
+    pub read: u64,
+}
+
+impl Request {
+    /// The `cmd` name, for logs.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Request::Ping => "ping",
+            Request::ListSessions => "list_sessions",
+            Request::CreateSession { .. } => "create_session",
+            Request::Write { .. } => "write",
+            Request::Submit { .. } => "submit",
+            Request::Resize { .. } => "resize",
+            Request::Subscribe { .. } => "subscribe",
+            Request::Unsubscribe { .. } => "unsubscribe",
+            Request::RenameSession { .. } => "rename_session",
+            Request::SetSessionTheme { .. } => "set_session_theme",
+            Request::Seen { .. } => "seen",
+            Request::Screen { .. } => "screen",
+            Request::Kill { .. } => "kill",
+            Request::ListAgents => "list_agents",
+            Request::ListAgentSessions { .. } => "list_agent_sessions",
+            Request::ListGroups => "list_groups",
+            Request::SaveGroup { .. } => "save_group",
+            Request::DeleteGroup { .. } => "delete_group",
+            Request::Reload { .. } => "reload",
+            Request::Shutdown => "shutdown",
+            Request::Coordinator { .. } => "coordinator",
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(untagged)]
 pub enum ServerMessage {
@@ -278,6 +321,7 @@ mod tests {
                 protocol: 2,
                 reload_state: None,
                 pid: None,
+                debug: None,
             },
         });
         let json = serde_json::to_string(&reply).unwrap();
@@ -290,11 +334,12 @@ mod tests {
         let event = ServerMessage::Event(Event::Output {
             session: "abc".into(),
             data: b"hi\x07".to_vec(),
+            echo: None,
         });
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("\"event\":\"output\""));
         match serde_json::from_str::<ServerMessage>(&json).unwrap() {
-            ServerMessage::Event(Event::Output { session, data }) => {
+            ServerMessage::Event(Event::Output { session, data, .. }) => {
                 assert_eq!(session, "abc");
                 assert_eq!(data, b"hi\x07");
             }

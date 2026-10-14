@@ -391,7 +391,7 @@ impl SessionPool {
     fn adopt_session(self: &Arc<Self>, m: SessionMeta, pty: Pty, screen: &[u8]) -> Result<()> {
         let screen = Screen::restore(screen)?;
         let id = m.info.id.clone();
-        let (input, queued) = start_writer(&id, &pty)?;
+        let (input, queued, wrote) = start_writer(&id, &pty)?;
         let front = match m.front {
             FrontSave::Shell => Front::Shell,
             FrontSave::Command => Front::Command,
@@ -404,6 +404,7 @@ impl SessionPool {
             pty,
             input,
             queued,
+            wrote,
             waker: Poller::new().context("poller")?,
             park: Park::default(),
             output,
@@ -428,6 +429,7 @@ impl SessionPool {
                 unscanned: m.unscanned,
                 printed: m.printed,
                 printed_work: m.printed_work,
+                echo: None,
             }),
             info: Mutex::new(info.clone()),
         });

@@ -131,6 +131,8 @@ pub fn run() {
             commands::config_path,
             diagnostics::trace_info,
             diagnostics::trace_write,
+            diagnostics::trace_set,
+            diagnostics::system_load,
             commands::open_config,
             config::set_appearance,
             config::set_font_size,

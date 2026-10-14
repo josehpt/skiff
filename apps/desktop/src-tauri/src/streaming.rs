@@ -117,12 +117,18 @@ pub(crate) async fn subscribe_output(
                     sent += n;
                     snapshot_end = sent;
                 }
-                Ok(Event::Output { session, data }) if live && !behind && session == sid => {
+                Ok(Event::Output { session, data, echo }) if live && !behind && session == sid => {
                     // Live bytes past the last snapshot that xterm has not parsed.
                     let parsed = flow.parsed.load(Ordering::Relaxed).max(snapshot_end);
                     if sent.saturating_sub(parsed) >= BEHIND_HIGH {
                         behind = true;
                         continue;
+                    }
+                    // The latency trace reads it before the bytes it times.
+                    if let Some(echo) = echo.filter(|_| crate::diagnostics::tracing_on()).and_then(|e| serde_json::to_string(&e).ok()) {
+                        if on_output.send(InvokeResponseBody::Json(echo)).is_err() {
+                            break;
+                        }
                     }
                     let Ok(n) = flow.send(&on_output, data) else { break };
                     sent += n;

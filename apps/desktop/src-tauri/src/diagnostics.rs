@@ -1,5 +1,64 @@
-use std::path::PathBuf;
-use tauri::{AppHandle, Manager};
+use std::{
+    path::PathBuf,
+    sync::atomic::{AtomicBool, Ordering},
+};
+use serde::Serialize;
+use tauri::{AppHandle, Manager, State};
+use crate::connection::{ensure_client, App};
+
+/// The page's latency trace is on: output streams carry skiffd's echo times.
+static TRACING: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn tracing_on() -> bool {
+    TRACING.load(Ordering::Relaxed)
+}
+
+/// Turns the echo times on or off. Returns the builds, as
+/// `app debug, skiffd release`, so a trace can compare the two.
+#[tauri::command]
+pub(crate) async fn trace_set(app: State<'_, App>, on: bool) -> Result<String, String> {
+    TRACING.store(on, Ordering::Relaxed);
+    let build = |debug: bool| if debug { "debug" } else { "release" };
+    let daemon = match ensure_client(&app).await {
+        Ok((c, _)) => c.daemon_info().await.ok().and_then(|i| i.debug).map_or("unknown", build),
+        Err(_) => "unknown",
+    };
+    Ok(format!("app {}, skiffd {daemon}", build(cfg!(debug_assertions))))
+}
+
+/// System load for the latency trace. `cpu` and `io`: the share of the last
+/// 10 s that some task waited for that resource (Linux pressure stall
+/// information, `some avg10`). `load`: the 1-minute load average.
+#[derive(Serialize, Default)]
+pub(crate) struct Load {
+    cpu: Option<f32>,
+    io: Option<f32>,
+    load: Option<f32>,
+}
+
+#[tauri::command]
+pub(crate) fn system_load() -> Load {
+    let mut load = Load::default();
+    #[cfg(target_os = "linux")]
+    {
+        let avg10 = |file: &str| {
+            let text = std::fs::read_to_string(format!("/proc/pressure/{file}")).ok()?;
+            let some = text.lines().find(|l| l.starts_with("some "))?;
+            some.split_whitespace().find_map(|f| f.strip_prefix("avg10="))?.parse().ok()
+        };
+        load.cpu = avg10("cpu");
+        load.io = avg10("io");
+    }
+    #[cfg(unix)]
+    {
+        let mut avg = [0f64; 3];
+        // SAFETY: getloadavg writes at most 3 values into `avg`.
+        if unsafe { libc::getloadavg(avg.as_mut_ptr(), 3) } >= 1 {
+            load.load = Some(avg[0] as f32);
+        }
+    }
+    load
+}
 
 /// Where the keystroke latency trace goes: `SKIFF_TRACE=<file>`, or
 /// latency.jsonl in the app's log folder.

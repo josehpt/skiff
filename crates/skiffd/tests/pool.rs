@@ -73,14 +73,21 @@ async fn write_reaches_the_process() {
     pool.write(&info.id, b"ping\n").unwrap();
 
     let mut bytes = Vec::new();
+    let mut echo = None;
     let deadline = tokio::time::sleep(Duration::from_secs(5));
     tokio::pin!(deadline);
     while !String::from_utf8_lossy(&bytes).contains("ping") {
         tokio::select! {
-            chunk = output.recv() => if let Ok(c) = chunk { bytes.extend_from_slice(&c) },
+            chunk = output.recv() => if let Ok(c) = chunk {
+                bytes.extend_from_slice(&c);
+                echo = echo.or(c.echo);
+            },
             _ = &mut deadline => panic!("no echo from cat"),
         }
     }
+    // The answer carries when the write went in and when the answer came out.
+    let echo = echo.expect("no echo times on the answer");
+    assert!(echo.wrote > 0 && echo.wrote <= echo.read, "{echo:?}");
     pool.kill(&info.id).unwrap();
 }
 

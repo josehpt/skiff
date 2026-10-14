@@ -12,6 +12,7 @@ import { render } from "../app/renderRequest";
 import { S, sessions } from "../app/state";
 import { currentProject, place } from "../app/stateQueries";
 import { panes } from "../terminal/terminalState";
+import { skiffAgentSession } from "../app/skiffAgent";
 
 /** Foot themes became built-ins; old `foot:x` choices mean `builtin:x`. */
 const canonTheme = (id: string | null) => (id ? id.replace(/^foot:/, "builtin:") : id);
@@ -57,9 +58,14 @@ export function themeIdFor(s: SessionInfo | undefined): string {
 
 let appliedApp: string | undefined;
 
-/** The app's own colors: sidebar, top bar, panels. The selected project's theme wins. */
+/**
+ * The app's own colors: sidebar, top bar, panels. The selected project's theme
+ * wins. The Skiff agent has no project row to select: while its pane is on
+ * screen, the app takes its terminal's theme.
+ */
 export function applyApp() {
-  const want = themeFor(currentProject());
+  const agent = skiffAgentSession();
+  const want = agent && !S.activeGroup && S.single === agent.id ? themeIdFor(agent) : themeFor(currentProject());
   if (want === appliedApp) return;
   appliedApp = want;
   applyAppTheme(S.themes.find((t) => t.id === want) ?? null);

@@ -303,7 +303,7 @@ pub fn start_watch(socket: &Path, cli: &Path, session: &str) -> Result<bool> {
         }
     }
     let log = std::fs::File::create(socket.with_extension("watch.log")).context("create the watch log")?;
-    let mut cmd = std::process::Command::new(cli);
+    let mut cmd = outliving(cli, &unit_for("skiff-watch", socket));
     cmd.args(["watch", session])
         .env("SKIFF_SOCKET", socket)
         .stdin(std::process::Stdio::null())
@@ -318,17 +318,90 @@ pub fn start_watch(socket: &Path, cli: &Path, session: &str) -> Result<bool> {
     Ok(true)
 }
 
+/// A command for `program` that outlives the login that starts it, an SSH
+/// login included. On Linux with a systemd user manager, it runs through
+/// `systemd-run --user --scope --unit=<unit>`: the process leaves the
+/// login's cgroup, so logind does not kill it at logout
+/// (KillUserProcesses=yes). It gets DISPLAY, WAYLAND_DISPLAY,
+/// DBUS_SESSION_BUS_ADDRESS and XDG_RUNTIME_DIR from the user manager, so
+/// the sessions it starts see the desktop. A scope, not a service: a service
+/// unit ends and kills the child when systemd-run returns. Else `program`
+/// as is. Add the arguments to the result, then call [`detach`].
+pub fn outliving(program: &Path, unit: &str) -> std::process::Command {
+    #[cfg(target_os = "linux")]
+    if let Some(env) = user_manager_env() {
+        let mut cmd = std::process::Command::new("systemd-run");
+        cmd.args(["--user", "--scope", "--quiet", "--collect"])
+            .arg(format!("--unit={}", unit_name(unit)))
+            .arg("--")
+            .arg(program)
+            .envs(env);
+        return cmd;
+    }
+    let _ = unit;
+    std::process::Command::new(program)
+}
+
+/// `unit-<socket name>`, in the characters a unit name takes.
+pub fn unit_for(unit: &str, socket: &Path) -> String {
+    let stem = socket.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    format!("{unit}-{stem}")
+}
+
+#[cfg(target_os = "linux")]
+fn unit_name(unit: &str) -> String {
+    unit.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect()
+}
+
+/// The desktop's variables from `systemctl --user show-environment`. `None`
+/// when there is no user manager to ask.
+#[cfg(target_os = "linux")]
+fn user_manager_env() -> Option<Vec<(String, String)>> {
+    const KEEP: [&str; 4] = ["DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR"];
+    let mut cmd = std::process::Command::new("systemctl");
+    cmd.args(["--user", "show-environment"]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    // An SSH login can lack XDG_RUNTIME_DIR, and systemctl --user needs it.
+    if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
+        let run = skiff_core::socket::runtime_dir();
+        cmd.env("XDG_RUNTIME_DIR", run);
+    }
+    let out = cmd.output().ok().filter(|o| o.status.success())?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let env: Vec<(String, String)> = text
+        .lines()
+        .filter_map(|l| l.split_once('='))
+        .filter(|(k, _)| KEEP.contains(k))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    // systemd-run reaches the manager through XDG_RUNTIME_DIR too.
+    env.iter().any(|(k, _)| k == "XDG_RUNTIME_DIR").then_some(env)
+}
+
 /// Runs `cmd` in a session of its own, so a hangup of the terminal that
-/// started it (an SSH logout) does not reach it.
+/// started it (an SSH logout) does not reach it. On Linux it also gets a
+/// session keyring of its own, linked to the user keyring as pam_keyinit
+/// does: the login's keyring is revoked at logout, and every program the
+/// process starts would inherit the dead one.
 pub fn detach(cmd: &mut std::process::Command) {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        // SAFETY: setsid is async-signal-safe and touches no memory.
+        // SAFETY: setsid and keyctl are plain syscalls and touch no memory.
         unsafe {
             cmd.pre_exec(|| {
                 if libc::setsid() == -1 {
                     return Err(std::io::Error::last_os_error());
+                }
+                #[cfg(target_os = "linux")]
+                {
+                    const JOIN_SESSION_KEYRING: libc::c_long = 1;
+                    const LINK: libc::c_long = 8;
+                    const USER_KEYRING: libc::c_long = -4;
+                    const SESSION_KEYRING: libc::c_long = -3;
+                    // A kernel without keys refuses both. That is no reason not to start.
+                    if libc::syscall(libc::SYS_keyctl, JOIN_SESSION_KEYRING, 0 as libc::c_long) >= 0 {
+                        libc::syscall(libc::SYS_keyctl, LINK, USER_KEYRING, SESSION_KEYRING);
+                    }
                 }
                 Ok(())
             });

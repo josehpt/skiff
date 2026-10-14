@@ -104,8 +104,9 @@ fn daemon_binary() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("skiffd"))
 }
 
-/// Starts skiffd on `socket` in a session of its own, so it outlives this
-/// terminal and an SSH logout. Logs beside the socket, as the app does.
+/// Starts skiffd on `socket` apart from this login: its own scope, session
+/// and keyring (see [`skipper::outliving`] and [`skipper::detach`]), so it
+/// outlives this terminal and an SSH logout. Logs beside the socket, as the app does.
 fn start_daemon(socket: &Path) -> Result<()> {
     let log = socket.with_extension("log");
     if let Some(dir) = log.parent() {
@@ -115,7 +116,7 @@ fn start_daemon(socket: &Path) -> Result<()> {
     let _ = std::fs::rename(&log, log.with_extension("log.1"));
     let file = std::fs::File::create(&log).with_context(|| format!("create {}", log.display()))?;
     let bin = daemon_binary();
-    let mut cmd = std::process::Command::new(&bin);
+    let mut cmd = skipper::outliving(&bin, &skipper::unit_for("skiffd", socket));
     cmd.env("SKIFF_SOCKET", socket).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::from(file));
     skipper::detach(&mut cmd);
     let mut child = cmd.spawn().with_context(|| format!("start {}", bin.display()))?;

@@ -16,7 +16,7 @@ pub fn socket_path() -> PathBuf {
 /// login, where the environment can differ. On Linux, `$XDG_RUNTIME_DIR`,
 /// else `/run/user/<uid>` when it exists. On macOS, the per-user temp folder
 /// the system names, which is the desktop's `$TMPDIR`. Else the temp dir.
-fn runtime_dir() -> PathBuf {
+pub fn runtime_dir() -> PathBuf {
     if let Some(d) = dirs::runtime_dir() {
         return d;
     }

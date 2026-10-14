@@ -3527,6 +3527,7 @@ name = "skiff-client"
 version = "1.5.0"
 dependencies = [
  "anyhow",
+ "libc",
  "serde_json",
  "skiff-core",
  "tokio",
@@ -3540,6 +3541,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "dirs 6.0.0",
+ "libc",
  "serde",
  "serde_json",
  "toml 1.1.6+spec-1.1.0",

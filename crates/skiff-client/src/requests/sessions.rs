@@ -20,6 +20,18 @@ impl Client {
         }
     }
 
+    /// Finds or starts the Skiff agent's session. See [`Request::Coordinator`].
+    /// `None` when `spec` is `None` and no coordinator lives.
+    pub async fn coordinator(&self, ask: Coordinator) -> Result<Option<Coordinated>> {
+        let req = Request::Coordinator { spec: ask.spec, start: ask.start, resume: ask.resume, expect: ask.expect };
+        match self.request(req).await? {
+            Response::Coordinator { session, created, typed } => Ok(Some(Coordinated { session, created, typed })),
+            Response::Sessions { .. } => Ok(None),
+            Response::Error { message } => bail!(message),
+            other => bail!("unexpected reply: {other:?}"),
+        }
+    }
+
     pub async fn write(&self, session: &str, data: Vec<u8>) -> Result<()> {
         self.expect_ok(Request::Write {
             session: session.to_string(),
@@ -143,4 +155,23 @@ impl Client {
         })
         .await
     }
+}
+
+/// A [`Client::coordinator`] request. See [`Request::Coordinator`].
+#[derive(Default, Debug, Clone)]
+pub struct Coordinator {
+    pub spec: Option<SessionSpec>,
+    pub start: Option<String>,
+    pub resume: Option<String>,
+    pub expect: Option<u64>,
+}
+
+/// The coordinator, and what the request did to it.
+#[derive(Debug, Clone)]
+pub struct Coordinated {
+    pub session: SessionInfo,
+    /// It started now.
+    pub created: bool,
+    /// A start or resume line went into its shell now.
+    pub typed: bool,
 }

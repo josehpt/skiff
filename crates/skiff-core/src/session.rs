@@ -57,6 +57,12 @@ pub struct SessionSpec {
     /// as a session. Runs the command as is, with no shell after it.
     #[serde(default)]
     pub peek: bool,
+    /// The Skiff agent's session. Never on the wire: only the daemon's
+    /// guarded [`Request::Coordinator`] and a restore set it.
+    ///
+    /// [`Request::Coordinator`]: crate::protocol::Request::Coordinator
+    #[serde(skip)]
+    pub coordinator: bool,
     #[serde(default = "default_cols")]
     pub cols: u16,
     #[serde(default = "default_rows")]
@@ -133,6 +139,10 @@ pub struct SessionInfo {
     /// [`Request::Submit`]: crate::protocol::Request::Submit
     #[serde(default)]
     pub input_gen: u64,
+    /// The Skiff agent's session (Skipper). At most one live session per
+    /// daemon has it. A restore keeps it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub coordinator: bool,
 }
 
 impl SessionInfo {

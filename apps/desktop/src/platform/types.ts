@@ -43,6 +43,8 @@ export interface SessionInfo {
   interactive?: boolean;
   /** Counts the input the session took. A guarded submit names it. */
   input_gen?: number;
+  /** The Skiff agent's session. skiffd marks at most one live session. */
+  coordinator?: boolean;
 }
 
 /** An agent that ran in a session, and the last title it set. */

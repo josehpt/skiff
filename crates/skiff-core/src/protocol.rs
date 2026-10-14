@@ -137,6 +137,24 @@ pub enum Request {
     /// ends every session. Answers `ok` first. A pane uses this for a
     /// deliberate stop: skiffd ignores signals from its own sessions.
     Shutdown,
+    /// Finds the live Skiff agent session (the coordinator), or starts it
+    /// from `spec`, as one guarded step: two quick calls get the same
+    /// session. With no `spec`, it only finds. A coordinator that is a bare
+    /// shell (restored, or its agent quit) is not live: the daemon types
+    /// `resume` into it when the shell was restored from an agent, else
+    /// `start`, and presses Enter. `expect` is the `input_gen` the client
+    /// read; input after it refuses the line. Answers
+    /// [`Response::Coordinator`], or [`Response::Sessions`] with none found.
+    Coordinator {
+        #[serde(default)]
+        spec: Option<SessionSpec>,
+        #[serde(default)]
+        start: Option<String>,
+        #[serde(default)]
+        resume: Option<String>,
+        #[serde(default)]
+        expect: Option<u64>,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -171,6 +189,9 @@ pub enum Response {
     Groups { groups: Vec<Group> },
     Group { group: Group },
     Error { message: String },
+    /// The answer to [`Request::Coordinator`]. `created`: it started now.
+    /// `typed`: a start or resume line went into its shell now.
+    Coordinator { session: SessionInfo, created: bool, typed: bool },
     /// A [`Request::Submit`] typed nothing: input came after its check.
     Refused,
 }

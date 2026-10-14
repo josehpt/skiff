@@ -28,12 +28,14 @@ use crate::{
 };
 
 mod away;
+mod coordinator;
 mod foreground;
 mod groups;
 mod persistence;
 mod launch;
 pub mod reload;
 use groups::prune;
+pub use coordinator::{Ask, Coordinated};
 
 /// A process's command line, for logs. Empty when it is gone.
 pub(crate) fn proc_argv(pid: u32) -> Vec<String> {
@@ -409,6 +411,9 @@ pub struct SessionPool {
     reload: Mutex<()>,
     /// The listening socket's fd, which a reload hands over. -1 when unset.
     listener: AtomicI32,
+    /// Held while a coordinator request finds or starts one. Holds the
+    /// last session a start or resume line went into, and when.
+    coordinator: Mutex<Option<(SessionId, Instant)>>,
 }
 
 impl Default for SessionPool {
@@ -425,6 +430,7 @@ impl Default for SessionPool {
             changes: RwLock::new(()),
             reload: Mutex::new(()),
             listener: AtomicI32::new(-1),
+            coordinator: Mutex::new(None),
         }
     }
 }
@@ -553,6 +559,7 @@ impl SessionPool {
             peek: spec.peek,
             interactive: false,
             input_gen: 0,
+            coordinator: spec.coordinator,
         };
 
         let (input, queued) = start_writer(&id, &pty)?;

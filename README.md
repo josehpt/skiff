@@ -32,6 +32,13 @@ Skiff does not edit files. Each worktree lists its changed files and its file tr
 
 Sessions run in `skiffd`, a daemon that owns every PTY. You can close the window and the agents keep running. When the window opens again, each terminal shows its last screen.
 
+The Skiff agent is an optional coordinator: one agent session in its own folder,
+`~/skiff-agent`, turned on in Settings › Skiff agent. It sends tasks to sessions in your
+projects and records them in a SQLite ledger (`skiff ledger`). `skiff watch` tells it when
+a task's pane ends a turn, exits or restarts. `skiff skipper` attaches to it from any
+terminal, an SSH login included, and starts it first when it does not run. Ctrl-\
+detaches. See the [wiki Skiff agent page](https://github.com/solutionscay/skiff/wiki/Skiff-agent).
+
 Each session row shows what needs you. A bell means an agent asks for approval. A flag means an agent finished its turn, or a shell command ended, while you were in another pane. `skiffd` reads this from the screen and from the program in front of the terminal, not from hooks.
 
 ## Install
@@ -71,8 +78,8 @@ limit. Theme files contain color values, so a large collection needs little spac
 ```
 crates/skiff-core    session model, wire protocol, projects.toml config, git, themes
 crates/skiffd        daemon: owns every PTY, serves clients over a Unix socket
-crates/skiff-client  async client for the socket
-crates/skiff-cli     the `skiff` command: sessions and groups from the shell
+crates/skiff-client  async client for the socket; Skiff agent setup shared by the app and the CLI
+crates/skiff-cli     the `skiff` command: sessions, groups, the Skiff agent's ledger and watcher
 apps/desktop         Tauri v2 app, vanilla TypeScript + xterm.js
   src-tauri          Rust side: config, git, open with, the skiffd connection, menus
   src/app            state, actions, keyboard, startup connections

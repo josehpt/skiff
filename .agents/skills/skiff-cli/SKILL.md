@@ -62,8 +62,10 @@ agent's session. If none runs, it sets up the folder, starts the agent and its
 `skiff watch`, then attaches. If skiffd does not run, it starts skiffd. skiffd
 marks the session, so the app and the CLI open the same one, and two opens at
 once start one. Ctrl-\ detaches. The agent keeps running. While attached, the
-session has the terminal's size, in the app too. `skiff skipper --no-attach`
-prints the session id and does not attach.
+session has the terminal's size, in the app too. On detach, the pane gets its
+size back, unless the app sized it since. A second Ctrl-C within 2 seconds is
+held back once. `skiff skipper --no-attach` prints the session id and does not
+attach.
 
 - Each row has an id and an 8-character uid. Both are never used again. Each
   command that takes an ID also takes the uid.
@@ -232,6 +234,7 @@ skiff g new --name pair "$a" "$b" --dir row
 ## Rules
 
 - Never run `skiff attach` or `skiff skipper` without `--no-attach`. They take over the terminal and need a person at the keys.
+- Never signal skiffd (`kill`, `pkill`, `killall`). skiffd ignores SIGTERM and SIGINT from its own panes and logs the sender. `skiff daemon stop` ends every session. Run it only when the user asks for it.
 - Do not `kill` a session, or remove a session from its group, unless the user asked for that session by name or you started it in this task.
 - Do not `send` into a session you did not start unless the user asked you to. A request in the current conversation counts. A standing authorization in the instructions file of your own folder also counts, for example the Skiff agent's `AGENTS.md`. With it, you can send to any session in a Skiff project. All other checks stay: peek first, do not add to or submit a draft, do not retry, and obey every `send` and `wait` refusal.
 - A standing authorization covers `send` only. It does not cover `kill`, removal from a group, approvals or theme changes.

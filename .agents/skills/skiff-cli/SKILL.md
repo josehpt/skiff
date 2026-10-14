@@ -56,6 +56,21 @@ paths. It is `ledger.db` in its folder. Read and change it only with
 `skiff ledger ls`, `add`, `update`, `show` and `rm`. Never edit the file. Read the
 ledger before you send a task or report on pending work, and keep it current.
 
+- Each row has an id and an 8-character uid. Both are never used again. Each
+  command that takes an ID also takes the uid.
+- `skiff ledger add` prints the id, the uid and a result path in `results/`.
+  It makes no file. Give that path to the child.
+- A plan groups tasks: `skiff ledger add --plan --task "..."` makes a row with
+  no pane, and `--parent UID` puts a task under it. `ls` shows each plan's tasks
+  under it. A plan's notes and its tasks' results go in the plan's own folder.
+- `--ref TEXT` is optional free text, such as a URL or a ticket key. Skiff
+  stores it and does not read it. The ledger needs no tracker, no git and no
+  network.
+- `interrupted` in `ls` means that the pane restarted after the send. A restore
+  runs a new shell under the old pane id, so the task's process is gone. Do not
+  count it as running.
+- `skiff ledger rm` removes the row only. The result files stay.
+
 ### Send a task
 
 1. Find the requested pane in the JSON list. Use its ID and confirm its working directory.

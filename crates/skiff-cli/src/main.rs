@@ -192,7 +192,7 @@ enum Cmd {
         cmd: OpenWithCmd,
     },
     /// The Skiff agent's task ledger: ledger.db in its folder.
-    #[command(after_help = "States: sent, pending (not delivered: the pane was working), blocked (the pane needs the user), done.\nThe ledger is ~/skiff-agent/ledger.db, or ledger.db in the [skiff_agent] folder override. SKIFF_LEDGER overrides the path.\nOn first use, an old ledger.md next to it is imported and kept as ledger.md.bak.")]
+    #[command(after_help = "States: sent, pending (not delivered: the pane was working), blocked (the pane needs the user), done.\nls and show print interrupted for a sent or blocked task whose pane restarted since the send: a restore runs a new shell under the old pane id.\nID is the row number or the 8-character uid that add prints. Neither is ever reused.\nResults: a task writes to results/<date>-<uid>-<slug>.md next to the ledger; a plan owns results/<date>-<uid>-<slug>/ with plan.md, and its tasks write <uid>-<slug>.md in that folder. add stores and prints the path and makes no file. rm keeps the files.\nThe ledger is ~/skiff-agent/ledger.db, or ledger.db in the [skiff_agent] folder override. SKIFF_LEDGER overrides the path.\nOn first use, an old ledger.md next to it is imported and kept as ledger.md.bak.")]
     Ledger {
         #[command(subcommand)]
         cmd: LedgerCmd,
@@ -201,25 +201,37 @@ enum Cmd {
 
 #[derive(Subcommand)]
 pub enum LedgerCmd {
-    /// Add a task. Prints its id.
+    /// Add a task, or a plan with --plan. Prints its id, uid and result path.
     Add {
-        /// The pane the task went to: an id, a unique prefix or a name. It must exist.
-        #[arg(long)]
-        pane: String,
+        /// The pane the task went to: an id, a unique prefix or a name. It
+        /// must exist. A plan has no pane.
+        #[arg(long, required_unless_present = "plan", conflicts_with = "plan")]
+        pane: Option<String>,
         #[arg(long)]
         task: String,
+        /// A plan: a row with no pane that groups tasks under it.
+        #[arg(long)]
+        plan: bool,
+        /// The plan this task belongs to: its id or uid.
+        #[arg(long, value_name = "ID", conflicts_with = "plan")]
+        parent: Option<String>,
         /// Default: the project that holds the pane's folder.
         #[arg(long)]
         project: Option<String>,
         #[arg(long, default_value = "sent")]
         state: String,
-        /// Where the child writes a long result.
+        /// Where the child writes its result. Default: a path in results/.
         #[arg(long, value_name = "PATH")]
         result: Option<String>,
+        /// Free text that names the work elsewhere: a URL, a ticket key,
+        /// anything. Skiff stores it and never reads it.
+        #[arg(long = "ref", value_name = "TEXT")]
+        reference: Option<String>,
     },
-    /// Change a task. Only the given fields change.
+    /// Change a task. Only the given fields change. A new pane, or the state
+    /// sent, records the pane's current generation.
     Update {
-        id: i64,
+        id: String,
         #[arg(long)]
         state: Option<String>,
         #[arg(long, value_name = "PATH")]
@@ -230,9 +242,16 @@ pub enum LedgerCmd {
         pane: Option<String>,
         #[arg(long)]
         project: Option<String>,
+        /// Move the task under this plan: its id or uid.
+        #[arg(long, value_name = "ID")]
+        parent: Option<String>,
+        #[arg(long = "ref", value_name = "TEXT")]
+        reference: Option<String>,
     },
-    /// List tasks, oldest first. LIVE says if the pane still exists.
+    /// List tasks, oldest first, each plan's tasks under it. LIVE says if
+    /// the pane still exists.
     Ls {
+        /// sent, pending, blocked, done or interrupted.
         #[arg(long)]
         state: Option<String>,
         #[arg(long)]
@@ -240,12 +259,12 @@ pub enum LedgerCmd {
     },
     /// Show one task.
     Show {
-        id: i64,
+        id: String,
         #[arg(long)]
         json: bool,
     },
-    /// Take a task out of the ledger.
-    Rm { id: i64 },
+    /// Take a task out of the ledger. Its result file stays.
+    Rm { id: String },
 }
 
 #[derive(Subcommand)]

@@ -135,6 +135,16 @@ pub struct SessionInfo {
     pub input_gen: u64,
 }
 
+impl SessionInfo {
+    /// The pane's process generation: its start time. A reload keeps the
+    /// session and its program, so it keeps the generation. A restore or a
+    /// new start runs a new program under the old id, so the generation
+    /// changes. `None` from a daemon too old to send a start time.
+    pub fn generation(&self) -> Option<u64> {
+        (self.started_at != 0).then_some(self.started_at)
+    }
+}
+
 /// An agent that ran in a session, and the last title it set.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Was {

@@ -3,7 +3,10 @@
 //! stops when that session ends. A pane that waits notifies the person. A
 //! pane that goes idle after work, exits or is gone wakes the agent: one line
 //! typed into its input box while it is idle and the box is empty. The
-//! daemon types it only if the person typed nothing since that check.
+//! daemon types it only if the person typed nothing since that check. A
+//! task whose pane restarted since the send (a restore runs a new shell under
+//! the old id) wakes the agent once as interrupted. Plans have no pane and
+//! are not followed.
 //!
 //! It keeps no state of its own. The ledger, the session list and each pane's
 //! unread flag are the input, so a new run rebuilds the same view. One lock
@@ -48,18 +51,6 @@ pub struct Options {
     pub notify: bool,
 }
 
-/// An open row of the ledger.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Task {
-    pub pane: String,
-    pub task: String,
-}
-
-/// The open rows of the ledger (`skiff ledger`): the state is `sent`,
-/// `pending` or `blocked`.
-fn open_tasks() -> Result<Vec<Task>> {
-    Ok(ledger::open_tasks()?.into_iter().map(|r| Task { pane: r.pane_id, task: r.task }).collect())
-}
 
 /// What a ledger pane is now.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -70,6 +61,8 @@ pub enum Now {
     /// The program, or the agent in front of the launch shell, ended.
     Exit,
     Gone,
+    /// The pane restarted since the task was sent.
+    Interrupted,
 }
 
 impl Now {
@@ -94,6 +87,7 @@ pub enum Fact {
     Idle,
     Exit,
     Gone,
+    Interrupted,
 }
 
 impl Fact {
@@ -103,6 +97,7 @@ impl Fact {
             Fact::Idle => "is idle",
             Fact::Exit => "exited",
             Fact::Gone => "is gone",
+            Fact::Interrupted => "restarted",
         }
     }
 }
@@ -137,6 +132,7 @@ impl Pane {
             Now::Waiting => Fact::Waiting,
             Now::Exit => Fact::Exit,
             Now::Gone => Fact::Gone,
+            Now::Interrupted => Fact::Interrupted,
         };
         if self.told == Some(fact) {
             return None;
@@ -153,6 +149,8 @@ pub struct Wake {
     pub pane: String,
     pub name: String,
     pub id: String,
+    /// The task's uid, for an interrupted task.
+    pub task: Option<String>,
 }
 
 /// The one line the agent gets for all held wakes.
@@ -161,7 +159,8 @@ pub fn wake_line(wakes: &[Wake]) -> String {
         .iter()
         .map(|w| {
             let who = if w.name.is_empty() { String::new() } else { format!("{} ", w.name) };
-            format!("pane {who}{} {}", print::short_id(&w.id), w.fact.phrase())
+            let tail = w.task.as_ref().map_or(String::new(), |t| format!(": task {t} is interrupted"));
+            format!("pane {who}{} {}{tail}", print::short_id(&w.id), w.fact.phrase())
         })
         .collect();
     let tail = if wakes.len() == 1 { "Read it, then mark it seen." } else { "Read them, then mark each seen." };
@@ -218,12 +217,25 @@ impl Watcher {
         }
         let fact = pane.observe(now)?;
         let id = s.map(|s| s.id.clone()).unwrap_or_else(|| key.to_string());
-        let wake = Wake { fact, pane: key.to_string(), name: pane.name.clone(), id };
+        let wake = Wake { fact, pane: key.to_string(), name: pane.name.clone(), id, task: None };
         if fact != Fact::Waiting {
             // The newest fact for a pane replaces an older one still held.
             self.held.retain(|h| h.pane != key);
             self.held.push(wake.clone());
         }
+        Some(wake)
+    }
+
+    /// Takes a task whose pane restarted since the send. It is followed by
+    /// its uid, not its pane: the pane's new program is not the task. Told
+    /// once per run.
+    fn interrupted(&mut self, uid: &str, s: &SessionInfo) -> Option<Wake> {
+        let key = format!("task:{uid}");
+        let pane = self.panes.entry(key.clone()).or_default();
+        pane.name = resolve::display_name(s).to_string();
+        let fact = pane.observe(Now::Interrupted)?;
+        let wake = Wake { fact, pane: key, name: pane.name.clone(), id: s.id.clone(), task: Some(uid.to_string()) };
+        self.held.push(wake.clone());
         Some(wake)
     }
 
@@ -340,7 +352,7 @@ async fn step(c: &Client, o: &Options, w: &mut Watcher) -> Result<Option<i32>> {
     w.skipper = Some(skipper.id.clone());
     // A read that fails (the file busy past its timeout) skips this step: the
     // next tick reads again. An empty list would forget the open panes.
-    let tasks = match open_tasks() {
+    let tasks = match ledger::open_tasks() {
         Ok(t) => t,
         Err(e) => {
             log(format!("cannot read the ledger: {e:#}"));
@@ -350,12 +362,22 @@ async fn step(c: &Client, o: &Options, w: &mut Watcher) -> Result<Option<i32>> {
 
     let mut open = HashSet::new();
     for t in &tasks {
-        let s = resolve::session(&all, &t.pane).ok();
+        let Some(pane) = t.pane_id.as_deref() else { continue };
+        let s = resolve::session(&all, pane).ok();
         if s.is_some_and(|s| s.id == skipper.id) {
             continue;
         }
-        open.insert(t.pane.clone());
-        let Some(wake) = w.track(&t.pane, s) else { continue };
+        let wake = match s.filter(|s| t.interrupted_in(Some(s))) {
+            Some(s) => {
+                open.insert(format!("task:{}", t.uid));
+                w.interrupted(&t.uid, s)
+            }
+            None => {
+                open.insert(pane.to_string());
+                w.track(pane, s)
+            }
+        };
+        let Some(wake) = wake else { continue };
         log(format!("{} {} {}", wake.fact.phrase(), print::short_id(&wake.id), wake.name));
         if wake.fact == Fact::Waiting && o.notify {
             let title = format!("{} ({}) is waiting", wake.name, print::short_id(&wake.id));
@@ -510,12 +532,18 @@ mod tests {
 
     #[test]
     fn held_wakes_make_one_line() {
-        let w = |fact, name: &str, id: &str| Wake { fact, pane: id.into(), name: name.into(), id: id.into() };
+        let w = |fact, name: &str, id: &str| Wake { fact, pane: id.into(), name: name.into(), id: id.into(), task: None };
         assert_eq!(wake_line(&[w(Fact::Idle, "api", "abc12345xyz")]), "[watch] pane api abc12345 is idle. Read it, then mark it seen.");
         assert_eq!(
             wake_line(&[w(Fact::Idle, "api", "abc12345"), w(Fact::Gone, "", "def67890")]),
             "[watch] pane api abc12345 is idle; pane def67890 is gone. Read them, then mark each seen."
         );
+        let mut w = Watcher::default();
+        let s = info("abc12345xyz", "idle", true);
+        assert!(w.interrupted("3f9a01bc", &s).is_some());
+        // Once per run, however long the row stays open.
+        assert!(w.interrupted("3f9a01bc", &s).is_none());
+        assert_eq!(wake_line(&w.held), "[watch] pane abc12345xyz abc12345 restarted: task 3f9a01bc is interrupted. Read it, then mark it seen.");
     }
 
     fn info(id: &str, state: &str, unread: bool) -> SessionInfo {

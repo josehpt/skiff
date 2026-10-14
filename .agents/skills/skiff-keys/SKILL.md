@@ -24,7 +24,7 @@ Read the `skiff-design` skill first. Its interaction rules apply: Ctrl+Shift for
 
 Keys that are not actions live where they are handled. Their F1 rows are in `FIXED_SHORTCUTS`:
 
-- List and rail keys (Enter, Space, arrows, F2, Delete, Menu): `$("sidebar-scroll")` and `$("rail")` handlers in `keyboard.ts`.
+- List keys (Enter, Space, arrows, F2, Delete, Menu): the `$("sidebar-scroll")` handler in `keyboard.ts`.
 - Ctrl+Shift+1…9: `projectKey()` in `keyboard.ts`.
 - Menus, palette, find bar, start-session menu, empty pane: their own files.
 

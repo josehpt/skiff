@@ -24,7 +24,7 @@ export function upsert(info: SessionInfo) {
   else sessions.set(info.id, info);
 }
 
-/** The rail's "Other" entry: sessions outside every project (a removed worktree, a folder not added). */
+/** The tree's "Other" entry: sessions outside every project (a removed worktree, a folder not added). */
 export const OTHER = "\u0000other";
 
 /** A group holds at most this many panes. */
@@ -63,9 +63,9 @@ export const S = {
   /** The session whose title is an input for renaming. */
   renamingSession: null as string | null,
 
-  /** Open projects, in rail order. */
+  /** Open projects, in saved order. */
   projects: [] as Project[],
-  /** Closed projects: kept with their settings, out of the rail. */
+  /** Closed projects: kept with their settings, out of the tree. */
   closedProjects: [] as Project[],
   projectsError: null as string | null,
   selectedProject: null as string | null,
@@ -80,12 +80,9 @@ export const S = {
   selection: [] as string[],
   /** The list item the session list's single Tab stop lands on. */
   roveKey: null as string | null,
-  /** The keys are on the rail (Ctrl+Shift+Left): Ctrl+Shift+Up/Down step through
-   *  projects, and no sidebar row is highlighted. Ctrl+Shift+Right goes back. */
-  atRail: false,
   /** A pane asked for the keys before its terminal opened. It takes them when it opens. */
   grab: null as string | null,
-  /** Focus mode: the terminal area alone, no rail, tree, top bar or status bar. */
+  /** Focus mode: the terminal area alone, no tree, top bar or status bar. */
   focusMode: false,
   /** The pane that fills the terminal area, or null. The window chrome hides too. */
   maximized: null as string | null,

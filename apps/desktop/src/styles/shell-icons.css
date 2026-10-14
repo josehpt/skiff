@@ -1,10 +1,2 @@
-/* Project icons: in the rail in place of the letters, and before the name. */
-.rail-chip .project-icon { display: block; object-fit: contain; }
-/* Hover and the active project fill the cell with the project color, the icon on top.
-   Inactive icons are quiet; hover and the active project get full color. */
-.rail-chip.has-icon.has-icon:hover { background: color-mix(in srgb, var(--pc) 26%, transparent); }
-.rail-chip.has-icon.active.active { background: color-mix(in srgb, var(--pc) 32%, transparent); }
-.rail-chip.has-icon .project-icon { width: calc(24 * var(--u)); height: calc(24 * var(--u)); opacity: 0.55; filter: saturate(0.4); transition: opacity 120ms, filter 120ms; }
-/* A project that needs a look shows its icon in full color too. */
-.rail-chip.has-icon:hover .project-icon, .rail-chip.has-icon.active .project-icon, .rail-chip.has-icon.attention .project-icon, .rail-chip.has-icon:focus-visible .project-icon { opacity: 1; filter: none; }
+/* Project icons: before the name. */
 .project-name .project-icon { display: inline-block; vertical-align: -3px; margin-right: calc(10 * var(--u)); object-fit: contain; }

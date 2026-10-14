@@ -3,9 +3,10 @@ import { type Action } from "./keys";
 import { invoke } from "@tauri-apps/api/core";
 
 import { $ } from "../ui/dom";
+import { projectKey } from "../workspace/tree";
 import { copy, open, reveal } from "../platform/fileActions";
 import { showError } from "../ui/alerts";
-import { currentRow, cycleRegion, fromProject, listItems, stepList, stepRail, toMainWorktree, toProject } from "./keyboard";
+import { currentRow, cycleRegion, fromProject, listItems, stepList, toMainWorktree, toProject } from "./keyboard";
 
 import { endEntry, killGroup, newWorktree, projectMenu, projectRun, splitMenu, ungroup } from "../workspace/menus";
 import { ctxMenu } from "../ui/contextMenu";
@@ -34,13 +35,13 @@ function openNewSession() {
   // Its key works from inside a menu, such as the worktree menu that shows it: that menu goes.
   ctxMenu.close(false);
   // The highlighted row's worktree, as its + would; else the focused one.
-  const row = S.atRail ? undefined : currentRow();
+  const row = currentRow();
   const rowPlus = row?.closest("#sidebar-scroll .wt")?.querySelector<HTMLElement>(".wt-plus");
   if (rowPlus) return rowPlus.click();
   const at = currentWorktree();
   if (!at) return;
   const plus = [...document.querySelectorAll<HTMLElement>("#sidebar-scroll .wt-plus")].find((b) => b.dataset.wt === at.w.path);
-  launchMenu.open(plus ?? $("rail"), at.p, at.w);
+  launchMenu.open(plus ?? $("sidebar-scroll"), at.p, at.w);
 }
 
 export function runAction(a: Action) {
@@ -72,8 +73,8 @@ export function runAction(a: Action) {
       // The highlighted row's menu, as a right-click opens it: a worktree, a
       // group, a session, or a Changes or Files row. The
       // highlight, not DOM focus: a picked group can be current while focus
-      // rests elsewhere. On the rail, or with no row, the project menu.
-      const row = S.atRail || document.activeElement?.closest("#rail") ? undefined : currentRow();
+      // rests elsewhere. With no row, the project menu.
+      const row = currentRow();
       if (!row) return openProjectMenu();
       const b = row.getBoundingClientRect();
       row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: b.left + 24, clientY: b.bottom }));
@@ -132,8 +133,8 @@ export function runAction(a: Action) {
     case "focus-down": return moveFocus("down");
     case "region-next": return cycleRegion(1);
     case "region-prev": return cycleRegion(-1);
-    case "session-next": return S.atRail ? stepRail(1) : stepList(1);
-    case "session-prev": return S.atRail ? stepRail(-1) : stepList(-1);
+    case "session-next": return stepList(1);
+    case "session-prev": return stepList(-1);
     case "list-project": return toProject();
     case "list-back": return fromProject();
     case "list-main": return toMainWorktree();
@@ -160,8 +161,7 @@ function closeKey(shown: boolean) {
 
 /**
  * The theme key acts on the highlighted row, as the menu key does: a session
- * row gets its own theme and a group row every terminal in it. On the rail, or
- * on a project, worktree, Changes or Files row, the project theme. With no row,
+ * row gets its own theme and a group row every terminal in it. On a project, worktree, Changes or Files row, the project theme. With no row,
  * the focused terminal.
  */
 function openTheme() {
@@ -169,7 +169,6 @@ function openTheme() {
     const p = currentProject();
     if (p) void projectThemeMenu(p);
   };
-  if (S.atRail || document.activeElement?.closest("#rail")) return project();
   const row = currentRow();
   const sid = row ? row.dataset.session : S.focused;
   const s = sid ? sessions.get(sid) : undefined;
@@ -181,7 +180,7 @@ function openTheme() {
 
 /** End the highlighted session, or the focused pane's session, as its menu item does. */
 function endCurrentSession() {
-  const row = S.atRail ? undefined : currentRow();
+  const row = currentRow();
   // On a group row the key acts on the group: all its sessions.
   if (row?.dataset.group) return void killGroup(row.dataset.group);
   const session = sessions.get(row?.dataset.session ?? S.focused ?? "");
@@ -189,18 +188,18 @@ function endCurrentSession() {
   if (entry && "run" in entry) entry.run?.();
 }
 
-/** The selected project's menu, at its rail icon. */
+/** The selected project's menu, under its row in the tree, as the menu key opens a row's. */
 export function openProjectMenu() {
   const p = currentProject();
-  const chip = document.querySelector<HTMLElement>("#rail .rail-chip.active");
-  if (!p || !chip) return;
-  const r = chip.getBoundingClientRect();
-  projectMenu(p, r.right, r.top);
+  if (!p) return;
+  const row = listItems().find((el) => el.dataset.key === projectKey(p.name));
+  const r = (row ?? $("sidebar-scroll")).getBoundingClientRect();
+  projectMenu(p, r.left + 24, row ? r.bottom : r.top);
 }
 
 /** The file of the highlighted Files or Changes row, if that is the row. */
 function rowPath(): { path: string; dir: boolean } | null {
-  const row = S.atRail ? undefined : currentRow();
+  const row = currentRow();
   const m = row?.dataset.key?.match(/^(file|change):(.*)$/);
   return m ? { path: m[2], dir: row!.classList.contains("dir") } : null;
 }

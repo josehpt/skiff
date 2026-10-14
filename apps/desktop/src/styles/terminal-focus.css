@@ -1,2 +1,2 @@
-#terminal-host:is(.group-picked, .at-rail) .cell.focused .cell-head { background: var(--bg-panel); box-shadow: none; }
-#terminal-host:is(.group-picked, .at-rail) .cell.focused .cell-head .title { color: var(--text-3); }
+#terminal-host.group-picked .cell.focused .cell-head { background: var(--bg-panel); box-shadow: none; }
+#terminal-host.group-picked .cell.focused .cell-head .title { color: var(--text-3); }

@@ -474,7 +474,7 @@ export function createSettings(onAgents: (a: AgentInfo[]) => void, onClose: () =
     onClose();
   }
 
-  /** Ctrl+Shift+Up/Down: the previous or next section, as on the rail. The keys go to its tab. */
+  /** Ctrl+Shift+Up/Down: the previous or next section, as in the tree. The keys go to its tab. */
   function stepTab(dir: 1 | -1) {
     // Leaving a field saves it, as a click on a tab does.
     (document.activeElement as HTMLElement | null)?.blur();

@@ -6,10 +6,11 @@ import { syncPreview } from "../terminal/peek";
 import { renderModes, settleModes } from "./modes";
 import { renderSelectBar } from "../workspace/selection";
 import { renderSidebar } from "../workspace/sidebar";
-import { renderRail } from "../workspace/rail";
+import { projectOrder } from "../workspace/fleets";
+import { worktreeLines } from "../workspace/sidebarLines";
 import { renderHeader } from "../workspace/header";
 import { renderCounts } from "../workspace/status";
-import { S } from "./state";
+import { OTHER, S } from "./state";
 import { hasKeys, markSeen } from "./seen";
 
 import { savePlace } from "./stored";
@@ -69,9 +70,10 @@ function renderAll() {
   // App colors first: the sidebar's marks are inked against them.
   step("render.app", applyApp);
   host.classList.toggle("group-picked", !!S.groupPicked && S.groupPicked === S.activeGroup);
-  // The keys can reach a pane without a focus change: the group row or the rail lets go.
+  // The keys can reach a pane without a focus change: the group row lets go.
   if (S.focused && hasKeys(S.focused)) markSeen(S.focused);
-  step("render.rail", renderRail);
+  // The last outside session ended: Other goes away, and the first project shows.
+  if (S.selectedProject === OTHER && !worktreeLines(null).length) S.selectedProject = projectOrder()[0]?.name ?? null;
   step("render.sidebar", renderSidebar);
   renderSelectBar();
   step("render.layout", renderLayout);

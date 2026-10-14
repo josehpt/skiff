@@ -8,7 +8,7 @@
 #statusbar { overflow: hidden; }
 .status-item { display: flex; align-items: center; gap: calc(6 * var(--u)); white-space: nowrap; flex-shrink: 0; }
 .status-item[hidden] { display: none; }
-/* Exactly the rail's width, so its right rule continues the rail's. */
+/* A fixed cell at the left end of the status bar. */
 .dev-badge { align-self: stretch; flex-shrink: 0; justify-content: center; width: calc(72 * var(--u)); margin-left: calc(-16 * var(--u)); padding: 0; background: var(--state-waiting-bg); border-right: 1px solid var(--rule); color: var(--state-waiting-text); font: 700 calc(11px * var(--zoom, 1)) var(--mono); letter-spacing: 0.08em; }
 .status-item .dot { width: calc(7 * var(--u)); height: calc(7 * var(--u)); }
 /* Copies the daemon pid. Quiet until hovered; green for a moment after a copy. */

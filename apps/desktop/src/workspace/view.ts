@@ -78,7 +78,7 @@ export function focusPane(id: string, grab = true) {
     const a = document.activeElement;
     const typing = a instanceof HTMLInputElement && !host.contains(a);
     // A preview over the panes keeps the keys. Leaving it ends it first.
-    if (modalOpen() || typing || S.focused !== id || !grab || S.atRail || previewOnScreen()) return;
+    if (modalOpen() || typing || S.focused !== id || !grab || previewOnScreen()) return;
     const pane = panes.get(id);
     if (pane?.term.element) pane.term.focus();
     // Not open yet: the terminal takes the keys when it attaches.
@@ -87,10 +87,8 @@ export function focusPane(id: string, grab = true) {
 }
 
 export function refocusTerminal() {
-  // A menu opened from the rail gives the keys back to the rail.
-  if (S.atRail) document.querySelector<HTMLElement>("#rail .rail-chip.active")?.focus();
   // A preview covers the panes: the keys go back to its row, not to a pane under it.
-  else if (previewOnScreen()) currentRow()?.focus();
+  if (previewOnScreen()) currentRow()?.focus();
   else if (S.focused) panes.get(S.focused)?.term.focus();
 }
 
@@ -466,7 +464,7 @@ export function unfocus() {
   const keep = quiet();
   if (!keep) (document.activeElement as HTMLElement | null)?.blur();
   render();
-  if (!S.atRail && !previewOnScreen()) host.querySelector<HTMLButtonElement>(".welcome button")?.focus();
+  if (!previewOnScreen()) host.querySelector<HTMLButtonElement>(".welcome button")?.focus();
 }
 
 export function selectProject(name: string) {

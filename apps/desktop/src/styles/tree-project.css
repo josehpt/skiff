@@ -1,6 +1,4 @@
 /* The tree (#87): fleets head sections, projects are 40px rows, worktrees, groups and sessions follow. No project bars. */
-#rail { display: none; }
-
 .tree-head {
   height: calc(20 * var(--u)); width: 100%; flex-shrink: 0;
   display: flex; align-items: center; gap: calc(6 * var(--u));

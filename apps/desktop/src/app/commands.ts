@@ -3,7 +3,7 @@ import { showAbout } from "../ui/infoDialogs";
 import { isSkiffAgent, skiffAgentFolder, skiffAgentName, skiffAgentSession } from "./skiffAgent";
 
 /** One command list for the menu bar and the palette; key actions. */
-import { type Action, keyLabel, menuAccel } from "./keys";
+import { type Action, isMac, keyLabel, menuAccel } from "./keys";
 import { agentName, branchName, bySessionPriority, taskTitle } from "../workspace/model";
 import { createSwitcher, type SwitchItem } from "../ui/switcher";
 
@@ -109,21 +109,42 @@ const ISSUES_URL = "https://github.com/solutionscay/skiff/issues/new";
 /** Where a group of commands starts a new block in its menu. */
 const BREAK_BEFORE = new Set(["Project menu…", "Settings", "Copy", "Rename session", "Command palette", "Add pane right…", "Next waiting", "Focus mode", "Leave focus mode", "Bigger text", "Open projects.toml", "About Skiff"]);
 
+interface MenuItem { id?: string; label?: string; accel?: string; enabled?: boolean; native?: string }
+
+/** On macOS these commands move from File and Help to the app menu, with the Mac names. */
+const APP_MENU: Record<string, string> = { "About Skiff": "About Skiff", Settings: "Settings…", Quit: "Quit Skiff" };
+
 let menuRuns = new Map<string, () => void>();
 let menuSent = "";
 
 /** Sends the command list to the native menu bar when it changes. */
 export function syncMenu() {
-  const menus: { title: string; items: { id?: string; label?: string; accel?: string; enabled?: boolean }[] }[] = [];
+  const menus: { title: string; items: MenuItem[] }[] = [];
   const runs = new Map<string, () => void>();
+  const app: Record<string, MenuItem> = {};
   for (const [i, c] of commands().entries()) {
+    const id = `cmd:${i}`;
+    runs.set(id, c.run);
+    const item = { id, label: c.label, accel: c.action ? menuAccel(c.action) : "", enabled: !c.off };
+    const appLabel = isMac ? APP_MENU[c.label] : undefined;
+    if (appLabel) {
+      app[c.label] = { ...item, label: appLabel };
+      continue;
+    }
     let m = menus.at(-1);
     if (m?.title !== c.section) menus.push((m = { title: c.section, items: [] }));
     else if (BREAK_BEFORE.has(c.label)) m.items.push({});
-    const id = `cmd:${i}`;
-    runs.set(id, c.run);
-    m.items.push({ id, label: c.label, accel: c.action ? menuAccel(c.action) : "", enabled: !c.off });
+    m.items.push(item);
   }
+  // macOS puts the first menu under the app name. Hide, Hide Others and Show All are the system's own.
+  if (isMac) menus.unshift({
+    title: "Skiff",
+    items: [
+      app["About Skiff"], {}, app["Settings"], {},
+      { native: "hide" }, { native: "hide-others" }, { native: "show-all" }, {},
+      app["Quit"],
+    ].filter(Boolean),
+  });
   menuRuns = runs;
   const json = JSON.stringify(menus);
   if (json === menuSent) return;

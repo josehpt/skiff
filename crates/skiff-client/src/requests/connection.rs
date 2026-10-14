@@ -63,4 +63,16 @@ impl Client {
             Err(e) => Err(e),
         }
     }
+
+    /// Asks the daemon to stop. It ends every session. `Ok` once it agreed,
+    /// or closed the connection as it exited.
+    pub async fn shutdown(&self) -> Result<()> {
+        match self.request(Request::Shutdown).await {
+            Ok(Response::Ok) => Ok(()),
+            Ok(Response::Error { message }) => bail!("{message}"),
+            Ok(other) => bail!("unexpected reply: {other:?}"),
+            Err(_) if self.is_closed() => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
 }

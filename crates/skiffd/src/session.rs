@@ -35,6 +35,11 @@ mod launch;
 pub mod reload;
 use groups::prune;
 
+/// A process's command line, for logs. Empty when it is gone.
+pub(crate) fn proc_argv(pid: u32) -> Vec<String> {
+    away::proc::argv(pid)
+}
+
 pub type Chunk = Arc<Vec<u8>>;
 
 /// No output for this long turns `working` into `idle`.

@@ -258,6 +258,10 @@ enum DaemonCmd {
         #[arg(long, value_name = "PATH")]
         binary: Option<PathBuf>,
     },
+    /// Stop skiffd. It saves the layout and ends every session. From a
+    /// pane, this is the way to stop it: skiffd ignores SIGTERM and SIGINT
+    /// from its own sessions.
+    Stop,
 }
 
 #[derive(Subcommand)]
@@ -453,6 +457,7 @@ async fn run(cli: Cli) -> Result<i32> {
         Cmd::Ledger { cmd } => return ledger::run(&socket, cmd).await.map(|_| 0),
         Cmd::Status => return info::status(&socket).await.map(|_| 0),
         Cmd::Daemon(DaemonCmd::Reload { binary }) => return daemon::reload(&socket, binary).await.map(|_| 0),
+        Cmd::Daemon(DaemonCmd::Stop) => return daemon::stop(&socket).await.map(|_| 0),
         // It connects again after a daemon reload, so it holds no connection here.
         Cmd::Watch { skipper, no_notify } => {
             return watch::watch(&socket, watch::Options { skipper, notify: !no_notify }).await

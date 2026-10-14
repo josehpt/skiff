@@ -113,8 +113,12 @@ skiff daemon reload        # same pid, every session and its screen kept
 
 `skiff daemon reload` execs the rebuilt binary in place. It refuses, and the old
 daemon carries on, when the new binary cannot adopt the sessions. Then restart:
-`pkill -x skiffd` ends every open session, and the app starts the new binary on its
+`skiff daemon stop` ends every open session, and the app starts the new binary on its
 next call. Reload the window (Ctrl+R) or restart the app after either one.
+
+skiffd ignores SIGTERM and SIGINT from a process in one of its own sessions and logs
+the sender, so a `pkill` in a pane cannot end the panes around it. From a pane, use
+`skiff daemon stop`. A signal from outside the daemon's sessions still stops it.
 
 A change to what a reload hands over must keep the two binaries compatible: raise
 `HANDOVER` in `crates/skiffd/src/session/reload.rs` when the handover metadata

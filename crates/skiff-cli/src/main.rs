@@ -43,7 +43,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Show the daemon's version, protocol, pid and socket.
+    /// Show this skiff's version and path, and the daemon's version,
+    /// protocol, pid and socket. Warns when another skiff comes first on
+    /// PATH, or skiffd's version is not the one this skiff was built for.
     Status,
     /// Manage the daemon itself.
     #[command(subcommand)]

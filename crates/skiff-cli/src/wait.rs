@@ -1,6 +1,9 @@
 //! `skiff wait`: block until sessions reach a state.
 
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 
 use anyhow::{bail, Result};
 use skiff_client::Client;
@@ -10,7 +13,7 @@ use tokio::{
     time::Instant,
 };
 
-use crate::{print, resolve, sessions};
+use crate::{print, resolve, sessions, watch};
 
 #[derive(Clone, Copy, clap::ValueEnum)]
 pub enum Target {
@@ -32,6 +35,39 @@ impl Target {
     }
 }
 
+/// The timeout of a wait an agent runs when it names none, and the most it
+/// can name: the agent's shell tool stops a call after about a minute.
+const AGENT_DEFAULT: f64 = 45.0;
+const AGENT_CAP: f64 = 60.0;
+/// How often an idle agent that shows its busy line is read again.
+const RECHECK: Duration = Duration::from_secs(2);
+
+/// The timeout to use. `agent`: the caller is an agent, or a script with no
+/// terminal. Then the wait has the agent default and cap.
+pub fn timeout_for(asked: Option<f64>, agent: bool) -> Option<f64> {
+    match (asked, agent) {
+        (_, false) => asked,
+        (None, true) => Some(AGENT_DEFAULT),
+        (Some(t), true) => Some(t.min(AGENT_CAP)),
+    }
+}
+
+/// The caller runs in a Skiff pane, or has no terminal on stdout.
+pub fn agent_caller() -> bool {
+    std::env::var("SKIFF_SESSION").is_ok_and(|s| !s.is_empty()) || unsafe { libc::isatty(1) } != 1
+}
+
+/// Session `id` is idle, a known agent is in front, and its busy line
+/// shows: it works through a quiet stretch.
+async fn busy(c: &Client, id: &str) -> Result<bool> {
+    let all = c.list_sessions().await?;
+    let Some(s) = all.iter().find(|s| s.id == id) else { return Ok(false) };
+    if s.state != SessionState::Idle || !sessions::is_agent(s) {
+        return Ok(false);
+    }
+    Ok(watch::read_front(c, s).await? == watch::Front::Busy)
+}
+
 /// Where one session stands.
 #[derive(Clone, Copy, PartialEq)]
 enum Now {
@@ -48,6 +84,9 @@ enum Now {
 /// With `any`, the first session to get there ends the wait with 0, and
 /// only that session prints. 2 then means every session went away or
 /// exited first.
+///
+/// With `--for idle`, an idle known agent that shows its busy line does not
+/// count until the line goes.
 pub async fn wait(c: &Client, args: &[String], target: Target, any: bool, timeout: Option<f64>) -> Result<i32> {
     // Listen before the list, so no change falls between the two.
     let mut events = c.events();
@@ -80,6 +119,18 @@ pub async fn wait(c: &Client, args: &[String], target: Target, any: bool, timeou
         }
     }
 
+    // Idle by state, but the busy line shows: counted as working.
+    let check_busy = matches!(target, Target::Idle);
+    let mut held: HashSet<String> = HashSet::new();
+    if check_busy {
+        for id in &ids {
+            if now[id] == Now::State(SessionState::Idle) && busy(c, id).await? {
+                now.insert(id.clone(), Now::State(SessionState::Working));
+                held.insert(id.clone());
+            }
+        }
+    }
+
     // A timeout too large to count is no timeout.
     let deadline = timeout
         .and_then(|t| Duration::try_from_secs_f64(t.max(0.0)).ok())
@@ -103,7 +154,34 @@ pub async fn wait(c: &Client, args: &[String], target: Target, any: bool, timeou
                 None => Some(events.recv().await),
             }
         };
-        let Some(e) = next.await else {
+        let e = if held.is_empty() {
+            next.await
+        } else {
+            tokio::select! {
+                e = next => e,
+                _ = tokio::time::sleep(RECHECK) => {
+                    for id in held.clone() {
+                        let all = c.list_sessions().await?;
+                        match all.iter().find(|s| s.id == id) {
+                            // Not idle now: the state events tell the rest.
+                            Some(s) if s.state != SessionState::Idle => {
+                                held.remove(&id);
+                            }
+                            None => {
+                                held.remove(&id);
+                            }
+                            Some(_) if !busy(c, &id).await? => {
+                                held.remove(&id);
+                                now.insert(id, Now::State(SessionState::Idle));
+                            }
+                            Some(_) => {}
+                        }
+                    }
+                    continue;
+                }
+            }
+        };
+        let Some(e) = e else {
             timed_out = true;
             break;
         };
@@ -125,6 +203,11 @@ pub async fn wait(c: &Client, args: &[String], target: Target, any: bool, timeou
                     let cur = now.get_mut(id).expect("listed");
                     if !settled(cur) {
                         *cur = all.iter().find(|s| &s.id == id).map_or(Now::Gone, |s| Now::State(s.state));
+                        held.remove(id);
+                        if check_busy && *cur == Now::State(SessionState::Idle) && busy(c, id).await? {
+                            *cur = Now::State(SessionState::Working);
+                            held.insert(id.clone());
+                        }
                     }
                 }
                 continue;
@@ -138,6 +221,11 @@ pub async fn wait(c: &Client, args: &[String], target: Target, any: bool, timeou
         if let Some(cur) = now.get_mut(&id) {
             if !settled(cur) {
                 *cur = n;
+                held.remove(&id);
+                if check_busy && n == Now::State(SessionState::Idle) && busy(c, &id).await? {
+                    *cur = Now::State(SessionState::Working);
+                    held.insert(id);
+                }
             }
         }
     }
@@ -182,4 +270,18 @@ pub async fn wait(c: &Client, args: &[String], target: Target, any: bool, timeou
         eprintln!("skiff: timed out");
     }
     Ok(code)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::timeout_for;
+
+    #[test]
+    fn an_agent_gets_a_default_and_a_cap_and_a_person_gets_what_they_ask() {
+        assert_eq!(timeout_for(None, true), Some(45.0));
+        assert_eq!(timeout_for(Some(600.0), true), Some(60.0));
+        assert_eq!(timeout_for(Some(10.0), true), Some(10.0));
+        assert_eq!(timeout_for(None, false), None);
+        assert_eq!(timeout_for(Some(600.0), false), Some(600.0));
+    }
 }

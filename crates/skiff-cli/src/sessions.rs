@@ -9,7 +9,7 @@ use skiff_core::{
     session::{Role, SessionInfo, SessionSpec, SessionState},
 };
 
-use crate::{callsign::callsign, groups, layout::Side, print, resolve};
+use crate::{callsign::callsign, groups, layout::Side, print, resolve, watch};
 
 /// Sessions in a stable order: oldest first, then by id. Tools in the app's
 /// peek are not sessions to the user, so they are left out.
@@ -172,7 +172,6 @@ async fn group_cwd(c: &Client, g: &Group) -> Result<Option<PathBuf>> {
     Ok(dir.filter(|d| d.is_dir()))
 }
 
-pub use skiff_core::session::ENTER_DELAY;
 
 /// Why `send` must not type into `s`, as an exit code and a message.
 /// `here` is `SKIFF_SESSION`; `caller_shell` is the caller's `SHELL`.
@@ -237,18 +236,35 @@ pub struct Send<'a> {
 }
 
 /// Exit codes: 0 when sent; 3 waiting, 4 working, 5 a shell or unknown
-/// program in front, 6 done, 7 own session. A refusal types nothing.
+/// program in front, 6 done, 7 own session, 9 a draft or the busy line in a
+/// known agent, or input after the check. A refusal types nothing.
 /// 8: Enter went to a known agent, but no turn started.
 pub async fn send(c: &Client, arg: &str, o: Send<'_>) -> Result<i32> {
     let all = c.list_sessions().await?;
     let s = resolve::session(&all, arg)?;
+    send_to(c, s, o).await
+}
+
+/// [`send`] to a session from a list read just now: its `input_gen` guards
+/// the submit.
+pub async fn send_to(c: &Client, s: &SessionInfo, o: Send<'_>) -> Result<i32> {
     let here = std::env::var("SKIFF_SESSION").ok().filter(|h| !h.is_empty());
     let caller_shell = std::env::var("SHELL").ok();
     if let Some((code, msg)) = refusal(s, here.as_deref(), o.shell, caller_shell.as_deref()) {
         eprintln!("skiff: {msg}");
         return Ok(code);
     }
+    let who = format!("{} ({})", resolve::display_name(s), print::short_id(&s.id));
     let (enter, raw) = (o.enter, o.raw);
+    // Only a known agent proves a turn by its state, and only its screen
+    // shows a draft. A shell command can finish with no output.
+    let agent = !raw && is_agent(s);
+    if agent {
+        if let Some(msg) = front_refusal(watch::read_front(c, s).await?) {
+            eprintln!("skiff: {who} {msg}");
+            return Ok(9);
+        }
+    }
     let mut data = if o.text == ["-"] {
         let mut buf = Vec::new();
         std::io::stdin().read_to_end(&mut buf).context("read stdin")?;
@@ -266,35 +282,30 @@ pub async fn send(c: &Client, arg: &str, o: Send<'_>) -> Result<i32> {
             data.pop();
         }
     }
-    if !data.is_empty() {
-        if raw {
-            c.write(&s.id, data).await?;
-        } else {
-            // A paste, so the program keeps the text's newlines as text.
-            c.paste(&s.id, data).await?;
-        }
+    // Listen before the submit, so no change falls before the listener.
+    let events = (agent && enter).then(|| c.events());
+    // A paste, so the program keeps the text's newlines as text. skiffd
+    // types it only if the session took no input since the list.
+    if !c.submit(&s.id, data, !raw, enter, s.input_gen).await? {
+        eprintln!("skiff: {who} took input after the check. Nothing was typed.");
+        return Ok(9);
     }
-    if !enter {
-        return Ok(0);
-    }
-    tokio::time::sleep(ENTER_DELAY).await;
-    // Only a known agent proves a turn by its state. A shell command can
-    // finish with no output, so idle proves nothing there.
-    let agent = !raw && is_agent(s);
-    // Listen before Enter, so no change falls before the listener.
-    let events = agent.then(|| c.events());
-    c.write(&s.id, b"\r".to_vec()).await?;
     let Some(events) = events else { return Ok(0) };
     if turn_started(c, &s.id, events).await? {
         return Ok(0);
     }
     // Never press Enter again: it can submit twice or add a blank line.
-    eprintln!(
-        "skiff: {} ({}): text sent, but no turn started. It can be in the input box. Check its pane.",
-        resolve::display_name(s),
-        print::short_id(&s.id)
-    );
+    eprintln!("skiff: {who}: text sent, but no turn started. It can be in the input box. Check its pane.");
     Ok(8)
+}
+
+/// Why `send` must not type into a known agent whose screen shows `f`.
+pub fn front_refusal(f: watch::Front) -> Option<&'static str> {
+    match f {
+        watch::Front::Draft => Some("has text in its input box. Skiff does not add to a draft. The person sends or clears it."),
+        watch::Front::Busy => Some("shows its busy line. Skiff does not type into a working agent."),
+        watch::Front::Ready | watch::Front::NoBox => None,
+    }
 }
 
 /// How long an agent has to start a turn after Enter.
@@ -404,7 +415,7 @@ pub async fn kill(c: &Client, args: &[String]) -> Result<()> {
 mod tests {
     use skiff_core::session::{SessionInfo, SessionState};
 
-    use super::refusal;
+    use super::{front_refusal, refusal};
 
     #[test]
     fn newlines_become_enter() {
@@ -454,6 +465,16 @@ mod tests {
         assert_eq!(code(&s("shell", Idle, Some("xonsh")), None, false, Some("")), 0);
         // A shell-role pane with an agent in front.
         assert_eq!(code(&s("shell", Idle, Some("codex")), None, false, Some("/bin/bash")), 0);
+    }
+
+    #[test]
+    fn a_draft_or_the_busy_line_refuses_and_an_empty_box_sends() {
+        use crate::watch::Front;
+        assert!(front_refusal(Front::Draft).is_some());
+        assert!(front_refusal(Front::Busy).is_some());
+        assert!(front_refusal(Front::Ready).is_none());
+        // No box to read: the state checks decide, as before.
+        assert!(front_refusal(Front::NoBox).is_none());
     }
 
     #[test]

@@ -10,12 +10,15 @@ use serde::Serialize;
 use skiff_client::Client;
 use skiff_core::session::SessionInfo;
 
-use crate::{print, resolve, LedgerCmd};
+use crate::{print, resolve, sessions, LedgerCmd};
 
 const STATES: [&str; 4] = ["sent", "pending", "blocked", "done"];
 /// Shown in place of `sent` or `blocked` when the pane restarted since the
 /// send. Never stored: the pane generation tells it.
 const INTERRUPTED: &str = "interrupted";
+/// Shown in place of an open state when the pane no longer exists. Never
+/// stored: the session list tells it.
+const GONE: &str = "gone";
 
 /// Version 1: `tasks` with a reusable id and a pane on every row. Version 2
 /// adds the uid, plans, the pane generation and the ref, and never reuses an
@@ -97,6 +100,8 @@ impl Row {
     fn shown_state(&self) -> &str {
         if self.interrupted == Some(true) {
             INTERRUPTED
+        } else if self.live == Some(false) && self.state != "done" {
+            GONE
         } else {
             &self.state
         }
@@ -386,6 +391,25 @@ async fn mark_live(socket: &Path, rows: &mut [Row]) {
     }
 }
 
+/// A plan's state from its tasks in `rows`: `done` once every task is done,
+/// `sent` while one is open. `None` for a plan with no task: its own state
+/// stands.
+fn plan_state(uid: &str, rows: &[Row]) -> Option<&'static str> {
+    let mut tasks = rows.iter().filter(|r| r.parent.as_deref() == Some(uid)).peekable();
+    tasks.peek()?;
+    Some(if tasks.all(|t| t.state == "done") { "done" } else { "sent" })
+}
+
+/// Sets each plan in `rows` to the state its tasks give it. Never stored.
+fn roll_up(rows: &mut [Row]) {
+    let states: Vec<Option<&str>> = rows.iter().map(|r| if r.is_plan() { plan_state(&r.uid, rows) } else { None }).collect();
+    for (r, st) in rows.iter_mut().zip(states) {
+        if let Some(st) = st {
+            r.state = st.to_string();
+        }
+    }
+}
+
 /// Each plan with its tasks under it, by id. A task whose plan is not in
 /// `rows` stands alone. The bool marks a task shown under its plan.
 fn tree(rows: Vec<Row>) -> Vec<(Row, bool)> {
@@ -508,10 +532,79 @@ fn insert(db: &mut Connection, file: &Path, n: New) -> Result<(i64, String, Stri
     Ok((id, uid, result))
 }
 
-pub async fn run(socket: &Path, cmd: LedgerCmd) -> Result<()> {
+/// What `ledger send` and `ledger add --send` type, and how.
+pub struct SendOpts {
+    /// Default: the task text and its result path.
+    pub text: Vec<String>,
+    pub enter: bool,
+    pub shell: bool,
+}
+
+/// Why `row`, whose pane is `s` now, cannot be sent: only a pending task, or
+/// one a restart interrupted, has a send to make.
+fn unsendable(row: &Row, s: Option<&SessionInfo>) -> Option<String> {
+    if row.is_plan() {
+        return Some(format!("ledger row {} is a plan: it has no pane to send to", row.uid));
+    }
+    if row.state != "pending" && !row.interrupted_in(s) {
+        return Some(format!("task {} is {}, not pending or interrupted. Nothing was sent", row.uid, row.state));
+    }
+    s.is_none().then(|| format!("the pane of task {} is gone. Nothing was sent", row.uid))
+}
+
+/// The text a task goes out with when no text is given.
+fn message(row: &Row) -> String {
+    let task = row.task.trim();
+    match row.result_path.as_deref() {
+        Some(p) => format!("{task} Write your result to {p}."),
+        None => task.to_string(),
+    }
+}
+
+/// The state a task takes after `send` exits with `code`. A refusal typed
+/// nothing, so the task stays pending. Exit 8 typed the text but started no
+/// turn: the pane needs the person.
+fn state_after(code: i32) -> Option<&'static str> {
+    match code {
+        0 => Some("sent"),
+        8 => Some("blocked"),
+        _ => None,
+    }
+}
+
+/// Sends the pending task `row` to its pane with `send`'s checks, then
+/// records the outcome. Returns `send`'s exit code.
+async fn send_row(socket: &Path, db: &Connection, row: &Row, o: SendOpts) -> Result<i32> {
+    let c = crate::connect(socket).await?;
+    let all = c.list_sessions().await?;
+    let s = row.pane_id.as_deref().and_then(|p| resolve::session(&all, p).ok());
+    if let Some(why) = unsendable(row, s) {
+        bail!(why);
+    }
+    let s = s.expect("checked");
+    let text = if o.text.is_empty() { vec![message(row)] } else { o.text };
+    let code = sessions::send_to(&c, s, sessions::Send { text: &text, enter: o.enter, raw: false, shell: o.shell }).await?;
+    match state_after(code) {
+        Some(st) => {
+            // Only from the state read: a send that raced this one keeps its own.
+            db.execute(
+                &format!("UPDATE tasks SET state = ?2, pane_gen = ?3, updated_at = {NOW} WHERE id = ?1 AND state = ?4"),
+                params![row.id, st, gen(s), row.state],
+            )?;
+            if st != "sent" {
+                eprintln!("skiff: task {} is {st}", row.uid);
+            }
+        }
+        None => eprintln!("skiff: task {} stays {}", row.uid, row.state),
+    }
+    Ok(code)
+}
+
+/// The exit code: `send`'s for `send` and `add --send`, else 0.
+pub async fn run(socket: &Path, cmd: LedgerCmd) -> Result<i32> {
     match cmd {
-        LedgerCmd::Add { pane: p, task, plan: is_plan, parent, project, state: st, result, reference } => {
-            let st = state(&st)?.to_string();
+        LedgerCmd::Add { pane: p, task, plan: is_plan, parent, project, state: st, result, reference, send, enter, shell } => {
+            let st = if send { "pending".to_string() } else { state(&st)?.to_string() };
             let (pane_id, pane_gen, project) = match p {
                 Some(p) if !is_plan => {
                     let s = pane(socket, &p).await?;
@@ -522,8 +615,18 @@ pub async fn run(socket: &Path, cmd: LedgerCmd) -> Result<()> {
             };
             let file = path()?;
             let new = New { plan: is_plan, parent, pane_id, pane_gen, project, task, state: st, result, reference };
-            let (id, uid, result) = insert(&mut open_at(&file)?, &file, new)?;
+            let mut db = open_at(&file)?;
+            let (id, uid, result) = insert(&mut db, &file, new)?;
             println!("id {id}\nuid {uid}\nresult {result}");
+            if send {
+                let row = one(&db, &uid)?;
+                return send_row(socket, &db, &row, SendOpts { text: Vec::new(), enter, shell }).await;
+            }
+        }
+        LedgerCmd::Send { id, text, enter, shell } => {
+            let db = open()?;
+            let row = one(&db, &id)?;
+            return send_row(socket, &db, &row, SendOpts { text, enter, shell }).await;
         }
         LedgerCmd::Update { id, state: st, result, task, pane: p, project, parent, reference } => {
             let st = st.as_deref().map(state).transpose()?;
@@ -557,12 +660,13 @@ pub async fn run(socket: &Path, cmd: LedgerCmd) -> Result<()> {
             )?;
         }
         LedgerCmd::Ls { state: st, json } => {
-            if let Some(s) = st.as_deref().filter(|s| *s != INTERRUPTED) {
+            if let Some(s) = st.as_deref().filter(|s| *s != INTERRUPTED && *s != GONE) {
                 state(s)?;
             }
             let db = open()?;
             let mut list = rows(&db, "", None)?;
             mark_live(socket, &mut list).await;
+            roll_up(&mut list);
             if let Some(s) = &st {
                 list.retain(|r| r.shown_state() == s);
             }
@@ -577,6 +681,12 @@ pub async fn run(socket: &Path, cmd: LedgerCmd) -> Result<()> {
             let db = open()?;
             let mut r = [one(&db, &id)?];
             mark_live(socket, &mut r).await;
+            if r[0].is_plan() {
+                let tasks = rows(&db, "WHERE parent = ?1", Some(&r[0].uid))?;
+                if let Some(st) = plan_state(&r[0].uid, &tasks) {
+                    r[0].state = st.to_string();
+                }
+            }
             if json {
                 print::json(&r[0])?;
             } else {
@@ -596,7 +706,7 @@ pub async fn run(socket: &Path, cmd: LedgerCmd) -> Result<()> {
             db.execute("DELETE FROM tasks WHERE id = ?1", [row.id])?;
         }
     }
-    Ok(())
+    Ok(0)
 }
 
 #[cfg(test)]
@@ -786,5 +896,63 @@ mod tests {
         assert!(!r.interrupted_in(Some(&s(2000))));
         r.state = "blocked".into();
         assert!(r.interrupted_in(Some(&s(2000))));
+    }
+
+    #[test]
+    fn only_a_pending_task_is_sent_and_a_refusal_keeps_it_pending() {
+        let dir = scratch("send");
+        let file = dir.join("ledger.db");
+        let mut db = open_at(&file).unwrap();
+        let (_, uid, result) = insert(&mut db, &file, New { state: "pending".into(), ..task("fix the tests") }).unwrap();
+        let (_, plan_uid, _) = insert(&mut db, &file, New { plan: true, pane_id: None, ..task("p") }).unwrap();
+        let mut r = one(&db, &uid).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        let pane = |started_at: u64| -> SessionInfo {
+            serde_json::from_value(serde_json::json!({
+                "id": "abc123456789", "label": "x", "role": "agent", "cwd": "/", "command": "claude", "args": [],
+                "state": "idle", "cols": 80, "rows": 24, "pid": 1, "exit_code": null, "started_at": started_at,
+            }))
+            .unwrap()
+        };
+        let (same, restarted) = (pane(1000), pane(2000));
+        assert_eq!(unsendable(&r, Some(&same)), None);
+        assert!(unsendable(&r, None).unwrap().contains("gone"));
+        assert_eq!(message(&r), format!("fix the tests Write your result to {result}."));
+        r.state = "sent".into();
+        assert!(unsendable(&r, Some(&same)).unwrap().contains("not pending"));
+        // A restart interrupted it: it can go again.
+        assert_eq!(unsendable(&r, Some(&restarted)), None);
+        assert!(unsendable(&one(&db, &plan_uid).unwrap(), Some(&same)).unwrap().contains("plan"));
+        assert_eq!(state_after(0), Some("sent"));
+        assert_eq!(state_after(8), Some("blocked"));
+        for refused in [1, 3, 4, 5, 6, 7, 9] {
+            assert_eq!(state_after(refused), None);
+        }
+    }
+
+    #[test]
+    fn a_gone_pane_shows_gone_and_a_plan_follows_its_tasks() {
+        let dir = scratch("roll");
+        let file = dir.join("ledger.db");
+        let mut db = open_at(&file).unwrap();
+        let (_, p, _) = insert(&mut db, &file, New { plan: true, pane_id: None, ..task("p") }).unwrap();
+        let (_, a, _) = insert(&mut db, &file, New { parent: Some(p.clone()), ..task("a") }).unwrap();
+        insert(&mut db, &file, New { parent: Some(p.clone()), state: "done".into(), ..task("b") }).unwrap();
+        let (_, empty, _) = insert(&mut db, &file, New { plan: true, pane_id: None, state: "blocked".into(), ..task("e") }).unwrap();
+        let mut list = rows(&db, "", None).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        let st = |list: &[Row], uid: &str| list.iter().find(|r| r.uid == uid).unwrap().shown_state().to_string();
+        roll_up(&mut list);
+        assert_eq!(st(&list, &p), "sent");
+        // A plan with no task keeps the state it was given.
+        assert_eq!(st(&list, &empty), "blocked");
+        let ra = list.iter_mut().find(|r| r.uid == a).unwrap();
+        ra.live = Some(false);
+        assert_eq!(ra.shown_state(), GONE);
+        ra.state = "done".into();
+        // Done work stays done when its pane closes.
+        assert_eq!(ra.shown_state(), "done");
+        roll_up(&mut list);
+        assert_eq!(st(&list, &p), "done");
     }
 }

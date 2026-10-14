@@ -43,7 +43,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Show the daemon's version, protocol, pid and socket.
+    /// Show this skiff's version and path, and the daemon's version,
+    /// protocol, pid and socket. Warns when another skiff comes first on
+    /// PATH, or skiffd's version is not the one this skiff was built for.
     Status,
     /// Manage the daemon itself.
     #[command(subcommand)]
@@ -83,7 +85,7 @@ enum Cmd {
     /// Type text into an idle session. `-` reads the text from stdin. Put
     /// text that starts with `-` after `--`.
     #[command(
-        after_help = "send checks the session before it types any bytes. Exit codes:\n  0  sent\n  1  error\n  3  the session is waiting (approval prompt or bell). A person answers it in the pane. No flag overrides this.\n  4  the session is working. Skiff does not type into a busy session.\n  5  a shell or an unknown program is in front. Use --shell only to type a shell command. A program started with `skiff new -- CMD` or a custom agent shows its launch shell, so a send to it needs --shell.\n  6  the session is done\n  7  the session is your own ($SKIFF_SESSION)\n  8  --enter went to a known agent, but no turn started in 5 seconds. The text can be in its input box. Run `skiff peek` on the session. Do not send it again."
+        after_help = "send checks the session before it types any bytes. Exit codes:\n  0  sent\n  1  error\n  3  the session is waiting (approval prompt or bell). A person answers it in the pane. No flag overrides this.\n  4  the session is working. Skiff does not type into a busy session.\n  5  a shell or an unknown program is in front. Use --shell only to type a shell command. A program started with `skiff new -- CMD` or a custom agent shows its launch shell, so a send to it needs --shell.\n  6  the session is done\n  7  the session is your own ($SKIFF_SESSION)\n  8  --enter went to a known agent, but no turn started in 5 seconds. The text can be in its input box. Run `skiff peek` on the session.\n  9  a known agent shows text in its input box or its busy line, or the session took input after the check. Nothing was typed. A second send after exit 8 gets this code while the text is still in the box."
     )]
     Send {
         session: String,
@@ -126,7 +128,7 @@ enum Cmd {
     /// Wait until sessions reach a state. Exit 0 when all do, 1 on timeout,
     /// 2 when one closes or exits first, 3 when one is waiting.
     #[command(
-        after_help = "Exit codes:\n  0  every session reached the state. With --any: one session reached it. Its id, name and state print on stdout.\n  1  timeout\n  2  a session closed or exited before it reached the state. With --any: every session did.\n  3  a session is waiting (approval prompt or bell). A person answers it in its pane.\nWith --for idle, done or any-not-working, wait stops at once when any session is waiting. --for waiting is not changed.\nGive each wait a --timeout. After exit 0, read the screen with `skiff peek`: idle does not prove that an agent finished."
+        after_help = "Exit codes:\n  0  every session reached the state. With --any: one session reached it. Its id, name and state print on stdout.\n  1  timeout\n  2  a session closed or exited before it reached the state. With --any: every session did.\n  3  a session is waiting (approval prompt or bell). A person answers it in its pane.\nWith --for idle, done or any-not-working, wait stops at once when any session is waiting. --for waiting is not changed.\nWith --for idle, a known agent that is quiet but shows its busy line (\"esc to interrupt\") is not idle yet.\nIn a Skiff pane ($SKIFF_SESSION), or with no terminal on stdout, the timeout defaults to 45 seconds and is at most 60.\nAfter exit 0, read the screen with `skiff peek`: idle does not prove that an agent finished."
     )]
     Wait {
         #[arg(required = true)]
@@ -136,7 +138,7 @@ enum Cmd {
         /// Stop when the first session reaches the state.
         #[arg(long)]
         any: bool,
-        /// Give up after this many seconds.
+        /// Give up after this many seconds. For an agent: default 45, at most 60.
         #[arg(long, value_name = "SECS")]
         timeout: Option<f64>,
     },
@@ -159,7 +161,7 @@ enum Cmd {
     /// Skiff starts it with the agent's session; it stops when that session
     /// ends. One runs per daemon.
     #[command(
-        after_help = "A pane in an open ledger row (sent, pending, blocked) that:\n  waits (approval or bell): the person gets a desktop notification. The agent gets nothing.\n  ends a turn, exits or is gone: the agent gets one line, typed while it is idle and its input box is empty. Lines that wait for it are joined.\n  restarted since the send: the agent gets one line that names the task as interrupted, once per run.\nskiffd types a line only if the person typed nothing in the agent's pane since the check. If no turn starts, the log says undelivered and Enter is not pressed again.\nA pane stays unread until the agent or the person marks it seen, so a new run tells it again.\nIt logs one line for each thing it does."
+        after_help = "A pane in an open ledger row (sent, pending, blocked) that:\n  waits (approval or bell): the person gets a desktop notification. The agent gets nothing.\n  ends a turn, goes idle after a prompt, exits or is gone: the agent gets one line, typed while it is idle and its input box is empty. Lines that wait for it are joined.\n  is idle with a pending row: the line names the oldest pending uid and its `skiff ledger send` command, once per idle stretch. The row is read again just before the line is typed, and the line is dropped if the task left pending.\n  restarted since the send: the agent gets one line that names the task as interrupted, once per run.\nskiffd types a line only if the person typed nothing in the agent's pane since the check. If no turn starts, the log says undelivered and Enter is not pressed again.\nA pane stays unread until the agent or the person marks it seen, so a new run tells it again, as it does a pending row.\nIt logs one line for each thing it does."
     )]
     Watch {
         /// The Skiff agent's session.
@@ -204,7 +206,7 @@ enum Cmd {
         cmd: OpenWithCmd,
     },
     /// The Skiff agent's task ledger: ledger.db in its folder.
-    #[command(after_help = "States: sent, pending (not delivered: the pane was working), blocked (the pane needs the user), done.\nls and show print interrupted for a sent or blocked task whose pane restarted since the send: a restore runs a new shell under the old pane id.\nID is the row number or the 8-character uid that add prints. Neither is ever reused.\nResults: a task writes to results/<date>-<uid>-<slug>.md next to the ledger; a plan owns results/<date>-<uid>-<slug>/ with plan.md, and its tasks write <uid>-<slug>.md in that folder. add stores and prints the path and makes no file. rm keeps the files.\nThe ledger is ~/skiff-agent/ledger.db, or ledger.db in the [skiff_agent] folder override. SKIFF_LEDGER overrides the path.\nOn first use, an old ledger.md next to it is imported and kept as ledger.md.bak.")]
+    #[command(after_help = "States: sent, pending (not delivered: the pane was working), blocked (the pane needs the user), done.\nls and show print interrupted for a sent or blocked task whose pane restarted since the send: a restore runs a new shell under the old pane id. They print gone for an open task whose pane no longer exists. A plan with tasks shows done when every task is done, else sent.\nID is the row number or the 8-character uid that add prints. Neither is ever reused.\nResults: a task writes to results/<date>-<uid>-<slug>.md next to the ledger; a plan owns results/<date>-<uid>-<slug>/ with plan.md, and its tasks write <uid>-<slug>.md in that folder. add stores and prints the path and makes no file. rm keeps the files.\nThe ledger is ~/skiff-agent/ledger.db, or ledger.db in the [skiff_agent] folder override. SKIFF_LEDGER overrides the path.\nOn first use, an old ledger.md next to it is imported and kept as ledger.md.bak.")]
     Ledger {
         #[command(subcommand)]
         cmd: LedgerCmd,
@@ -239,6 +241,31 @@ pub enum LedgerCmd {
         /// anything. Skiff stores it and never reads it.
         #[arg(long = "ref", value_name = "TEXT")]
         reference: Option<String>,
+        /// Add the task as pending and send it at once, as `ledger send` does.
+        #[arg(long, conflicts_with_all = ["plan", "state"])]
+        send: bool,
+        /// With --send: press Enter after the text.
+        #[arg(long, requires = "send")]
+        enter: bool,
+        /// With --send: as `send --shell`.
+        #[arg(long, requires = "send")]
+        shell: bool,
+    },
+    /// Send a pending or interrupted task to its pane, then mark it sent.
+    /// Exits with `send`'s code.
+    #[command(
+        after_help = "Only a pending or interrupted task with a live pane is sent. Else it exits 1 and sends nothing.\nThe text defaults to the task and its result path. `-` reads the text from stdin.\nIt runs every `send` check. On exit 0 the task is sent. On exit 8 (no turn started) it is blocked: the text can be in the input box. On a refusal it keeps its state, and `skiff watch` names it again when the pane is idle."
+    )]
+    Send {
+        id: String,
+        /// Default: the task and its result path.
+        text: Vec<String>,
+        /// Press Enter after the text.
+        #[arg(long)]
+        enter: bool,
+        /// As `send --shell`.
+        #[arg(long)]
+        shell: bool,
     },
     /// Change a task. Only the given fields change. A new pane, or the state
     /// sent, records the pane's current generation.
@@ -263,7 +290,7 @@ pub enum LedgerCmd {
     /// List tasks, oldest first, each plan's tasks under it. LIVE says if
     /// the pane still exists.
     Ls {
-        /// sent, pending, blocked, done or interrupted.
+        /// sent, pending, blocked, done, interrupted or gone.
         #[arg(long)]
         state: Option<String>,
         #[arg(long)]
@@ -485,7 +512,7 @@ async fn run(cli: Cli) -> Result<i32> {
         Cmd::Theme { cmd: ThemeCmd::App { cmd } } => return theme::app(cmd).map(|_| 0),
         Cmd::Theme { cmd: ThemeCmd::Project { cmd } } => return theme::project(cmd).map(|_| 0),
         Cmd::OpenWith { cmd } => return open_with::run(cmd).map(|_| 0),
-        Cmd::Ledger { cmd } => return ledger::run(&socket, cmd).await.map(|_| 0),
+        Cmd::Ledger { cmd } => return ledger::run(&socket, cmd).await,
         Cmd::Status => return info::status(&socket).await.map(|_| 0),
         Cmd::Daemon(DaemonCmd::Reload { binary }) => return daemon::reload(&socket, binary).await.map(|_| 0),
         Cmd::Daemon(DaemonCmd::Stop) => return daemon::stop(&socket).await.map(|_| 0),
@@ -499,7 +526,11 @@ async fn run(cli: Cli) -> Result<i32> {
     }
     let c = connect(&socket).await?;
     if let Cmd::Wait { sessions, target, any, timeout } = &cli.cmd {
-        return wait::wait(&c, sessions, *target, *any, *timeout).await;
+        let t = wait::timeout_for(*timeout, wait::agent_caller());
+        if timeout.is_some_and(|asked| t != Some(asked)) {
+            eprintln!("skiff: --timeout capped at {}s for an agent", t.unwrap_or_default());
+        }
+        return wait::wait(&c, sessions, *target, *any, t).await;
     }
     if let Cmd::Events { sessions, json, timeout } = &cli.cmd {
         return events::events(&c, sessions, *json, *timeout).await;

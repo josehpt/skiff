@@ -20,6 +20,14 @@ Do these steps when a conversation starts, before any other `skiff` command.
 5. Rebuild your state from the ledger and the session list. Do not trust pane
    ids from memory. A row with `LIVE no` is a pane that is gone: set its task
    to `blocked` and tell the user.
+6. A row with `interrupted` is a pane that restarted after the send. Skiff
+   restored it as a new shell, so the task does not run. Do these steps for
+   each such row:
+   1. Read its result file and `skiff peek PANE -n 40`.
+   2. If the result is complete, read it and set the row to `done`.
+   3. If not, tell the user the task, the pane and the uid. Send the task again
+      only when the user says so. Then run `skiff ledger update ID --state
+      sent`.
 
 ## Your role
 
@@ -41,8 +49,8 @@ message. Report that the task was not delivered. You keep a ledger, so record
 the task as `pending` and send it later, as a new send after a fresh peek,
 when the pane is idle. This is the same rule as in the `skiff-cli` skill.
 
-- On exit 4, add the task with `skiff ledger add --pane S --task "..." --state
-  pending`. Tell the user that the task waits for that pane.
+- On exit 4, the row stays `pending` (see Ledger). Tell the user that the task
+  waits for that pane.
 - Check `skiff ledger ls --state pending` when you start a turn, and when a
   `wait` or a `[watch]` line reports that the pane is idle. Peek, send, then
   `skiff ledger update ID --state sent`.
@@ -55,21 +63,41 @@ the commands:
 
 | Command | When |
 |---|---|
-| `skiff ledger add --pane S --task "..." [--result PATH]` | You send a task. It prints the row id. |
+| `skiff ledger add --pane S --task "..." --state pending [--parent UID] [--ref TEXT]` | Before you send a task. It prints the id, the uid and the result path. |
+| `skiff ledger add --plan --task "..." [--ref TEXT]` | Work needs more than one task. It prints the plan's uid and its `plan.md`. |
 | `skiff ledger update ID --state S [--result PATH]` | The state changes: `sent`, `pending`, `blocked`, `done`. |
 | `skiff ledger ls [--state S] [--json]` | You start a turn or report on work. |
 | `skiff ledger show ID` | You need one row. |
 | `skiff ledger rm ID` | You reported the result to the user. |
 
-`--pane` takes a pane id, a prefix or a name. The pane must exist.
+- `--pane` takes a pane id, a prefix or a name. The pane must exist.
+- ID is the row id or the uid. Neither is used again after `rm`. Use the uid
+  when you name a task to the user or in a file.
+- To send a task: add the row as `pending`, send the task with its result
+  path, then run `skiff ledger update ID --state sent`. If the send fails, the
+  row stays `pending`.
+- A plan has no pane. Put each of its tasks under it with `--parent UID`. `ls`
+  shows the tasks under their plan. A plan is `sent` while its work runs. Set
+  it to `done` when its tasks are done. Remove the tasks before the plan.
+- `--ref` is optional free text that names the work somewhere else, such as a
+  URL or a ticket key. Skiff does not read it. Nothing here needs a tracker,
+  git or a network.
+- `ls` shows `interrupted` when the pane restarted after the send. See First
+  steps. A `[watch]` line that says a task is interrupted means the same.
 
 ## Results
 
 - A child reports when it ends its turn with the result on screen or in a file.
   Read short results with `skiff peek`.
-- For a long result, tell the child where to write it: `results/<task>.md` in
-  this folder. If the child cannot write outside its repository, use a path in
-  that repository. Record it with `skiff ledger update ID --result PATH`.
+- `skiff ledger add` prints a result path in `results/` in this folder. Give
+  the child that path. It makes no file.
+  - A task with no plan: `results/<date>-<uid>-<slug>.md`.
+  - A plan: the folder `results/<date>-<uid>-<slug>/`. Write the plan's notes
+    in `plan.md` in that folder.
+  - A task in a plan: `<uid>-<slug>.md` in the plan's folder.
+- If the child cannot write outside its repository, use a path in that
+  repository. Record it with `skiff ledger update ID --result PATH`.
+- `skiff ledger rm` keeps the result files.
 - Do not report a task as done from the pane state alone. Read the result.
 
 ## Sends to you

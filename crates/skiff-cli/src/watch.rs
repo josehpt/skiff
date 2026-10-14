@@ -5,7 +5,8 @@
 //! the agent: one line typed into its input box while it is idle and the box
 //! is empty. The daemon types it only if the person typed nothing since that
 //! check. An idle pane with a pending task wakes the agent once per idle
-//! stretch, and the line names the oldest pending uid. A task whose pane
+//! stretch, and the line names the oldest pending uid and the `skiff ledger
+//! send` command for it. A task whose pane
 //! restarted since the send (a restore runs a new shell under the old id)
 //! wakes the agent once as interrupted. Plans have no pane and are not
 //! followed.
@@ -179,8 +180,11 @@ pub struct Wake {
 
 impl Wake {
     fn tail(&self) -> String {
-        let state = if self.fact == Fact::Pending { "pending" } else { "interrupted" };
-        self.task.as_ref().map_or(String::new(), |t| format!(": task {t} is {state}"))
+        match (&self.task, self.fact) {
+            (Some(t), Fact::Pending) => format!(": task {t} is pending: skiff ledger send {t} --enter"),
+            (Some(t), _) => format!(": task {t} is interrupted"),
+            (None, _) => String::new(),
+        }
     }
 }
 
@@ -850,7 +854,7 @@ mod tests {
         let mut w = Watcher::default();
         let rows = [row(1, "7c2e91ab", "a", "pending", None)];
         assert_eq!(run(&mut w, &rows, &[info("a", "idle", false)]), [Fact::Pending]);
-        assert_eq!(wake_line(&w.held), "[watch] pane a a is idle: task 7c2e91ab is pending. Read it, then mark it seen.");
+        assert_eq!(wake_line(&w.held), "[watch] pane a a is idle: task 7c2e91ab is pending: skiff ledger send 7c2e91ab --enter. Read it, then mark it seen.");
         assert_eq!(run(&mut w, &rows, &[info("a", "idle", false)]), []);
         assert_eq!(w.held.len(), 1);
         // It works: the held line goes. The next idle tells it again.
@@ -868,7 +872,7 @@ mod tests {
         assert_eq!(run(&mut w, &rows, &all), [Fact::Idle]);
         assert_eq!(
             wake_line(&w.held),
-            "[watch] pane a a is idle: task 7c2e91ab is pending; pane b b is idle. Read them, then mark each seen."
+            "[watch] pane a a is idle: task 7c2e91ab is pending: skiff ledger send 7c2e91ab --enter; pane b b is idle. Read them, then mark each seen."
         );
     }
 
@@ -1007,7 +1011,7 @@ mod tests {
         assert_eq!(run(&mut w, &rows, &[born(info("a", "idle", false), 2)]), [Fact::Interrupted, Fact::Pending]);
         assert_eq!(
             wake_line(&w.held),
-            "[watch] pane a a restarted: task s1 is interrupted; pane a a is idle: task u1 is pending. Read them, then mark each seen."
+            "[watch] pane a a restarted: task s1 is interrupted; pane a a is idle: task u1 is pending: skiff ledger send u1 --enter. Read them, then mark each seen."
         );
     }
 

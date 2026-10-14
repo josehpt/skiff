@@ -159,7 +159,7 @@ enum Cmd {
     /// Skiff starts it with the agent's session; it stops when that session
     /// ends. One runs per daemon.
     #[command(
-        after_help = "A pane in an open ledger row (sent, pending, blocked) that:\n  waits (approval or bell): the person gets a desktop notification. The agent gets nothing.\n  ends a turn, goes idle after a prompt, exits or is gone: the agent gets one line, typed while it is idle and its input box is empty. Lines that wait for it are joined.\n  is idle with a pending row: the line names the oldest pending uid, once per idle stretch. The row is read again just before the line is typed, and the line is dropped if the task left pending.\n  restarted since the send: the agent gets one line that names the task as interrupted, once per run.\nskiffd types a line only if the person typed nothing in the agent's pane since the check. If no turn starts, the log says undelivered and Enter is not pressed again.\nA pane stays unread until the agent or the person marks it seen, so a new run tells it again, as it does a pending row.\nIt logs one line for each thing it does."
+        after_help = "A pane in an open ledger row (sent, pending, blocked) that:\n  waits (approval or bell): the person gets a desktop notification. The agent gets nothing.\n  ends a turn, goes idle after a prompt, exits or is gone: the agent gets one line, typed while it is idle and its input box is empty. Lines that wait for it are joined.\n  is idle with a pending row: the line names the oldest pending uid and its `skiff ledger send` command, once per idle stretch. The row is read again just before the line is typed, and the line is dropped if the task left pending.\n  restarted since the send: the agent gets one line that names the task as interrupted, once per run.\nskiffd types a line only if the person typed nothing in the agent's pane since the check. If no turn starts, the log says undelivered and Enter is not pressed again.\nA pane stays unread until the agent or the person marks it seen, so a new run tells it again, as it does a pending row.\nIt logs one line for each thing it does."
     )]
     Watch {
         /// The Skiff agent's session.
@@ -239,6 +239,31 @@ pub enum LedgerCmd {
         /// anything. Skiff stores it and never reads it.
         #[arg(long = "ref", value_name = "TEXT")]
         reference: Option<String>,
+        /// Add the task as pending and send it at once, as `ledger send` does.
+        #[arg(long, conflicts_with_all = ["plan", "state"])]
+        send: bool,
+        /// With --send: press Enter after the text.
+        #[arg(long, requires = "send")]
+        enter: bool,
+        /// With --send: as `send --shell`.
+        #[arg(long, requires = "send")]
+        shell: bool,
+    },
+    /// Send a pending or interrupted task to its pane, then mark it sent.
+    /// Exits with `send`'s code.
+    #[command(
+        after_help = "Only a pending or interrupted task with a live pane is sent. Else it exits 1 and sends nothing.\nThe text defaults to the task and its result path. `-` reads the text from stdin.\nIt runs every `send` check. On exit 0 the task is sent. On exit 8 (no turn started) it is blocked: the text can be in the input box. On a refusal it keeps its state, and `skiff watch` names it again when the pane is idle."
+    )]
+    Send {
+        id: String,
+        /// Default: the task and its result path.
+        text: Vec<String>,
+        /// Press Enter after the text.
+        #[arg(long)]
+        enter: bool,
+        /// As `send --shell`.
+        #[arg(long)]
+        shell: bool,
     },
     /// Change a task. Only the given fields change. A new pane, or the state
     /// sent, records the pane's current generation.
@@ -485,7 +510,7 @@ async fn run(cli: Cli) -> Result<i32> {
         Cmd::Theme { cmd: ThemeCmd::App { cmd } } => return theme::app(cmd).map(|_| 0),
         Cmd::Theme { cmd: ThemeCmd::Project { cmd } } => return theme::project(cmd).map(|_| 0),
         Cmd::OpenWith { cmd } => return open_with::run(cmd).map(|_| 0),
-        Cmd::Ledger { cmd } => return ledger::run(&socket, cmd).await.map(|_| 0),
+        Cmd::Ledger { cmd } => return ledger::run(&socket, cmd).await,
         Cmd::Status => return info::status(&socket).await.map(|_| 0),
         Cmd::Daemon(DaemonCmd::Reload { binary }) => return daemon::reload(&socket, binary).await.map(|_| 0),
         Cmd::Daemon(DaemonCmd::Stop) => return daemon::stop(&socket).await.map(|_| 0),

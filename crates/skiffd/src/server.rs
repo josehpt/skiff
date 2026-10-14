@@ -2,7 +2,11 @@
 //! ones in order on a second task; events and subscribed output are
 //! interleaved on the same connection.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::Result;
 use skiff_core::{
@@ -21,25 +25,39 @@ use crate::session::{Session, SessionPool};
 mod slow;
 use slow::answer_slow;
 
+/// A request or a piece of output slower than this is logged at debug level.
+const SLOW: Duration = Duration::from_millis(50);
+
+/// The ms since `since`, when that is longer than [`SLOW`].
+fn slow_ms(since: Instant) -> Option<u128> {
+    let took = since.elapsed();
+    (took > SLOW).then(|| took.as_millis())
+}
+
 pub async fn handle(stream: UnixStream, pool: Arc<SessionPool>) -> Result<()> {
     let (rd, mut wr) = stream.into_split();
-    // Output and snapshots.
-    let (tx, mut rx) = mpsc::channel::<ServerMessage>(4096);
+    // Output and snapshots, with when the PTY read of the output's first byte came.
+    let (tx, mut rx) = mpsc::channel::<(ServerMessage, Option<Instant>)>(4096);
     // Replies and state events. Small and few, so unbounded, and written
     // first, so a busy terminal does not delay a reply or the sidebar.
     let (ctl, mut ctl_rx) = mpsc::unbounded_channel::<ServerMessage>();
 
     let writer = tokio::spawn(async move {
         loop {
-            let msg = tokio::select! {
+            let (msg, read) = tokio::select! {
                 biased;
-                Some(msg) = ctl_rx.recv() => msg,
-                Some(msg) = rx.recv() => msg,
+                Some(msg) = ctl_rx.recv() => (msg, None),
+                Some(out) = rx.recv() => out,
                 else => break,
             };
             let mut line = serde_json::to_vec(&msg)?;
             line.push(b'\n');
             wr.write_all(&line).await?;
+            if let (Some(read), ServerMessage::Event(Event::Output { session, .. })) = (read, &msg) {
+                if let Some(ms) = slow_ms(read) {
+                    tracing::debug!("output of {session} took {ms} ms from PTY read to send");
+                }
+            }
         }
         anyhow::Ok(())
     });
@@ -65,13 +83,17 @@ pub async fn handle(stream: UnixStream, pool: Arc<SessionPool>) -> Result<()> {
 
     // Slow requests answer from here, in the order they came. A reply can
     // pass one from this queue; the client matches replies by id.
-    let (slow_tx, mut slow_rx) = mpsc::unbounded_channel::<(u64, Request)>();
+    let (slow_tx, mut slow_rx) = mpsc::unbounded_channel::<(u64, Request, Instant)>();
     let slow_task = {
         let ctl = ctl.clone();
         let pool = pool.clone();
         tokio::spawn(async move {
-            while let Some((id, request)) = slow_rx.recv().await {
+            while let Some((id, request, since)) = slow_rx.recv().await {
+                let name = request.name();
                 let response = answer_slow(pool.clone(), request).await;
+                if let Some(ms) = slow_ms(since) {
+                    tracing::debug!("request {name} took {ms} ms");
+                }
                 if ctl.send(ServerMessage::Reply(Reply { id, response })).is_err() {
                     break;
                 }
@@ -105,12 +127,15 @@ pub async fn handle(stream: UnixStream, pool: Arc<SessionPool>) -> Result<()> {
             }
         };
 
+        let since = Instant::now();
+        let name = env.request.name();
         let response = match env.request {
             Request::Ping => Response::Pong {
                 version: skiff_core::VERSION.to_string(),
                 protocol: skiff_core::PROTOCOL,
                 reload_state: Some(crate::session::reload::HANDOVER),
                 pid: Some(std::process::id()),
+                debug: Some(cfg!(debug_assertions)),
             },
             // Writes before this one on the connection are queued already;
             // the reload drains them. It answers only when it fails: success
@@ -141,7 +166,7 @@ pub async fn handle(stream: UnixStream, pool: Arc<SessionPool>) -> Result<()> {
             | Request::ListAgents
             | Request::ListAgentSessions { .. }
             | Request::Coordinator { .. }) => {
-                if slow_tx.send((env.id, req)).is_err() {
+                if slow_tx.send((env.id, req, since)).is_err() {
                     break;
                 }
                 continue;
@@ -182,7 +207,7 @@ pub async fn handle(stream: UnixStream, pool: Arc<SessionPool>) -> Result<()> {
                         let _ = old.await;
                     }
                     let (snapshot, mut out) = s.attach();
-                    tx.send(snapshot_event(&session, &s, snapshot)).await?;
+                    tx.send((snapshot_event(&session, &s, snapshot), None)).await?;
                     let tx = tx.clone();
                     let sid = session.clone();
                     // Weak, so a killed session still drops and closes `out`.
@@ -193,9 +218,10 @@ pub async fn handle(stream: UnixStream, pool: Arc<SessionPool>) -> Result<()> {
                                 Ok(chunk) => {
                                     let ev = Event::Output {
                                         session: sid.clone(),
-                                        data: chunk.to_vec(),
+                                        data: chunk.data.clone(),
+                                        echo: chunk.echo,
                                     };
-                                    if tx.send(ServerMessage::Event(ev)).await.is_err() {
+                                    if tx.send((ServerMessage::Event(ev), Some(chunk.read))).await.is_err() {
                                         break;
                                     }
                                 }
@@ -206,7 +232,7 @@ pub async fn handle(stream: UnixStream, pool: Arc<SessionPool>) -> Result<()> {
                                     let Some(s) = s.upgrade() else { break };
                                     let (snapshot, rx) = s.attach();
                                     out = rx;
-                                    if tx.send(snapshot_event(&sid, &s, snapshot)).await.is_err() {
+                                    if tx.send((snapshot_event(&sid, &s, snapshot), None)).await.is_err() {
                                         break;
                                     }
                                 }
@@ -252,6 +278,9 @@ pub async fn handle(stream: UnixStream, pool: Arc<SessionPool>) -> Result<()> {
             },
         };
 
+        if let Some(ms) = slow_ms(since) {
+            tracing::debug!("request {name} took {ms} ms");
+        }
         let reply = Reply {
             id: env.id,
             response,

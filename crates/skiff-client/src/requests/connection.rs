@@ -25,6 +25,8 @@ pub struct DaemonInfo {
     pub reload_state: Option<u32>,
     /// Its process id, which a reload keeps. `None` from older daemons.
     pub pid: Option<u32>,
+    /// A debug build. `None` from older daemons.
+    pub debug: Option<bool>,
 }
 
 impl Client {
@@ -41,7 +43,7 @@ impl Client {
     /// Version, protocol, reload support and pid.
     pub async fn daemon_info(&self) -> Result<DaemonInfo> {
         match self.request(Request::Ping).await? {
-            Response::Pong { version, protocol, reload_state, pid } => Ok(DaemonInfo { version, protocol, reload_state, pid }),
+            Response::Pong { version, protocol, reload_state, pid, debug } => Ok(DaemonInfo { version, protocol, reload_state, pid, debug }),
             other => bail!("unexpected reply: {other:?}"),
         }
     }

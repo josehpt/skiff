@@ -8,7 +8,7 @@ use std::{
         atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering},
         Arc, Condvar, Mutex, RwLock, RwLockReadGuard,
     },
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -16,7 +16,7 @@ use polling::Poller;
 use portable_pty::{native_pty_system, PtySize};
 use skiff_core::{
     group::Group,
-    protocol::Event,
+    protocol::{EchoTimes, Event},
     session::{now_ms, SessionId, SessionInfo, SessionSpec, SessionState, ENTER_DELAY},
 };
 use tokio::sync::{broadcast, Notify};
@@ -42,7 +42,29 @@ pub(crate) fn proc_argv(pid: u32) -> Vec<String> {
     away::proc::argv(pid)
 }
 
-pub type Chunk = Arc<Vec<u8>>;
+/// Output for subscribers, as one piece.
+pub type Chunk = Arc<Piece>;
+
+pub struct Piece {
+    pub data: Vec<u8>,
+    /// When the reader read its first byte.
+    pub read: Instant,
+    /// Set when it holds the first output read after input.
+    pub echo: Option<EchoTimes>,
+}
+
+impl std::ops::Deref for Piece {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        &self.data
+    }
+}
+
+/// Unix time in microseconds, for the latency trace.
+fn now_us() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_micros() as u64)
+}
 
 /// No output for this long turns `working` into `idle`.
 pub const IDLE_AFTER: Duration = Duration::from_secs(3);
@@ -101,6 +123,9 @@ pub struct Session {
     input: std::sync::mpsc::Sender<Input>,
     /// Writes accepted and not yet in the PTY. A reload waits for 0.
     queued: Arc<AtomicUsize>,
+    /// Unix µs when the writer thread last wrote input to the PTY. The reader
+    /// takes it with the first output after it; 0 once taken.
+    wrote: Arc<AtomicU64>,
     /// Wakes the reader thread out of its wait, so it sees a pause request.
     waker: Poller,
     /// Pauses the reader thread for a reload.
@@ -170,6 +195,8 @@ struct ScreenState {
     printed: bool,
     /// A chunk since the last scan printed text that was not an echo.
     printed_work: bool,
+    /// `pending` holds the first output after input: when it was written and read.
+    echo: Option<EchoTimes>,
 }
 
 /// What a scan of the screen found.
@@ -188,7 +215,11 @@ struct Scan {
 impl ScreenState {
     fn flush(&mut self, output: &broadcast::Sender<Chunk>) {
         if !self.pending.is_empty() {
-            let _ = output.send(Arc::new(std::mem::take(&mut self.pending)));
+            let _ = output.send(Arc::new(Piece {
+                data: std::mem::take(&mut self.pending),
+                read: self.held_since,
+                echo: self.echo.take(),
+            }));
         }
     }
 
@@ -338,6 +369,11 @@ impl Session {
         }
         st.last_push = now;
         st.pending.extend_from_slice(chunk);
+        // The first read after a write to the PTY: the program's answer.
+        let wrote = self.wrote.swap(0, Ordering::Relaxed);
+        if wrote != 0 {
+            st.echo = Some(EchoTimes { wrote, read: now_us() });
+        }
         // The first answer to a keystroke goes out now, even while the
         // program streams output. The reads after that answer merge again,
         // so a redraw does not go out as a stream of small chunks. The rest
@@ -345,7 +381,7 @@ impl Session {
         // a program that streams without a pause never lets the reader wait,
         // so the hold is checked here as well.
         let answers_key = self.key_pending.swap(false, Ordering::Relaxed);
-        if answers_key || st.pending.len() >= MAX_CHUNK || now >= st.held_since + HOLD {
+        if answers_key || wrote != 0 || st.pending.len() >= MAX_CHUNK || now >= st.held_since + HOLD {
             st.flush(&self.output);
         }
         (signals, scan, echoing)
@@ -562,13 +598,14 @@ impl SessionPool {
             coordinator: spec.coordinator,
         };
 
-        let (input, queued) = start_writer(&id, &pty)?;
+        let (input, queued, wrote) = start_writer(&id, &pty)?;
         let (output, _) = broadcast::channel(4096);
         let session = Arc::new(Session {
             info: Mutex::new(info.clone()),
             pty,
             input,
             queued,
+            wrote,
             waker: Poller::new().context("poller")?,
             park: Park::default(),
             output,
@@ -594,6 +631,7 @@ impl SessionPool {
                 unscanned: false,
                 printed: false,
                 printed_work: false,
+                echo: None,
             }),
         });
         self.sessions
@@ -1180,13 +1218,15 @@ pub(crate) enum Input {
     Pause(Duration),
 }
 
-/// The thread that writes input to the PTY, and its count of writes queued.
-/// A program that stops reading its input blocks this thread alone. Input
-/// after the PTY is gone is dropped and still counted down, so a reload never
-/// waits on a dead session.
-fn start_writer(id: &str, pty: &Pty) -> Result<(std::sync::mpsc::Sender<Input>, Arc<AtomicUsize>)> {
+/// The thread that writes input to the PTY, its count of writes queued, and
+/// when it last wrote. A program that stops reading its input blocks this
+/// thread alone. Input after the PTY is gone is dropped and still counted
+/// down, so a reload never waits on a dead session.
+fn start_writer(id: &str, pty: &Pty) -> Result<(std::sync::mpsc::Sender<Input>, Arc<AtomicUsize>, Arc<AtomicU64>)> {
     let mut writer = pty.writer().context("clone writer")?;
     let queued = Arc::new(AtomicUsize::new(0));
+    let wrote = Arc::new(AtomicU64::new(0));
+    let wrote_at = wrote.clone();
     let (input, input_rx) = std::sync::mpsc::channel::<Input>();
     let count = queued.clone();
     std::thread::Builder::new()
@@ -1197,6 +1237,9 @@ fn start_writer(id: &str, pty: &Pty) -> Result<(std::sync::mpsc::Sender<Input>, 
             for item in input_rx {
                 match item {
                     Input::Bytes(data) => {
+                        // Before the write: a terminal in canonical mode echoes
+                        // inside it, so the reader can see the answer first.
+                        wrote_at.store(now_us(), Ordering::Relaxed);
                         if open && writer.write_all(&data).and_then(|_| writer.flush()).is_err() {
                             open = false;
                         }
@@ -1207,7 +1250,7 @@ fn start_writer(id: &str, pty: &Pty) -> Result<(std::sync::mpsc::Sender<Input>, 
             }
         })
         .context("spawn writer thread")?;
-    Ok((input, queued))
+    Ok((input, queued, wrote))
 }
 
 /// True when the bytes put text on the screen. Escape sequences and control
@@ -1288,6 +1331,7 @@ mod tests {
             unscanned: false,
             printed: false,
             printed_work: false,
+            echo: None,
         }
     }
 

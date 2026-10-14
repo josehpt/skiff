@@ -84,6 +84,7 @@ pub fn run() {
             commands::pty_resize,
             commands::session_seen,
             commands::kill_session,
+            commands::pty_submit,
             commands::rename_session,
             commands::set_session_theme,
             config::list_projects,

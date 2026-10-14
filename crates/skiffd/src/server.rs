@@ -149,6 +149,13 @@ pub async fn handle(stream: UnixStream, pool: Arc<SessionPool>) -> Result<()> {
                 Ok(()) => Response::Ok,
                 Err(e) => error(e),
             },
+            Request::Submit { session, data, paste, enter, expect } => {
+                match pool.submit(&session, &data, paste, enter, expect) {
+                    Ok(true) => Response::Ok,
+                    Ok(false) => Response::Refused,
+                    Err(e) => error(e),
+                }
+            }
             Request::SetSessionTheme { session, theme } => match pool.set_theme(&session, theme) {
                 Ok(session) => Response::Session { session },
                 Err(e) => error(e),

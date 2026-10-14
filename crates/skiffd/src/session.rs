@@ -17,7 +17,7 @@ use portable_pty::{native_pty_system, PtySize};
 use skiff_core::{
     group::Group,
     protocol::Event,
-    session::{now_ms, SessionId, SessionInfo, SessionSpec, SessionState},
+    session::{now_ms, SessionId, SessionInfo, SessionSpec, SessionState, ENTER_DELAY},
 };
 use tokio::sync::{broadcast, Notify};
 
@@ -96,7 +96,7 @@ pub struct Session {
     pty: Pty,
     /// Input for the writer thread. A program that stops reading its input
     /// blocks that thread, never the daemon's executor or other sessions.
-    input: std::sync::mpsc::Sender<Vec<u8>>,
+    input: std::sync::mpsc::Sender<Input>,
     /// Writes accepted and not yet in the PTY. A reload waits for 0.
     queued: Arc<AtomicUsize>,
     /// Wakes the reader thread out of its wait, so it sees a pause request.
@@ -228,6 +228,22 @@ impl Session {
         let mut info = self.info.lock().unwrap().clone();
         info.last_output_at = self.last_output.load(Ordering::Relaxed);
         info
+    }
+
+    /// Queues input for the writer thread, in order.
+    fn send(&self, id: &str, items: Vec<Input>) -> Result<()> {
+        // Stored before the send: the reader can see the echo before this
+        // thread runs again, and it must count as an echo, not as work.
+        self.last_input.store(now_ms(), Ordering::Relaxed);
+        self.key_pending.store(true, Ordering::Relaxed);
+        for item in items {
+            self.queued.fetch_add(1, Ordering::AcqRel);
+            if self.input.send(item).is_err() {
+                self.queued.fetch_sub(1, Ordering::AcqRel);
+                bail!("session {id} no longer takes input");
+            }
+        }
+        Ok(())
     }
 
     /// A snapshot of the screen, and a receiver for every byte after it.
@@ -536,6 +552,7 @@ impl SessionPool {
             agent_exit: None,
             peek: spec.peek,
             interactive: false,
+            input_gen: 0,
         };
 
         let (input, queued) = start_writer(&id, &pty)?;
@@ -848,13 +865,14 @@ impl SessionPool {
             }
             let _ = session.waker.notify();
         }
-        let (state, updated) = {
+        let (state, updated, ended) = {
             let mut info = session.info.lock().unwrap();
             if info.state == SessionState::Done {
                 return;
             }
             let mut state = None;
             let mut changed = false;
+            let mut ended = None;
             if front == Front::Shell {
                 if info.state != SessionState::Idle {
                     info.state = SessionState::Idle;
@@ -862,15 +880,19 @@ impl SessionPool {
                 }
                 changed = !info.unread;
                 info.unread = true;
+                ended = Some(info.id.clone());
             } else if agent && info.agent_exit.take().is_some() {
                 changed = true;
                 // The exit code is saved with the workspace.
                 self.dirty.notify_one();
             }
-            (state, changed.then(|| info.clone()))
+            (state, changed.then(|| info.clone()), ended)
         };
         if let Some(session) = state {
             let _ = self.events.send(Event::State { session, state: SessionState::Idle });
+        }
+        if let Some(session) = ended {
+            let _ = self.events.send(Event::TurnEnded { session });
         }
         if let Some(session) = updated {
             let _ = self.events.send(Event::SessionUpdated { session });
@@ -910,14 +932,11 @@ impl SessionPool {
     pub fn write(&self, id: &str, data: &[u8]) -> Result<()> {
         let _change = self.change()?;
         let session = self.get(id).ok_or_else(|| anyhow!("no such session: {id}"))?;
-        // Stored before the send: the reader can see the echo before this
-        // thread runs again, and it must count as an echo, not as work.
-        session.last_input.store(now_ms(), Ordering::Relaxed);
-        session.key_pending.store(true, Ordering::Relaxed);
-        session.queued.fetch_add(1, Ordering::AcqRel);
-        if session.input.send(data.to_vec()).is_err() {
-            session.queued.fetch_sub(1, Ordering::AcqRel);
-            bail!("session {id} no longer takes input");
+        {
+            // The info lock orders this write against a submit's check.
+            let mut info = session.info.lock().unwrap();
+            info.input_gen += 1;
+            session.send(id, vec![Input::Bytes(data.to_vec())])?;
         }
         // Input answers a bell. An agent's prompt goes when the screen says so.
         if session.belled.swap(false, Ordering::Relaxed)
@@ -926,6 +945,31 @@ impl SessionPool {
             self.set_state(&session, SessionState::Working);
         }
         Ok(())
+    }
+
+    /// Types `data` and, with `enter`, presses Enter [`ENTER_DELAY`] later,
+    /// only if the session took no input since the client read
+    /// `input_gen == expect`. Input that comes during the delay waits behind
+    /// the Enter. `Ok(false)`: refused, and nothing typed.
+    pub fn submit(&self, id: &str, data: &[u8], paste: bool, enter: bool, expect: u64) -> Result<bool> {
+        let _change = self.change()?;
+        let session = self.get(id).ok_or_else(|| anyhow!("no such session: {id}"))?;
+        let data = if paste && session.screen.lock().unwrap().screen.bracketed_paste() {
+            bracketed(data)
+        } else {
+            data.to_vec()
+        };
+        let mut info = session.info.lock().unwrap();
+        if info.input_gen != expect || info.state == SessionState::Done {
+            return Ok(false);
+        }
+        info.input_gen += 1;
+        let mut items = vec![Input::Bytes(data)];
+        if enter {
+            items.extend([Input::Pause(ENTER_DELAY), Input::Bytes(b"\r".to_vec())]);
+        }
+        session.send(id, items)?;
+        Ok(true)
     }
 
     /// Writes `data` as a paste: inside bracketed paste when the program
@@ -1081,7 +1125,7 @@ impl SessionPool {
         }
         // Check and flip under one lock, so a bell or output the reader
         // handles meanwhile is not overwritten with `idle`.
-        let (id, updated) = {
+        let (id, updated, turn) = {
             let mut info = s.info.lock().unwrap();
             let last = s.last_work.load(Ordering::Relaxed);
             let quiet = now_ms().saturating_sub(last) > IDLE_AFTER.as_millis() as u64;
@@ -1110,32 +1154,47 @@ impl SessionPool {
                 info.unread = true;
                 info.clone()
             });
-            (info.id.clone(), updated)
+            (info.id.clone(), updated, turn)
         };
-        let _ = self.events.send(Event::State { session: id, state: SessionState::Idle });
+        let _ = self.events.send(Event::State { session: id.clone(), state: SessionState::Idle });
+        if turn {
+            let _ = self.events.send(Event::TurnEnded { session: id });
+        }
         if let Some(session) = updated {
             let _ = self.events.send(Event::SessionUpdated { session });
         }
     }
 }
 
+/// One item for the writer thread. A pause holds the input behind it, so a
+/// submit's Enter comes after its text with nothing typed between.
+pub(crate) enum Input {
+    Bytes(Vec<u8>),
+    Pause(Duration),
+}
+
 /// The thread that writes input to the PTY, and its count of writes queued.
 /// A program that stops reading its input blocks this thread alone. Input
 /// after the PTY is gone is dropped and still counted down, so a reload never
 /// waits on a dead session.
-fn start_writer(id: &str, pty: &Pty) -> Result<(std::sync::mpsc::Sender<Vec<u8>>, Arc<AtomicUsize>)> {
+fn start_writer(id: &str, pty: &Pty) -> Result<(std::sync::mpsc::Sender<Input>, Arc<AtomicUsize>)> {
     let mut writer = pty.writer().context("clone writer")?;
     let queued = Arc::new(AtomicUsize::new(0));
-    let (input, input_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    let (input, input_rx) = std::sync::mpsc::channel::<Input>();
     let count = queued.clone();
     std::thread::Builder::new()
         .name(format!("pty-in-{id}"))
         .spawn(move || {
             let mut open = true;
             // Ends when the session is dropped.
-            for data in input_rx {
-                if open && writer.write_all(&data).and_then(|_| writer.flush()).is_err() {
-                    open = false;
+            for item in input_rx {
+                match item {
+                    Input::Bytes(data) => {
+                        if open && writer.write_all(&data).and_then(|_| writer.flush()).is_err() {
+                            open = false;
+                        }
+                    }
+                    Input::Pause(d) => std::thread::sleep(d),
                 }
                 count.fetch_sub(1, Ordering::AcqRel);
             }

@@ -41,6 +41,8 @@ export interface SessionInfo {
   peek?: boolean;
   /** A peek command took the terminal: a terminal tool. */
   interactive?: boolean;
+  /** Counts the input the session took. A guarded submit names it. */
+  input_gen?: number;
 }
 
 /** An agent that ran in a session, and the last title it set. */
@@ -98,6 +100,7 @@ export type DaemonEvent =
   | { event: "session_created"; session: SessionInfo }
   | { event: "session_removed"; session: string }
   | { event: "session_updated"; session: SessionInfo }
+  | { event: "turn_ended"; session: string }
   | { event: "groups_changed" }
   | { event: "title"; session: string; title: string | null }
   | { event: "away"; session: string; away: Away[] };

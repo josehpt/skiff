@@ -172,9 +172,7 @@ async fn group_cwd(c: &Client, g: &Group) -> Result<Option<PathBuf>> {
     Ok(dir.filter(|d| d.is_dir()))
 }
 
-/// The pause before Enter. A TUI without bracketed paste guesses pastes
-/// from fast input, and takes an Enter that comes too soon as a newline.
-pub const ENTER_DELAY: Duration = Duration::from_millis(200);
+pub use skiff_core::session::ENTER_DELAY;
 
 /// Why `send` must not type into `s`, as an exit code and a message.
 /// `here` is `SKIFF_SESSION`; `caller_shell` is the caller's `SHELL`.
@@ -311,7 +309,7 @@ pub fn is_agent(s: &SessionInfo) -> bool {
 
 /// True when the session leaves idle within `TURN_WAIT`: the agent took the
 /// message. An exit or a removal also counts, as the program reacted.
-async fn turn_started(
+pub async fn turn_started(
     c: &Client,
     id: &str,
     mut events: tokio::sync::broadcast::Receiver<skiff_core::protocol::Event>,

@@ -57,6 +57,14 @@ pub(crate) async fn set_session_theme(
     c.set_session_theme(&session, theme).await.map_err(err)
 }
 
+/// Types `data` and presses Enter only if the session took no input since
+/// its `input_gen` was `expect`. `false`: refused, nothing typed.
+#[tauri::command]
+pub(crate) async fn pty_submit(app: State<'_, App>, session: String, data: String, expect: u64) -> Result<bool, String> {
+    let (c, _) = ensure_client(&app).await?;
+    c.submit(&session, data.into_bytes(), false, true, expect).await.map_err(err)
+}
+
 #[tauri::command]
 pub(crate) async fn rename_session(
     app: State<'_, App>,

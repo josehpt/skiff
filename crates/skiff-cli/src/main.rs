@@ -128,7 +128,7 @@ enum Cmd {
     /// Wait until sessions reach a state. Exit 0 when all do, 1 on timeout,
     /// 2 when one closes or exits first, 3 when one is waiting.
     #[command(
-        after_help = "Exit codes:\n  0  every session reached the state. With --any: one session reached it. Its id, name and state print on stdout.\n  1  timeout\n  2  a session closed or exited before it reached the state. With --any: every session did.\n  3  a session is waiting (approval prompt or bell). A person answers it in its pane.\nWith --for idle, done or any-not-working, wait stops at once when any session is waiting. --for waiting is not changed.\nGive each wait a --timeout. After exit 0, read the screen with `skiff peek`: idle does not prove that an agent finished."
+        after_help = "Exit codes:\n  0  every session reached the state. With --any: one session reached it. Its id, name and state print on stdout.\n  1  timeout\n  2  a session closed or exited before it reached the state. With --any: every session did.\n  3  a session is waiting (approval prompt or bell). A person answers it in its pane.\nWith --for idle, done or any-not-working, wait stops at once when any session is waiting. --for waiting is not changed.\nWith --for idle, a known agent that is quiet but shows its busy line (\"esc to interrupt\") is not idle yet.\nIn a Skiff pane ($SKIFF_SESSION), or with no terminal on stdout, the timeout defaults to 45 seconds and is at most 60.\nAfter exit 0, read the screen with `skiff peek`: idle does not prove that an agent finished."
     )]
     Wait {
         #[arg(required = true)]
@@ -138,7 +138,7 @@ enum Cmd {
         /// Stop when the first session reaches the state.
         #[arg(long)]
         any: bool,
-        /// Give up after this many seconds.
+        /// Give up after this many seconds. For an agent: default 45, at most 60.
         #[arg(long, value_name = "SECS")]
         timeout: Option<f64>,
     },
@@ -526,7 +526,11 @@ async fn run(cli: Cli) -> Result<i32> {
     }
     let c = connect(&socket).await?;
     if let Cmd::Wait { sessions, target, any, timeout } = &cli.cmd {
-        return wait::wait(&c, sessions, *target, *any, *timeout).await;
+        let t = wait::timeout_for(*timeout, wait::agent_caller());
+        if timeout.is_some_and(|asked| t != Some(asked)) {
+            eprintln!("skiff: --timeout capped at {}s for an agent", t.unwrap_or_default());
+        }
+        return wait::wait(&c, sessions, *target, *any, t).await;
     }
     if let Cmd::Events { sessions, json, timeout } = &cli.cmd {
         return events::events(&c, sessions, *json, *timeout).await;

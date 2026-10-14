@@ -45,6 +45,24 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         paste: bool,
     },
+    /// Types `data` and, with `enter`, presses Enter after
+    /// [`ENTER_DELAY`], as one step: only if the session took no input since
+    /// its `input_gen` was `expect`. For text a program sends on its own,
+    /// so it never mixes with what the person types. Answers
+    /// [`Response::Ok`] when sent, [`Response::Refused`] when not.
+    ///
+    /// [`ENTER_DELAY`]: crate::session::ENTER_DELAY
+    Submit {
+        session: SessionId,
+        #[serde(with = "b64")]
+        data: Vec<u8>,
+        /// As in [`Request::Write`].
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        paste: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        enter: bool,
+        expect: u64,
+    },
     Resize {
         session: SessionId,
         cols: u16,
@@ -153,6 +171,8 @@ pub enum Response {
     Groups { groups: Vec<Group> },
     Group { group: Group },
     Error { message: String },
+    /// A [`Request::Submit`] typed nothing: input came after its check.
+    Refused,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -199,6 +219,12 @@ pub enum Event {
     },
     SessionCreated {
         session: SessionInfo,
+    },
+    /// An agent finished a turn, or a program ended and left the shell in
+    /// front: there is a result to read. Sent for each one, though `unread`
+    /// is set already.
+    TurnEnded {
+        session: SessionId,
     },
     /// A session's info changed outside the state and title events.
     SessionUpdated {

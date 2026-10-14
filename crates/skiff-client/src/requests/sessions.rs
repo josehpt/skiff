@@ -39,6 +39,25 @@ impl Client {
         .await
     }
 
+    /// Types `data`, and with `enter` presses Enter, only if the session
+    /// took no input since its `input_gen` was `expect`. See
+    /// [`Request::Submit`]. `false`: refused, nothing typed.
+    pub async fn submit(&self, session: &str, data: Vec<u8>, paste: bool, enter: bool, expect: u64) -> Result<bool> {
+        let req = Request::Submit {
+            session: session.to_string(),
+            data,
+            paste,
+            enter,
+            expect,
+        };
+        match self.request(req).await? {
+            Response::Ok => Ok(true),
+            Response::Refused => Ok(false),
+            Response::Error { message } => bail!(message),
+            other => bail!("unexpected reply: {other:?}"),
+        }
+    }
+
     /// Queues input and returns at once. Calls from one thread reach the PTY
     /// in call order. The reply has no waiter, so the reader drops it.
     pub fn write_now(&self, session: &str, data: Vec<u8>) -> Result<()> {

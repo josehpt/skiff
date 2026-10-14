@@ -133,7 +133,8 @@ export function syncSkiffAgent() {
   const line = a && continueLine(a.id, a.command);
   if (!line) return;
   continued.add(s.id);
-  invoke("pty_write", { session: s.id, data: line + "\r" }).catch(showError);
+  // Refused when the person typed in the pane first: their line stays theirs.
+  invoke("pty_submit", { session: s.id, data: line, expect: s.input_gen ?? 0 }).catch(showError);
 }
 
 /** The name the last render saw, so a change from Settings shows. */

@@ -1,4 +1,8 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
+
+/// The pause before Enter. A TUI without bracketed paste guesses pastes
+/// from fast input, and takes an Enter that comes too soon as a newline.
+pub const ENTER_DELAY: Duration = Duration::from_millis(200);
 
 use serde::{Deserialize, Serialize};
 
@@ -123,6 +127,12 @@ pub struct SessionInfo {
     /// is a terminal tool, and the app shows it.
     #[serde(default)]
     pub interactive: bool,
+    /// Counts the input the session took. A [`Request::Submit`] names the
+    /// count it read, and the daemon refuses it when input came after.
+    ///
+    /// [`Request::Submit`]: crate::protocol::Request::Submit
+    #[serde(default)]
+    pub input_gen: u64,
 }
 
 /// An agent that ran in a session, and the last title it set.

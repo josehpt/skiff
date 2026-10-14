@@ -2,7 +2,8 @@
 //! ledger, for that agent. The app starts it with the agent's session and it
 //! stops when that session ends. A pane that waits notifies the person. A
 //! pane that goes idle after work, exits or is gone wakes the agent: one line
-//! typed into its input box while it is idle and the box is empty.
+//! typed into its input box while it is idle and the box is empty. The
+//! daemon types it only if the person typed nothing since that check.
 //!
 //! It keeps no state of its own. The ledger, the session list and each pane's
 //! unread flag are the input, so a new run rebuilds the same view. One lock
@@ -177,15 +178,66 @@ struct Watcher {
     turned: HashSet<String>,
 }
 
+/// What came of a line typed into the agent's pane.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Delivery {
+    /// A turn started: the agent took it.
+    Taken,
+    /// The person typed in the pane after the check. Nothing was typed.
+    Refused,
+    /// Typed and Enter pressed, but no turn started.
+    NoTurn,
+}
+
 impl Watcher {
     /// The app marks a pane seen as soon as the person looks at it, so the
-    /// unread flag can be gone by the next list. The event keeps it.
+    /// unread flag can be gone by the next list. The daemon's turn-end event
+    /// keeps it. A rename, a theme or a resize is no turn.
     fn note(&mut self, e: &Event) {
-        if let Event::SessionUpdated { session } = e {
-            if session.unread {
-                self.turned.insert(session.id.clone());
-            }
+        if let Event::TurnEnded { session } = e {
+            self.turned.insert(session.clone());
         }
+    }
+
+    /// Takes the state of the ledger pane `key` now. Returns the fact to
+    /// tell, if any, and holds a wake for the agent unless the pane waits.
+    fn track(&mut self, key: &str, s: Option<&SessionInfo>) -> Option<Wake> {
+        let pane = self.panes.entry(key.to_string()).or_default();
+        if let Some(s) = s {
+            pane.name = resolve::display_name(s).to_string();
+        }
+        let turned = s.is_some_and(|s| self.turned.contains(&s.id));
+        // A new turn ended: tell it, though the last idle was told.
+        if turned && pane.told == Some(Fact::Idle) {
+            pane.told = None;
+        }
+        let now = Now::of(s, turned);
+        // An idle line is old news once the pane works or waits again.
+        if matches!(now, Now::Working | Now::Waiting) {
+            self.held.retain(|h| !(h.pane == key && h.fact == Fact::Idle));
+        }
+        let fact = pane.observe(now)?;
+        let id = s.map(|s| s.id.clone()).unwrap_or_else(|| key.to_string());
+        let wake = Wake { fact, pane: key.to_string(), name: pane.name.clone(), id };
+        if fact != Fact::Waiting {
+            // The newest fact for a pane replaces an older one still held.
+            self.held.retain(|h| h.pane != key);
+            self.held.push(wake.clone());
+        }
+        Some(wake)
+    }
+
+    /// Settles the held lines after a delivery, and says what to log. A line
+    /// that started no turn can sit in the input box: Enter is not pressed
+    /// again, as it could submit twice.
+    fn delivered(&mut self, d: Delivery, line: &str) -> String {
+        let msg = match d {
+            Delivery::Refused => return format!("held: the person typed in the agent's pane: {line}"),
+            Delivery::Taken => format!("woke the agent: {line}"),
+            Delivery::NoTurn => format!("undelivered: no turn started; the line can be in the agent's input box: {line}"),
+        };
+        self.held.clear();
+        msg
     }
 }
 
@@ -303,29 +355,12 @@ async fn step(c: &Client, o: &Options, w: &mut Watcher) -> Result<Option<i32>> {
             continue;
         }
         open.insert(t.pane.clone());
-        let pane = w.panes.entry(t.pane.clone()).or_default();
-        if let Some(s) = s {
-            pane.name = resolve::display_name(s).to_string();
+        let Some(wake) = w.track(&t.pane, s) else { continue };
+        log(format!("{} {} {}", wake.fact.phrase(), print::short_id(&wake.id), wake.name));
+        if wake.fact == Fact::Waiting && o.notify {
+            let title = format!("{} ({}) is waiting", wake.name, print::short_id(&wake.id));
+            desktop_notify(&title, "It needs you. Answer it in its pane.");
         }
-        let turned = s.is_some_and(|s| w.turned.contains(&s.id));
-        // A new turn ended: tell it, though the last idle was told.
-        if turned && pane.told == Some(Fact::Idle) {
-            pane.told = None;
-        }
-        let Some(fact) = pane.observe(Now::of(s, turned)) else { continue };
-        let id = s.map(|s| s.id.clone()).unwrap_or_else(|| t.pane.clone());
-        log(format!("{} {} {}", fact.phrase(), print::short_id(&id), pane.name));
-        if fact == Fact::Waiting {
-            if o.notify {
-                let title = format!("{} ({}) is waiting", pane.name, print::short_id(&id));
-                desktop_notify(&title, "It needs you. Answer it in its pane.");
-            }
-            continue;
-        }
-        let wake = Wake { fact, pane: t.pane.clone(), name: pane.name.clone(), id };
-        // The newest fact for a pane replaces an older one still held.
-        w.held.retain(|h| h.pane != wake.pane);
-        w.held.push(wake);
     }
     w.turned.clear();
     w.panes.retain(|k, _| open.contains(k));
@@ -334,11 +369,17 @@ async fn step(c: &Client, o: &Options, w: &mut Watcher) -> Result<Option<i32>> {
 
     if !w.held.is_empty() && ready(c, skipper).await {
         let line = wake_line(&w.held);
-        c.paste(&skipper.id, line.clone().into_bytes()).await?;
-        sleep(sessions::ENTER_DELAY).await;
-        c.write(&skipper.id, b"\r".to_vec()).await?;
-        log(format!("woke the agent: {line}"));
-        w.held.clear();
+        // The check above read the screen. The daemon refuses the line if
+        // the person typed after the list this step read.
+        let events = c.events();
+        let d = if !c.submit(&skipper.id, line.clone().into_bytes(), true, true, skipper.input_gen).await? {
+            Delivery::Refused
+        } else if sessions::turn_started(c, &skipper.id, events).await? {
+            Delivery::Taken
+        } else {
+            Delivery::NoTurn
+        };
+        log(w.delivered(d, &line));
     }
     Ok(None)
 }
@@ -475,6 +516,70 @@ mod tests {
             wake_line(&[w(Fact::Idle, "api", "abc12345"), w(Fact::Gone, "", "def67890")]),
             "[watch] pane api abc12345 is idle; pane def67890 is gone. Read them, then mark each seen."
         );
+    }
+
+    fn info(id: &str, state: &str, unread: bool) -> SessionInfo {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "label": id, "role": "agent", "cwd": "/", "command": "claude", "args": [],
+            "state": state, "cols": 80, "rows": 24, "pid": null, "exit_code": null, "unread": unread,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn only_a_turn_end_counts_as_a_turn() {
+        let mut w = Watcher::default();
+        // A rename, a theme or a resize on an unread pane.
+        w.note(&Event::SessionUpdated { session: info("a", "idle", true) });
+        assert!(w.turned.is_empty());
+        w.note(&Event::TurnEnded { session: "a".into() });
+        assert!(w.turned.contains("a"));
+
+        // Told idle once; metadata events after it wake nothing again.
+        let mut w = Watcher::default();
+        let s = info("a", "idle", true);
+        assert_eq!(w.track("a", Some(&s)).map(|k| k.fact), Some(Fact::Idle));
+        w.held.clear();
+        for _ in 0..3 {
+            w.note(&Event::SessionUpdated { session: s.clone() });
+            assert_eq!(w.track("a", Some(&s)), None);
+            w.turned.clear();
+        }
+        assert!(w.held.is_empty());
+        // A real second turn is told.
+        w.note(&Event::TurnEnded { session: "a".into() });
+        assert_eq!(w.track("a", Some(&s)).map(|k| k.fact), Some(Fact::Idle));
+    }
+
+    #[test]
+    fn a_held_idle_line_goes_when_the_pane_works_or_waits() {
+        for state in ["working", "waiting"] {
+            let mut w = Watcher::default();
+            w.track("a", Some(&info("a", "idle", true)));
+            w.track("b", Some(&info("b", "idle", true)));
+            assert_eq!(w.held.len(), 2);
+            w.track("a", Some(&info("a", state, false)));
+            assert_eq!(w.held.iter().map(|h| h.pane.as_str()).collect::<Vec<_>>(), ["b"], "{state}");
+        }
+        // An exit stays held while the pane is gone.
+        let mut w = Watcher::default();
+        w.track("a", None);
+        w.track("a", None);
+        assert_eq!(w.held.len(), 1);
+    }
+
+    #[test]
+    fn a_refused_line_is_held_and_one_with_no_turn_is_undelivered() {
+        let mut w = Watcher::default();
+        w.track("a", Some(&info("a", "idle", true)));
+        let line = wake_line(&w.held);
+        assert!(w.delivered(Delivery::Refused, &line).starts_with("held:"));
+        assert_eq!(w.held.len(), 1);
+        assert!(w.delivered(Delivery::NoTurn, &line).starts_with("undelivered:"));
+        assert!(w.held.is_empty());
+        w.track("b", Some(&info("b", "idle", true)));
+        assert!(w.delivered(Delivery::Taken, &line).starts_with("woke the agent"));
+        assert!(w.held.is_empty());
     }
 
     fn rows(lines: &[&str]) -> Vec<(String, String)> {

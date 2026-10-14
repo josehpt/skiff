@@ -35,14 +35,17 @@ Do these steps when a conversation starts, before any other `skiff` command.
 
 ## Queue policy
 
-Skiff has no queue. A send to a working pane is refused with exit 4.
+Skiff has no message queue. A refused send types nothing. Do not wait for the
+pane and retry the send, and do not interrupt the pane to make room for the
+message. Report that the task was not delivered. You keep a ledger, so record
+the task as `pending` and send it later, as a new send after a fresh peek,
+when the pane is idle. This is the same rule as in the `skiff-cli` skill.
 
 - On exit 4, add the task with `skiff ledger add --pane S --task "..." --state
   pending`. Tell the user that the task waits for that pane.
 - Check `skiff ledger ls --state pending` when you start a turn, and when a
-  `wait` reports that the pane is idle. Peek, send, then
+  `wait` or a `[watch]` line reports that the pane is idle. Peek, send, then
   `skiff ledger update ID --state sent`.
-- Do not run a retry loop. Do not interrupt a pane to make room for a task.
 
 ## Ledger
 

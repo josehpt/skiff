@@ -69,9 +69,11 @@ ledger before you send a task or report on pending work, and keep it current.
 4. For long prompts, write a temporary file and use `skiff send S - --enter < prompt.md`.
    Keep shell syntax and user text separate.
 
-Skiff has no message queue in this workflow. A refused send is not queued.
-If the pane is working, report that the task was not delivered. Do not wait for it
-and retry the send. Do not interrupt the pane to make room for the message.
+Skiff has no message queue. A refused send types nothing. Do not wait for the
+pane and retry the send, and do not interrupt the pane to make room for the
+message. Report that the task was not delivered. An agent that keeps a ledger
+records the task as `pending` and sends it later, as a new send after a fresh
+peek, when the pane is idle.
 
 ### Monitor and collect the result
 

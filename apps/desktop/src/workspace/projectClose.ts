@@ -1,9 +1,9 @@
 /**
  * Close and remove a project. Close keeps it in projects.toml with its
- * settings, out of the rail; Remove drops it. Both end its sessions and leave
+ * settings, out of the tree; Remove drops it. Both end its sessions and leave
  * the folder on disk.
  */
-import { railProjects } from "./rail";
+import { projectOrder } from "./fleets";
 import { confirmAction } from "../ui/confirm";
 import type { MenuEntry } from "../ui/menu";
 import { ctxMenu } from "../ui/contextMenu";
@@ -53,14 +53,14 @@ async function endAll(ids: string[]): Promise<boolean> {
   return ok;
 }
 
-/** The project next to `p` on the rail, else the one before it. */
+/** The project next to `p` in project order, else the one before it. */
 function neighbor(p: Project): Project | null {
-  const all = railProjects();
+  const all = projectOrder();
   const i = all.findIndex((x) => x.name === p.name);
   return all[i + 1] ?? all[i - 1] ?? null;
 }
 
-/** After a close or remove: the rail loses the project, and a neighbor shows. */
+/** After a close or remove: the tree loses the project, and a neighbor shows. */
 async function leave(p: Project) {
   const next = S.selectedProject === p.name ? neighbor(p) : null;
   if (S.justAdded === p.name) S.justAdded = null;

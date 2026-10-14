@@ -8,7 +8,7 @@
  */
 import type { Project } from "../platform/types";
 
-import { applyDrop, nameFleet, type Drop } from "./rail";
+import { applyDrop, nameFleet, type Drop } from "./fleets";
 import { treeDrag } from "./tree";
 import { S } from "../app/state";
 import { render } from "../app/render";

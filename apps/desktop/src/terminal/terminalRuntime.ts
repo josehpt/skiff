@@ -331,7 +331,7 @@ const warmed = new Set<string>();
 /**
  * Warms the panes the user is likely to open next, after the app starts: a
  * terminal and then a WebGL context each, one step every few idle frames, so
- * a first visit costs nothing. Projects in rail order from the selected one,
+ * a first visit costs nothing. Projects in saved order from the selected one,
  * Other last. It stops at the context limit; the queue takes over from there.
  */
 export function warmPanes() {

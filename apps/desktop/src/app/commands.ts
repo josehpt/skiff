@@ -218,8 +218,8 @@ const withProject = (f: (p: NonNullable<ReturnType<typeof currentProject>>) => P
   if (p) void f(p);
 };
 
-/** The closed projects, at the rail's + button. */
+/** The closed projects, under the tree's Projects head. */
 function openClosedMenu() {
-  const r = document.querySelector<HTMLElement>("#rail .rail-add")?.getBoundingClientRect();
-  closedProjectsMenu(r ? r.right : 80, r ? r.top : 80);
+  const r = document.querySelector<HTMLElement>("#sidebar-scroll .tree-head:not(.fleet-head)")?.getBoundingClientRect();
+  closedProjectsMenu(r ? r.left + 24 : 80, r ? r.bottom : 80);
 }

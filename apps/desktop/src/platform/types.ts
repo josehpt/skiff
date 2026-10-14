@@ -79,7 +79,7 @@ export interface Project {
   path: string;
   color: string | null;
   agents: string[];
-  /** Rail image as a data URL, configured or found in the repo. */
+  /** Project icon as a data URL, configured or found in the repo. */
   icon: string | null;
   /** Absolute path of the background image behind the terminals, when set. */
   background: string | null;
@@ -90,9 +90,9 @@ export interface Project {
   default_branch?: string | null;
   /** Path missing, not a git repo, and so on. `worktrees` is empty then. */
   error: string | null;
-  /** Out of the rail until it opens again. Its worktrees are not read. Absent from an older daemon. */
+  /** Out of the tree until it opens again. Its worktrees are not read. Absent from an older daemon. */
   closed?: boolean;
-  /** The fleet it sits in on the rail. Absent: on the rail by itself. */
+  /** The fleet it sits in. Absent: under Projects, in no fleet. */
   fleet?: string | null;
 }
 

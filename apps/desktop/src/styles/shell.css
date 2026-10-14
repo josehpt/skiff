@@ -19,7 +19,7 @@
 #topbar .search .spacer { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 #topbar .search kbd { flex-shrink: 0; }
 body.header-bar #topbar .search { display: none; }
-/* Quiet cells: the rail and the tree carry the motion, the top bar only counts. */
+/* Quiet cells: the tree carries the motion, the top bar only counts. */
 #topbar .nx { gap: calc(8 * var(--u)); border: 0; background: transparent; color: var(--text-2); }
 #topbar .nx:hover { background: var(--bg-raised); color: var(--text); }
 #topbar .nx svg { flex-shrink: 0; width: calc(13 * var(--u)); height: calc(13 * var(--u)); }
@@ -30,76 +30,8 @@ body.header-bar #topbar .search { display: none; }
 
 #body { flex-grow: 1; min-height: 0; display: flex; position: relative; }
 
-#rail {
-  width: calc(72 * var(--u)); flex-shrink: 0;
-  display: flex; flex-direction: column;
-  background: var(--bg-deep);
-  border-right: 1px solid var(--rule);
-  /* Animated rail marks must not create a horizontal scrollbar. */
-  overflow-x: hidden;
-  overflow-y: auto;
-}
-.rail-item { position: relative; }
-.rail-item.dragging { opacity: 0.5; }
-.rail-item.drop-before::before, .rail-item.drop-after::after { content: ""; position: absolute; left: 0; right: 0; height: 2px; background: var(--text); z-index: 1; pointer-events: none; }
-.rail-item.drop-before::before { top: -1px; }
-.rail-item.drop-after::after { bottom: -1px; }
-body.dragging-rail, body.dragging-rail * { cursor: grabbing !important; }
-/* A drop into a fleet: the chip shows the tile it makes, a tile shows its next square. */
-.rail-item.drop-into .rail-chip { background: var(--bg-raised); box-shadow: inset 0 0 0 2px var(--text); }
-.rail-item.drop-into .rail-chip:has(> .fleet-preview) { color: transparent; }
-.rail-item.drop-into .rail-chip:has(> .fleet-preview) > :not(.fleet-preview) { display: none; }
-.rail-item.drop-into .fleet-letters { color: var(--text); }
-.rail-item.drop-into .fleet-strip { opacity: 1; }
-.rail-item.drop-into .rail-ring { display: none; }
-/* The chip under the pointer during a drag, and what the drop does. */
-.rail-ghost { position: fixed; z-index: 20; display: flex; align-items: center; gap: calc(8 * var(--u)); pointer-events: none; }
-.rail-ghost > .rail-chip { width: calc(56 * var(--u)); height: calc(32 * var(--u)); background: var(--bg-raised); border: 1px solid var(--rule-strong); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5); }
-.rail-ghost > .rail-chip .fleet-letters { color: var(--text); }
-.rail-ghost > .rail-chip .fleet-strip { opacity: 1; }
-.rail-ghost-label { height: calc(24 * var(--u)); padding: 0 calc(8 * var(--u)); display: flex; align-items: center; background: var(--bg-raised); border: 1px solid var(--rule-strong); font-size: calc(12px * var(--zoom, 1)); color: var(--text); white-space: nowrap; }
-.rail-ghost-label[hidden] { display: none; }
-/* A new fleet's name, next to its tile. */
+/* A new fleet's name, under its head in the tree. */
 .fleet-name { position: fixed; z-index: 15; width: calc(232 * var(--u)); display: flex; flex-direction: column; background: var(--bg-raised); border: 1px solid var(--rule-strong); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5); }
 .fleet-name-label { height: calc(20 * var(--u)); display: flex; align-items: flex-end; padding: 0 calc(12 * var(--u)); font-size: calc(11px * var(--zoom, 1)); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3); }
 .fleet-name input { height: calc(32 * var(--u)); margin: calc(4 * var(--u)) calc(12 * var(--u)) 0; padding: 0 calc(8 * var(--u)); background: var(--bg); border: 1px solid var(--state-working); border-radius: 0; color: var(--text); font: inherit; font-size: calc(13px * var(--zoom, 1)); outline: 0; }
 .fleet-name-hint { min-height: calc(28 * var(--u)); display: flex; align-items: center; padding: 0 calc(12 * var(--u)); font-size: calc(11px * var(--zoom, 1)); color: var(--text-3); }
-.rail-chip {
-  width: 100%; height: var(--row);
-  display: flex; align-items: center; justify-content: center;
-  background: transparent; border: 0;
-  font-family: var(--mono); font-weight: 700; color: var(--pc);
-}
-.rail-chip.active { background: color-mix(in srgb, var(--pc) 15%, transparent); box-shadow: inset 3px 0 0 var(--pc); }
-/* A fleet: one tile of its first four project colors. Open, it lifts and its projects follow under it, with a rule below. */
-.rail-fleet-open { background: color-mix(in srgb, var(--bg-raised) 40%, var(--bg-deep)); box-shadow: inset 2px 0 0 var(--rule-strong); border-bottom: 1px solid var(--rule); }
-.rail-fleet-open > .rail-item:first-child .rail-fleet { background: var(--bg-raised); }
-/* A fleet opens and folds in 180ms: its chips grow from the tile, or shrink back into it. */
-.rail-fleet-open.opening > .rail-item:not(:first-child) { overflow: hidden; animation: fleet-open 180ms ease-out both; }
-.rail-fleet-closing { overflow: hidden; border-bottom: 0; animation: fleet-fold 180ms ease-out both; }
-@keyframes fleet-open { from { height: 0; opacity: 0; } to { height: var(--row); opacity: 1; } }
-@keyframes fleet-fold { from { height: var(--h); opacity: 1; } to { height: 0; opacity: 0; } }
-@media (prefers-reduced-motion: reduce) {
-  .rail-fleet-open.opening > .rail-item:not(:first-child) { animation: none; }
-  .rail-fleet-closing { display: none; }
-}
-.fleet-tile { display: flex; flex-direction: column; align-items: center; gap: calc(4 * var(--u)); }
-.fleet-letters { font-family: var(--mono); font-weight: 700; font-size: calc(12px * var(--zoom, 1)); line-height: 1; letter-spacing: 0.08em; color: var(--text-3); transition: color 120ms; }
-.fleet-strip { display: flex; gap: 1px; width: calc(25 * var(--u)); height: calc(3 * var(--u)); opacity: 0.8; transition: opacity 120ms; }
-.fleet-strip > span { flex: 1; }
-.rail-fleet:hover .fleet-letters, .rail-fleet.attention .fleet-letters, .rail-fleet-open .fleet-letters { color: var(--text); }
-.rail-fleet.active .fleet-letters { color: var(--pc); }
-.rail-fleet:hover .fleet-strip, .rail-fleet.active .fleet-strip, .rail-fleet.attention .fleet-strip, .rail-fleet-open .fleet-strip { opacity: 1; }
-.rail-add { color: var(--text-3); font-weight: 400; font-size: calc(18px * var(--zoom, 1)); }
-.rail-add:hover { color: var(--text); background: var(--bg-raised); }
-/* The project's state as a ring around its icon. Working: blue dashes that turn one dash at a time,
-   like the water under the working skiff. It steps, so the webview does not draw a frame on every refresh.
-   Waiting and unread: a still, solid circle in amber or green. */
-.rail-ring { position: absolute; left: 50%; top: 50%; width: calc(36 * var(--u)); height: calc(36 * var(--u)); margin: calc(-18 * var(--u)) 0 0 calc(-18 * var(--u)); pointer-events: none; }
-.rail-ring circle { fill: none; stroke-width: 1.5; }
-.rail-ring.working { animation: rail-turn 0.6s steps(3) infinite; }
-.rail-ring.working circle { stroke: var(--state-working); stroke-dasharray: 1 1; }
-.rail-ring.waiting circle { stroke: var(--state-waiting); }
-.rail-ring.unread circle { stroke: var(--diff-add); }
-@keyframes rail-turn { to { transform: rotate(30deg); } }
-@media (prefers-reduced-motion: reduce) { .rail-ring.working { animation: none; } }

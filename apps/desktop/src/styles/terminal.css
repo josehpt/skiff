@@ -89,9 +89,9 @@ body.dragging-col .cell-body, body.dragging-row .cell-body { pointer-events: non
 .mode-lift { position: absolute; z-index: 6; background: var(--bg-deep); pointer-events: none; }
 .mode-ghost { position: absolute; z-index: 4; pointer-events: none; }
 .cell.focused::after { content: ""; position: absolute; inset: 0; border: calc(2 * var(--u)) solid var(--pc); pointer-events: none; z-index: 5; }
-#terminal-host:is(.group-picked, .at-rail) .cell.focused::after { display: none; }
+#terminal-host.group-picked .cell.focused::after { display: none; }
 /* A pane picked in the list gets the frame in the selection blue, wherever the keys are. */
-.cell.selected::after, #terminal-host:is(.group-picked, .at-rail) .cell.selected::after { content: ""; display: block; position: absolute; inset: 0; border: calc(2 * var(--u)) solid var(--state-working); pointer-events: none; z-index: 5; }
+.cell.selected::after, #terminal-host.group-picked .cell.selected::after { content: ""; display: block; position: absolute; inset: 0; border: calc(2 * var(--u)) solid var(--state-working); pointer-events: none; z-index: 5; }
 .cell-head .title { color: var(--text); font-size: calc(16px * var(--zoom, 1)); font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .cell:not(.focused) .cell-head .title { color: var(--text-3); font-weight: 500; }
 .cell-head .head-gap { flex-grow: 1; }

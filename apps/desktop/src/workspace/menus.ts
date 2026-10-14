@@ -12,7 +12,7 @@ import { agentName, basename, branchName, byStart, locate, taskTitle } from "./m
 import { cwdOf } from "./canvas";
 import { filledOf, slotsOf } from "./layoutSlots";
 import type { Group, Project, SessionInfo, SplitDir, Worktree } from "../platform/types";
-import type { Fleet } from "./rail";
+import type { Fleet } from "./fleets";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openFile } from "@tauri-apps/plugin-dialog";
 import { openPath } from "../platform/os";
@@ -85,7 +85,7 @@ function backgroundEntries(p: Project): MenuEntry[] {
   ];
 }
 
-/** One place for the rail icon: pick a file, detect one, or use letters. */
+/** One place for the project icon: pick a file, detect one, or use letters. */
 function iconEntries(p: Project): MenuEntry[] {
   return [
     {
@@ -107,11 +107,11 @@ function iconEntries(p: Project): MenuEntry[] {
   ];
 }
 
-/** Ask for the letters on the rail chip. An empty field goes back to the first three letters of the name. */
+/** Ask for the letters on the project's row. An empty field goes back to the first three letters of the name. */
 function setInitials(p: Project) {
   promptAction({
     title: `Initials for ${p.name}`,
-    body: "Up to 3 characters on the rail chip. Leave the field empty to use the first 3 letters of the name. A project icon replaces the letters.",
+    body: "Up to 3 characters on the project's row in the side panel. Leave the field empty to use the first 3 letters of the name. A project icon replaces the letters.",
     placeholder: "the initials",
     value: p.short,
     allowEmpty: true,
@@ -122,16 +122,16 @@ function setInitials(p: Project) {
   });
 }
 
-/** The fleets on the rail now, for the dialog's note. */
+/** The fleets now, for the dialog's note. */
 const fleetNames = () => [...new Set(S.projects.map((x) => x.fleet).filter((f): f is string => !!f))];
 
-/** Ask for the fleet the project sits in. Projects with the same fleet fold into one tile on the rail. */
+/** Ask for the fleet the project sits in. Projects with the same fleet go under one fleet head in the tree. */
 function setFleet(p: Project) {
   const names = fleetNames();
   promptAction({
     title: `Fleet for ${p.name}`,
     body:
-      "Projects with the same fleet name fold into one tile on the rail. Leave the field empty to put the project on the rail by itself." +
+      "Projects with the same fleet name go under one fleet head in the side panel. Leave the field empty to put the project under Projects." +
       (names.length ? ` Fleets now: ${names.join(", ")}.` : ""),
     placeholder: "a fleet name",
     value: p.fleet ?? "",
@@ -142,7 +142,7 @@ function setFleet(p: Project) {
   });
 }
 
-/** Give every project of the fleet the new name. An empty name puts each on the rail by itself. */
+/** Give every project of the fleet the new name. An empty name puts each under Projects. */
 function renameFleet(f: Fleet, name: string) {
   return invoke<void>("reorder_projects", { order: S.projects.map((x) => x.name), fleets: f.projects.map((p) => [p.name, name]) });
 }
@@ -196,7 +196,7 @@ export function projectRun(p: Project) {
   } as const;
 }
 
-/** The project's + in the sidebar, or a right-click on its rail chip. */
+/** The project's + in the sidebar, a right-click on its row, or the menu key. */
 export function projectMenu(p: Project, x: number, y: number) {
   const run = projectRun(p);
   // New session goes to the project's selected worktree, else its main one, as Ctrl+Shift+T does.

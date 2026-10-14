@@ -1,5 +1,5 @@
 /**
- * Focus mode and maximize. Focus mode hides the rail, the tree, the top bar
+ * Focus mode and maximize. Focus mode hides the tree, the top bar
  * and the status bar: the panes of the current view fill the window. Maximize
  * shows only the focused pane, with the same chrome hidden. Ctrl+Shift+Up/Down
  * step through the panes of the view, as they step through its rows in the
@@ -21,11 +21,11 @@ import { fitShown } from "../terminal/terminal";
 
 import { focusPane } from "../workspace/view";
 
-/** Keys that move in the rail or the tree, which focus mode hides. */
+/** Keys that move in the tree, which focus mode hides. */
 const TREE_KEYS = new Set<Action>(["session-next", "session-prev", "list-project", "list-back", "list-main", "region-next", "region-prev", "project-menu"]);
 /** Keys that move between panes or add one: maximize shows one pane only. */
 const PANE_KEYS = new Set<Action>(["focus-left", "focus-right", "focus-up", "focus-down", "split-right", "split-down"]);
-/** Keys whose menus open at the rail or a tree row. The chrome comes back first. */
+/** Keys whose menus open at a tree row. The chrome comes back first. */
 const CHROME_KEYS = new Set<Action>(["new-session", "new-worktree", "add-project", "project-color", "project-changes", "project-files"]);
 
 /** The sessions shown at the last render. Focus mode ends when none of them stays. */
@@ -36,13 +36,12 @@ const hidden = () => S.focusMode || !!S.maximized;
 /**
  * Entering a mode needs a session to act on. Focus mode takes a session row or
  * a group row. Maximize takes a session row only: a group has no one pane. A
- * worktree, Changes, Files, a project row or the rail is not a session. Leaving
+ * worktree, Changes, Files, or a project row is not a session. Leaving
  * a mode always works, since the tree is hidden then.
  */
 export function modeKeyBlocked(a: Action): boolean {
   if (a !== "focus-mode" && a !== "maximize") return false;
   if (hidden()) return false;
-  if (S.atRail) return true;
   const row = currentRow();
   if (!row) return false;
   if (row.dataset.session) return false;
@@ -61,7 +60,7 @@ export function modeGate(a: Action): boolean {
   if (TREE_KEYS.has(a)) return true;
   if (CHROME_KEYS.has(a)) {
     leaveModes();
-    // The menu measures the rail and the tree, so they must be laid out first.
+    // The menu measures the tree, so it must be laid out first.
     requestAnimationFrame(() => runAction(a));
     return true;
   }
@@ -130,7 +129,7 @@ function restore() {
 const SLIDE_MS = 180;
 const EASE = "cubic-bezier(.2, .7, .2, 1)";
 const reduced = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
-const chrome = () => [...document.querySelectorAll<HTMLElement>("#topbar, #rail, #sidebar, #statusbar")];
+const chrome = () => [...document.querySelectorAll<HTMLElement>("#topbar, #sidebar, #statusbar")];
 const cells = () => [...host.querySelectorAll<HTMLElement>(".layout .cell, .mode-lift > .cell")];
 const motion: { animation: Animation; clean: () => void }[] = [];
 
@@ -219,8 +218,7 @@ function lift(cell: HTMLElement, from: DOMRect, to: DOMRect, area: DOMRect, dx: 
 
 function enter() {
   seen = shownIds();
-  // The rail and the tree go away, so the keys go to the pane.
-  S.atRail = false;
+  // The tree goes away, so the keys go to the pane.
   focusPane(S.focused!);
 }
 

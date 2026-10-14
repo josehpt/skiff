@@ -59,7 +59,7 @@ export function projectIcon(p: Project, size: number): HTMLImageElement {
   img.height = size;
   img.alt = "";
   img.draggable = false;
-  // Hidden until trimmed, so the rail does not jump from one size to the next.
+  // Hidden until trimmed, so the row does not jump from one size to the next.
   img.style.visibility = "hidden";
   void trimIcon(p.icon!, size).then((src) => {
     img.src = src;

@@ -4,8 +4,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { S, sessions } from "./state";
 import { previewOnScreen } from "../terminal/peek";
 
-/** A picked group row or the rail holds the keys: the focused pane is shown but not selected. */
-export const keysOffPanes = () => S.atRail || (!!S.groupPicked && S.groupPicked === S.activeGroup);
+/** A picked group row holds the keys: the focused pane is shown but not selected. */
+export const keysOffPanes = () => !!S.groupPicked && S.groupPicked === S.activeGroup;
 
 /** True when `id` is the selected pane of the active window. Its result is in front of the user. A preview over it hides it. */
 export const hasKeys = (id: string) => S.focused === id && document.hasFocus() && !keysOffPanes() && !previewOnScreen();

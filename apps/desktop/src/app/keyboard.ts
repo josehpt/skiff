@@ -54,7 +54,7 @@ window.addEventListener("keydown", (e) => {
   if (modalOpen(false)) return;
   const key = appKey(e);
   if (key === null) return;
-  if (peekBlocksAction(key) && !(e.target as Element).closest?.("#rail, #sidebar-scroll")) return;
+  if (peekBlocksAction(key) && !(e.target as Element).closest?.("#sidebar-scroll")) return;
   e.preventDefault();
   e.stopPropagation();
   if (typeof key === "string" && modeKeyBlocked(key)) return;
@@ -96,16 +96,14 @@ function roveTarget(): HTMLElement | undefined {
 /** Moves the one highlight to the current row. */
 export function markCurrent() {
   const items = listItems();
-  // On the rail, no row is lit, and no pane is framed: the keys are on the rail.
-  const cur = S.atRail ? undefined : currentRow(items);
-  host.classList.toggle("at-rail", S.atRail);
+  const cur = currentRow(items);
   for (const x of items) x.classList.toggle("current", x === cur);
   // The worktree marker goes with it: on the project row, no worktree is marked.
-  if (cur || S.atRail) for (const w of document.querySelectorAll("#sidebar-scroll .wt")) w.classList.toggle("selected", !!cur && w.contains(cur));
+  if (cur) for (const w of document.querySelectorAll("#sidebar-scroll .wt")) w.classList.toggle("selected", !!cur && w.contains(cur));
 }
 
 /**
- * One Tab stop per region: the rail, the session list, the terminal.
+ * One Tab stop per region: the session list, the terminal.
  * Everything else, the + buttons too, is reached by mouse, key, or palette.
  */
 export function applyTabOrder() {
@@ -114,8 +112,6 @@ export function applyTabOrder() {
     if (el.closest("#settings, .xterm")) continue;
     el.tabIndex = -1;
   }
-  const rail = document.querySelector<HTMLElement>("#rail .rail-chip.active") ?? document.querySelector<HTMLElement>("#rail .rail-chip");
-  if (rail) rail.tabIndex = 0;
   const item = roveTarget();
   if (item) item.tabIndex = 0;
   markCurrent();
@@ -123,17 +119,15 @@ export function applyTabOrder() {
 
 function regionOf(el: Element | null): number {
   if (!el) return -1;
-  if (el.closest("#rail")) return 0;
-  if (el.closest("#sidebar-scroll")) return 1;
-  if (host.contains(el) || el.closest(".peek")) return 2;
+  if (el.closest("#sidebar-scroll")) return 0;
+  if (host.contains(el) || el.closest(".peek")) return 1;
   return -1;
 }
 
-/** F6 and Shift+F6: rail, session list, terminal. */
+/** F6 and Shift+F6: the session list, then the terminal. */
 export function cycleRegion(dir: 1 | -1) {
   document.body.classList.add("kbd");
   const stops: (() => boolean)[] = [
-    () => focusEl(document.querySelector<HTMLElement>("#rail .rail-chip.active") ?? document.querySelector<HTMLElement>("#rail .rail-chip")),
     () => focusEl(roveTarget() ?? null),
     () => {
       if (giveKeys()) return true;
@@ -192,7 +186,6 @@ export function stepList(dir: 1 | -1) {
  * `keys`: the preview takes the keys, as a session's pane does.
  */
 export function select(key: string, keys: boolean, fresh = false) {
-  S.atRail = false;
   S.roveKey = key;
   // The highlight and the one Tab stop move together.
   applyTabOrder();
@@ -256,53 +249,19 @@ export function toProject() {
   landOn(listItems().find((el) => el.dataset.key === row.dataset.key) ?? row);
 }
 
-/** Ctrl+Shift+Up/Down while the keys were on the rail. The rail is gone (#87): the list steps. */
-export function stepRail(dir: 1 | -1) {
-  leaveRail();
-  stepList(dir);
-}
-
 /** Ctrl+Shift+Right: from a project or fleet row back to the session on screen. */
 export function fromProject() {
-  leaveRail();
   const el = document.activeElement as HTMLElement | null;
   if (el && !el.classList.contains("project-pick") && !el.classList.contains("fleet-pick")) return;
   const row = S.focused ? listItems().find((x) => x.dataset.session === S.focused) : undefined;
   if (row) landOn(row);
 }
 
-function leaveRail() {
-  S.atRail = false;
-  markCurrent();
-}
-
-// Anything that takes the keys outside the rail, its menus and dialogs ends the
-// rail level. A dialog such as the project theme gives focus back to the rail.
-document.addEventListener("focusin", (e) => {
-  if (S.atRail && !(e.target as Element).closest?.("#rail, #ctx-menu, #ctx-sub, #launch-menu, .confirm-overlay")) leaveRail();
-});
-
 /** A Changes or Files header, or a row under one. Not a session, group or worktree. */
 const isSection = (el: HTMLElement) =>
   !!el.dataset.key && !el.dataset.session && !el.dataset.wt && !el.dataset.group && !el.classList.contains("project-pick") && !el.classList.contains("fleet-pick");
 
-/** Arrows inside the rail and the session list; Enter, Left/Right, Menu key. */
-$("rail").addEventListener("keydown", (e) => {
-  const chip = document.activeElement as HTMLElement | null;
-  if ((e.key === "Delete" || e.key === "Backspace") && !e.ctrlKey && !e.altKey && !e.metaKey && chip?.dataset.project) {
-    const p = S.projects.find((x) => x.name === chip.dataset.project);
-    if (!p) return;
-    e.preventDefault();
-    // Show focus rings, so the first item reads as the one picked.
-    document.body.classList.add("kbd");
-    const r = chip.getBoundingClientRect();
-    ctxMenu.open(r.right, r.top, p.name, closeEntries(p));
-    return;
-  }
-  // Projects move with Ctrl+Shift+Up/Down only. Plain arrows do nothing here.
-  if (e.key === "ArrowUp" || e.key === "ArrowDown") e.preventDefault();
-});
-
+/** Arrows inside the session list; Enter, Left/Right, Menu key. */
 $("sidebar-scroll").addEventListener("keydown", (e) => {
   const el = document.activeElement as HTMLElement | null;
   if (!el || el.tagName === "INPUT") return;

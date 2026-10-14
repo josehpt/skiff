@@ -101,9 +101,9 @@ const released = new Set<string>();
 /** One number per subscription, as panes count theirs. */
 let stream = 0;
 
-/** The current row's key; "" on the rail or with no row. */
+/** The current row's key; "" with no row. */
 function currentKey(): string {
-  const row = S.atRail ? undefined : currentRow();
+  const row = currentRow();
   return row ? itemKey(row) : "";
 }
 
@@ -294,8 +294,8 @@ export function closePeek() {
   clearCard();
   if (p.shown) repaintPanes();
   if (!hadKeys) return;
-  // The keys go back to the row the user left, or the rail.
-  const row = S.atRail ? document.querySelector<HTMLElement>("#rail .rail-chip.active") : currentRow();
+  // The keys go back to the row the user left.
+  const row = currentRow();
   if (row) row.focus();
   else if (S.focused) panes.get(S.focused)?.term.focus();
 }

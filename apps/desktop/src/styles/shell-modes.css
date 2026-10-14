@@ -1,2 +1,2 @@
 /* Final layout first. modes.ts slides the chrome with transform and opacity. */
-body.focus-mode :is(#topbar, #rail, #sidebar, #statusbar) { position: fixed; z-index: 8; opacity: 0; visibility: hidden; pointer-events: none; }
+body.focus-mode :is(#topbar, #sidebar, #statusbar) { position: fixed; z-index: 8; opacity: 0; visibility: hidden; pointer-events: none; }

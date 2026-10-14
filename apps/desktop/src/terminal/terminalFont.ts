@@ -70,14 +70,14 @@ export function stepPaneFont(id: string, step: -1 | 0 | 1) {
 
 /**
  * The session the font keys act on: a highlighted session row, else the
- * focused pane while the keys are in the terminal area. None on the rail,
+ * focused pane while the keys are in the terminal area. None on
  * a group row or any other row: those zoom the app.
  */
 export function fontTarget(): string | undefined {
   const a = document.activeElement as HTMLElement | null;
   const row = a?.closest<HTMLElement>("#sidebar-scroll [data-session]");
   if (row) return row.dataset.session;
-  if (S.atRail || S.groupPicked || !S.focused) return undefined;
+  if (S.groupPicked || !S.focused) return undefined;
   return !a || a === document.body || (host.contains(a) && !a.closest(".slot")) ? S.focused : undefined;
 }
 

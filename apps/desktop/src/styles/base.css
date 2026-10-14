@@ -21,5 +21,3 @@ select option { background: var(--bg-panel); color: var(--text); }
    (body.kbd, set in main.ts). WebKitGTK treats clicks as focus-visible. */
 :focus, :focus-visible { outline: 0; }
 body.kbd button:focus, body.kbd [tabindex]:focus { outline: 1px solid var(--text-3); outline-offset: -1px; }
-/* The active project's own highlight is enough on the rail. */
-body.kbd .rail-chip:focus { outline: 0; }

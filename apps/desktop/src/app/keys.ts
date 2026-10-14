@@ -6,6 +6,9 @@
  * Primary-modifier shortcuts also use Shift. This leaves bare Ctrl sequences
  * for the terminal. Pane focus also uses Alt to keep Ctrl+Shift+Arrow for
  * terminal selection. `[keys]` can override a default when a platform needs it.
+ *
+ * Quit is the exception on macOS: Cmd+Shift+Q is the system's Log Out, so
+ * Quit takes Cmd+Q, as every Mac app does.
  */
 
 export type Action =
@@ -18,7 +21,7 @@ export type Action =
   | "region-next" | "region-prev" | "session-next" | "session-prev" | "list-project" | "list-back" | "list-main" | "shortcuts"
   | "focus-mode" | "maximize" | "mission-control" | "skiff-agent";
 
-const isMac = navigator.userAgent.includes("Macintosh");
+export const isMac = navigator.userAgent.includes("Macintosh");
 
 export const DEFAULTS: Record<Action, string> = {
   palette: "ctrl+shift+p",
@@ -43,7 +46,7 @@ export const DEFAULTS: Record<Action, string> = {
   "app-font-smaller": "ctrl+shift+alt+-",
   "app-font-reset": "ctrl+shift+alt+0",
   settings: "ctrl+shift+,",
-  quit: "ctrl+shift+q",
+  quit: isMac ? "ctrl+q" : "ctrl+shift+q",
   "focus-left": "ctrl+shift+alt+left",
   "focus-right": "ctrl+shift+alt+right",
   "focus-up": "ctrl+shift+alt+up",

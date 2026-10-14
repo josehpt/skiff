@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder}};
+#[cfg(target_os = "macos")]
+use tauri::menu::PredefinedMenuItem;
 
 #[derive(Deserialize)]
 pub(crate) struct MenuSpec {
@@ -17,6 +19,9 @@ pub(crate) struct MenuItemSpec {
     pub(crate) accel: String,
     #[serde(default)]
     pub(crate) enabled: bool,
+    /// A system item of the macOS app menu: `hide`, `hide-others` or `show-all`.
+    #[serde(default)]
+    pub(crate) native: Option<String>,
 }
 
 /// The menu bar. The page owns the command list and sends it whole on every
@@ -37,6 +42,21 @@ pub(crate) fn set_menu(app: AppHandle, menus: Vec<MenuSpec>) -> Result<(), Strin
     for m in &menus {
         let mut sub = SubmenuBuilder::new(&app, &m.title);
         for it in &m.items {
+            #[cfg(target_os = "macos")]
+            if let Some(native) = &it.native {
+                let item = match native.as_str() {
+                    "hide" => PredefinedMenuItem::hide(&app, None),
+                    "hide-others" => PredefinedMenuItem::hide_others(&app, None),
+                    "show-all" => PredefinedMenuItem::show_all(&app, None),
+                    _ => continue,
+                };
+                sub = sub.item(&item.map_err(|e| e.to_string())?);
+                continue;
+            }
+            #[cfg(not(target_os = "macos"))]
+            if it.native.is_some() {
+                continue;
+            }
             let Some(id) = &it.id else {
                 sub = sub.separator();
                 continue;

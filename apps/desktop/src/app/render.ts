@@ -17,6 +17,7 @@ import { renderLayout } from "../terminal/terminal";
 
 import { applyBackdrop } from "../appearance/backdrop";
 import { applyApp, applyThemes } from "../appearance/themes";
+import { step } from "../diagnostics/stalls";
 
 /**
  * Daemon events render at most every RENDER_MS, and never while a mouse
@@ -57,27 +58,32 @@ window.addEventListener("pointermove", (e) => {
   if (pointerDown && e.buttons === 0) releasePointer();
 }, true);
 
+/** Each step is timed for the latency trace's stall report. */
 export function render() {
+  step("render", renderAll);
+}
+
+function renderAll() {
   renderQueued = false;
   settleModes();
   // App colors first: the sidebar's marks are inked against them.
-  applyApp();
+  step("render.app", applyApp);
   host.classList.toggle("group-picked", !!S.groupPicked && S.groupPicked === S.activeGroup);
   // The keys can reach a pane without a focus change: the group row or the rail lets go.
   if (S.focused && hasKeys(S.focused)) markSeen(S.focused);
-  renderRail();
-  renderSidebar();
+  step("render.rail", renderRail);
+  step("render.sidebar", renderSidebar);
   renderSelectBar();
-  renderLayout();
+  step("render.layout", renderLayout);
   renderModes();
-  applyThemes();
-  applyBackdrop();
-  renderHeader();
+  step("render.themes", applyThemes);
+  step("render.backdrop", applyBackdrop);
+  step("render.header", renderHeader);
   renderCounts();
   applyTabOrder();
   // The current row may have changed: a preview whose row it no longer is ends.
   syncPreview();
-  syncMenu();
+  step("render.menu", syncMenu);
   savePlace({
     project: S.selectedProject,
     session: S.focused,

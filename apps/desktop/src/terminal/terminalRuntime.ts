@@ -11,7 +11,7 @@ import { park } from "./terminalHost";
 import { toBytes } from "../platform/ipcBytes";
 
 import { appKey } from "../app/keyboard";
-import { traceGl, traceKey, traceOutput, traceRender, traceSend } from "../diagnostics/latency";
+import { traceEcho, traceGl, traceKey, traceOutput, traceRender, traceSend } from "../diagnostics/latency";
 
 import { FONT_DEFAULT, S, sessions } from "../app/state";
 import { paneFontSize } from "./terminalFont";
@@ -163,6 +163,8 @@ function streamOutput(id: string, pane: Pane, fromBottom = 0): Promise<void> {
     // disposed the terminal.
     const s = sessions.get(id);
     if (!s || pane.stream !== n) return;
+    // skiffd's times for the next chunk, sent while the trace runs.
+    if (traceEcho(id, m)) return;
     const bytes = toBytes(m);
     const traced = traceOutput(id, bytes.length);
     parsing++;

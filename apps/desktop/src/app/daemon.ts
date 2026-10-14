@@ -1,5 +1,6 @@
 /** skiffd: sessions, projects, events. */
 import { placeInSlot } from "../workspace/canvas";
+import { work } from "../diagnostics/stalls";
 import { filledOf, isSlot } from "../workspace/layoutSlots";
 import { agentCallsign } from "../appearance/agentNames";
 import { removePane, sessionsOf } from "../workspace/layout";
@@ -172,8 +173,9 @@ export async function loadProjects() {
   if (!S.agents.length) S.agents = await invoke<AgentInfo[]>("list_agents").catch(() => []);
   let list: Project[] | null = null;
   let err: string | null = null;
+  const started = performance.now();
   try {
-    [list] = await Promise.all([invoke<Project[]>("list_projects"), loadFilesSetting(), loadChangesSetting(), loadProjectThemes(), loadAppTheme(), loadSkiffAgent()]);
+    [list] = await Promise.all([invoke<Project[]>("list_projects").finally(() => work("projects refresh (worktrees, branches)", performance.now() - started)), loadFilesSetting(), loadChangesSetting(), loadProjectThemes(), loadAppTheme(), loadSkiffAgent()]);
   } catch (e) {
     err = String(e);
   }

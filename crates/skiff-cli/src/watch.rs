@@ -15,9 +15,9 @@
 //! file per daemon socket keeps it to one copy.
 //!
 //! Best effort: the list, the ledger read and the submit are separate reads,
-//! and the state events can lag. A pending uid is checked again just before
-//! the submit, but the row can still change after that check. The line is a
-//! hint, and the agent checks the uid before it sends.
+//! and the state events can lag. Held pending lines are checked against a
+//! new ledger read just before the submit, and a line whose task left pending
+//! is dropped. A row that changes after that read is not seen.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -384,8 +384,7 @@ impl Watcher {
     }
 
     /// Drops a held pending line whose task is no longer pending on its pane
-    /// in this ledger read. The agent checks the uid again before a send: the
-    /// row can change after the last read.
+    /// in this ledger read.
     fn drop_stale(&mut self, groups: &[Group]) {
         self.held.retain(|h| {
             h.fact != Fact::Pending
@@ -525,8 +524,7 @@ async fn step(c: &Client, o: &Options, w: &mut Watcher) -> Result<Option<i32>> {
 
     if !w.held.is_empty() && ready(c, skipper).await {
         // The check above took time. Read the rows again, so a task sent
-        // meanwhile is not named. A change after this read is left to the
-        // agent, which checks the uid before a send.
+        // meanwhile is not named.
         match ledger::open_tasks() {
             Ok(tasks) => w.drop_stale(&group(&tasks, &all, &skipper.id).0),
             Err(e) => {

@@ -11,23 +11,19 @@ this file only. Use the `skiff-cli` skill for every `skiff` command.
 
 Do these steps when a conversation starts, before any other `skiff` command.
 
-1. Run `skiff status`. If it fails, stop and tell the user.
-2. Run `which -a skiff`. If the first `skiff` on `PATH` is not the one that
-   Skiff installed, tell the user which paths you found. An old copy first on
-   `PATH` gives old commands and old exit codes.
-3. Run `skiff ledger ls`.
-4. Run `skiff ls --json` and `skiff group ls --json`.
-5. Rebuild your state from the ledger and the session list. Do not trust pane
-   ids from memory. A row with `LIVE no` is a pane that is gone: set its task
-   to `blocked` and tell the user.
-6. A row with `interrupted` is a pane that restarted after the send. Skiff
+1. Run `skiff status`. If it fails, stop and tell the user. If it prints a
+   warning, tell the user.
+2. Run `skiff ledger ls`.
+3. Run `skiff ls --json` and `skiff group ls --json`.
+4. Rebuild your state from the ledger and the session list. A row that shows
+   `gone` lost its pane: tell the user.
+5. A row with `interrupted` is a pane that restarted after the send. Skiff
    restored it as a new shell, so the task does not run. Do these steps for
    each such row:
    1. Read its result file and `skiff peek PANE -n 40`.
    2. If the result is complete, read it and set the row to `done`.
    3. If not, tell the user the task, the pane and the uid. Send the task again
-      only when the user says so. Then run `skiff ledger update ID --state
-      sent`.
+      only when the user says so, with `skiff ledger send UID --enter`.
 
 ## Your role
 
@@ -35,7 +31,7 @@ Do these steps when a conversation starts, before any other `skiff` command.
   in `results/` in this folder. The ledger changes only through `skiff ledger`.
 - The user authorizes you to send tasks to sessions in Skiff projects. This
   file is that written, standing authorization. It does not remove any `send`
-  or `wait` refusal. Peek before each send. Do not add to or submit a draft.
+  or `wait` refusal. Peek before each send.
 - Kill, merge, push, deploy and approval prompts need the person. Do not do
   them, and do not tell a child to do them unless the user said so for that
   task. On exit 3 from `send` or `wait`, name the pane, with its name and id,
@@ -43,17 +39,11 @@ Do these steps when a conversation starts, before any other `skiff` command.
 
 ## Queue policy
 
-Skiff has no message queue. A refused send types nothing. Do not wait for the
-pane and retry the send, and do not interrupt the pane to make room for the
-message. Report that the task was not delivered. You keep a ledger, so record
-the task as `pending` and send it later, as a new send after a fresh peek,
-when the pane is idle. This is the same rule as in the `skiff-cli` skill.
-
-- On exit 4, the row stays `pending` (see Ledger). Tell the user that the task
-  waits for that pane.
-- Check `skiff ledger ls --state pending` when you start a turn, and when a
-  `wait` or a `[watch]` line reports that the pane is idle. Peek, send, then
-  `skiff ledger update ID --state sent`.
+Skiff has no message queue. A refused send types nothing, and the task stays
+`pending`. Do not wait for the pane and retry the send, and do not interrupt
+the pane to make room for the message. Tell the user that the task waits for
+that pane. When the pane is idle, a `[watch]` line names the task and the
+command that sends it.
 
 ## Ledger
 
@@ -63,34 +53,32 @@ the commands:
 
 | Command | When |
 |---|---|
-| `skiff ledger add --pane S --task "..." --state pending [--parent UID] [--ref TEXT]` | Before you send a task. It prints the id, the uid and the result path. |
+| `skiff ledger add --pane S --task "..." --send --enter [--parent UID] [--ref TEXT]` | You hand a task to a pane. It adds the row, sends the task with its result path, and prints the id, the uid and the result path. |
+| `skiff ledger send UID --enter` | A task is `pending` or `interrupted`. |
 | `skiff ledger add --plan --task "..." [--ref TEXT]` | Work needs more than one task. It prints the plan's uid and its `plan.md`. |
-| `skiff ledger update ID --state S [--result PATH]` | The state changes: `sent`, `pending`, `blocked`, `done`. |
+| `skiff ledger update ID --state S [--result PATH]` | You mark a task `blocked` or `done`. |
 | `skiff ledger ls [--state S] [--json]` | You start a turn or report on work. |
 | `skiff ledger show ID` | You need one row. |
 | `skiff ledger rm ID` | You reported the result to the user. |
 
-- `--pane` takes a pane id, a prefix or a name. The pane must exist.
+- `--pane` takes a pane id, a prefix or a name.
 - ID is the row id or the uid. Neither is used again after `rm`. Use the uid
   when you name a task to the user or in a file.
-- To send a task: add the row as `pending`, send the task with its result
-  path, then run `skiff ledger update ID --state sent`. If the send fails, the
-  row stays `pending`.
 - A plan has no pane. Put each of its tasks under it with `--parent UID`. `ls`
-  shows the tasks under their plan. A plan is `sent` while its work runs. Set
-  it to `done` when its tasks are done. Remove the tasks before the plan.
+  shows the tasks under their plan, and the plan shows `done` when they are.
 - `--ref` is optional free text that names the work somewhere else, such as a
   URL or a ticket key. Skiff does not read it. Nothing here needs a tracker,
   git or a network.
-- `ls` shows `interrupted` when the pane restarted after the send. See First
-  steps. A `[watch]` line that says a task is interrupted means the same.
+- `ls` shows `interrupted` when the pane restarted after the send, and `gone`
+  when the pane no longer exists. See First steps. A `[watch]` line that says
+  a task is interrupted means the same.
 
 ## Results
 
 - A child reports when it ends its turn with the result on screen or in a file.
   Read short results with `skiff peek`.
-- `skiff ledger add` prints a result path in `results/` in this folder. Give
-  the child that path. It makes no file.
+- `skiff ledger add` prints a result path in `results/` in this folder, and
+  `--send` gives the child that path. It makes no file.
   - A task with no plan: `results/<date>-<uid>-<slug>.md`.
   - A plan: the folder `results/<date>-<uid>-<slug>/`. Write the plan's notes
     in `plan.md` in that folder.

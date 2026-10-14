@@ -103,12 +103,13 @@ enum Cmd {
     /// Rename a session. An empty name clears it.
     Rename { session: String, name: String },
     /// Run a session in this terminal. Ctrl-\ detaches. The session
-    /// takes this terminal's size, in the app too.
+    /// takes this terminal's size, in the app too, and gets its own size
+    /// back on detach. A quick second Ctrl-C is held back once.
     Attach { session: String },
     /// Attach to the Skiff agent (Skipper). Start it first if it does not
     /// run. Ctrl-\ detaches; the agent keeps running.
     #[command(
-        after_help = "Reads [skiff_agent] in projects.toml: the folder, the name, the agent and whether it is on.\nWith no Skiff agent session, it sets up the folder (missing files come back, existing ones stay), starts the agent, and starts `skiff watch` for it. One watcher runs per daemon.\nA Skiff agent session that is a bare shell (after a restore, or after its agent quit) gets the agent again: its last conversation when Settings continues on restore, else a new one.\nWith no skiffd running, it starts one, as the app does.\nThe app and this command find the same session: skiffd marks it, and two starts at once give one.\nAttach gives the session this terminal's size, in the app too, until you detach. A phone screen makes the desktop pane small."
+        after_help = "Reads [skiff_agent] in projects.toml: the folder, the name, the agent and whether it is on.\nWith no Skiff agent session, it sets up the folder (missing files come back, existing ones stay), starts the agent, and starts `skiff watch` for it. One watcher runs per daemon.\nA Skiff agent session that is a bare shell (after a restore, or after its agent quit) gets the agent again: its last conversation when Settings continues on restore, else a new one.\nWith no skiffd running, it starts one, as the app does.\nThe app and this command find the same session: skiffd marks it, and two starts at once give one.\nAttach gives the session this terminal's size, in the app too, until you detach. Then the pane gets its own size back."
     )]
     Skipper {
         /// Do not attach. Print the session id.

@@ -555,13 +555,38 @@ async fn step(c: &Client, o: &Options, w: &mut Watcher) -> Result<Option<i32>> {
 /// and its input box shows and is empty. A shell in front, or a draft, holds
 /// the line.
 async fn ready(c: &Client, s: &SessionInfo) -> bool {
-    if s.state != SessionState::Idle || !sessions::is_agent(s) {
-        return false;
+    s.state == SessionState::Idle && sessions::is_agent(s) && read_front(c, s).await.ok() == Some(Front::Ready)
+}
+
+/// What a known agent's screen shows at its input.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Front {
+    /// An empty input box, and no busy line.
+    Ready,
+    /// The busy line: the agent works, though the pane is quiet.
+    Busy,
+    /// Text in the input box.
+    Draft,
+    /// No input box shows.
+    NoBox,
+}
+
+pub fn front(rows: &[(String, String)], agent: &str) -> Front {
+    if busy_line(rows) {
+        return Front::Busy;
     }
+    match input_box(rows, agent) {
+        Some(false) => Front::Ready,
+        Some(true) => Front::Draft,
+        None => Front::NoBox,
+    }
+}
+
+/// Reads the screen of session `s`, a known agent, for [`front`].
+pub async fn read_front(c: &Client, s: &SessionInfo) -> Result<Front> {
     let agent = s.foreground_program.as_deref().unwrap_or("");
-    let Ok((data, cols, rows)) = peek::snapshot(c, &s.id).await else { return false };
-    let rows = rows_of(&data, cols, rows);
-    !busy_line(&rows) && input_box(&rows, agent) == Some(false)
+    let (data, cols, rows) = peek::snapshot(c, &s.id).await?;
+    Ok(front(&rows_of(&data, cols, rows), agent))
 }
 
 /// The line an agent keeps up while it works: "esc to interrupt" and its
@@ -1053,5 +1078,10 @@ mod tests {
         assert!(!busy_line(&rows(&["done.", &rule, "❯", &rule])));
         assert_eq!(input_box(&rows(&["text", "›", "", "  ? for shortcuts"]), "codex"), Some(false));
         assert_eq!(input_box(&rows(&["text", "› hello", ""]), "codex"), Some(true));
+        assert_eq!(front(&rows(&["done.", &rule, "❯", &rule]), "claude"), Front::Ready);
+        assert_eq!(front(&rows(&["done.", &rule, "❯ fix the", &rule]), "claude"), Front::Draft);
+        // The busy line wins over an empty box.
+        assert_eq!(front(&rows(&["* Working (2s · esc to interrupt)", &rule, "❯", &rule]), "claude"), Front::Busy);
+        assert_eq!(front(&rows(&["$ ls", "a b"]), "claude"), Front::NoBox);
     }
 }

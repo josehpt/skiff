@@ -13,7 +13,7 @@ A minimalist desktop workspace for coding agents on Linux and macOS.
 Skiff keeps sessions organized across projects and Git worktrees. Editing and
 previews stay in the apps you already use.
 
-<p align="center"><img src=".github/screenshot.webp" alt="Skiff on Linux: a project with its session group, changed files and file tree in the sidebar, and three agent sessions side by side, with an unread flag on the session that finished"></p>
+<p align="center"><img src=".github/screenshot.webp" alt="Skiff on Linux: the Skiff agent, Skipper, at the top of the side panel, the skiff project with its worktrees below it, and four agent sessions that Skipper started, shown side by side in one group"></p>
 
 ## Philosophy
 

@@ -16,6 +16,9 @@ const STATES: [&str; 4] = ["sent", "pending", "blocked", "done"];
 /// Shown in place of `sent` or `blocked` when the pane restarted since the
 /// send. Never stored: the pane generation tells it.
 const INTERRUPTED: &str = "interrupted";
+/// Shown in place of an open state when the pane no longer exists. Never
+/// stored: the session list tells it.
+const GONE: &str = "gone";
 
 /// Version 1: `tasks` with a reusable id and a pane on every row. Version 2
 /// adds the uid, plans, the pane generation and the ref, and never reuses an
@@ -97,6 +100,8 @@ impl Row {
     fn shown_state(&self) -> &str {
         if self.interrupted == Some(true) {
             INTERRUPTED
+        } else if self.live == Some(false) && self.state != "done" {
+            GONE
         } else {
             &self.state
         }
@@ -386,6 +391,25 @@ async fn mark_live(socket: &Path, rows: &mut [Row]) {
     }
 }
 
+/// A plan's state from its tasks in `rows`: `done` once every task is done,
+/// `sent` while one is open. `None` for a plan with no task: its own state
+/// stands.
+fn plan_state(uid: &str, rows: &[Row]) -> Option<&'static str> {
+    let mut tasks = rows.iter().filter(|r| r.parent.as_deref() == Some(uid)).peekable();
+    tasks.peek()?;
+    Some(if tasks.all(|t| t.state == "done") { "done" } else { "sent" })
+}
+
+/// Sets each plan in `rows` to the state its tasks give it. Never stored.
+fn roll_up(rows: &mut [Row]) {
+    let states: Vec<Option<&str>> = rows.iter().map(|r| if r.is_plan() { plan_state(&r.uid, rows) } else { None }).collect();
+    for (r, st) in rows.iter_mut().zip(states) {
+        if let Some(st) = st {
+            r.state = st.to_string();
+        }
+    }
+}
+
 /// Each plan with its tasks under it, by id. A task whose plan is not in
 /// `rows` stands alone. The bool marks a task shown under its plan.
 fn tree(rows: Vec<Row>) -> Vec<(Row, bool)> {
@@ -636,12 +660,13 @@ pub async fn run(socket: &Path, cmd: LedgerCmd) -> Result<i32> {
             )?;
         }
         LedgerCmd::Ls { state: st, json } => {
-            if let Some(s) = st.as_deref().filter(|s| *s != INTERRUPTED) {
+            if let Some(s) = st.as_deref().filter(|s| *s != INTERRUPTED && *s != GONE) {
                 state(s)?;
             }
             let db = open()?;
             let mut list = rows(&db, "", None)?;
             mark_live(socket, &mut list).await;
+            roll_up(&mut list);
             if let Some(s) = &st {
                 list.retain(|r| r.shown_state() == s);
             }
@@ -656,6 +681,12 @@ pub async fn run(socket: &Path, cmd: LedgerCmd) -> Result<i32> {
             let db = open()?;
             let mut r = [one(&db, &id)?];
             mark_live(socket, &mut r).await;
+            if r[0].is_plan() {
+                let tasks = rows(&db, "WHERE parent = ?1", Some(&r[0].uid))?;
+                if let Some(st) = plan_state(&r[0].uid, &tasks) {
+                    r[0].state = st.to_string();
+                }
+            }
             if json {
                 print::json(&r[0])?;
             } else {
@@ -897,5 +928,31 @@ mod tests {
         for refused in [1, 3, 4, 5, 6, 7, 9] {
             assert_eq!(state_after(refused), None);
         }
+    }
+
+    #[test]
+    fn a_gone_pane_shows_gone_and_a_plan_follows_its_tasks() {
+        let dir = scratch("roll");
+        let file = dir.join("ledger.db");
+        let mut db = open_at(&file).unwrap();
+        let (_, p, _) = insert(&mut db, &file, New { plan: true, pane_id: None, ..task("p") }).unwrap();
+        let (_, a, _) = insert(&mut db, &file, New { parent: Some(p.clone()), ..task("a") }).unwrap();
+        insert(&mut db, &file, New { parent: Some(p.clone()), state: "done".into(), ..task("b") }).unwrap();
+        let (_, empty, _) = insert(&mut db, &file, New { plan: true, pane_id: None, state: "blocked".into(), ..task("e") }).unwrap();
+        let mut list = rows(&db, "", None).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        let st = |list: &[Row], uid: &str| list.iter().find(|r| r.uid == uid).unwrap().shown_state().to_string();
+        roll_up(&mut list);
+        assert_eq!(st(&list, &p), "sent");
+        // A plan with no task keeps the state it was given.
+        assert_eq!(st(&list, &empty), "blocked");
+        let ra = list.iter_mut().find(|r| r.uid == a).unwrap();
+        ra.live = Some(false);
+        assert_eq!(ra.shown_state(), GONE);
+        ra.state = "done".into();
+        // Done work stays done when its pane closes.
+        assert_eq!(ra.shown_state(), "done");
+        roll_up(&mut list);
+        assert_eq!(st(&list, &p), "done");
     }
 }

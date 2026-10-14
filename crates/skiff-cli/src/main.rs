@@ -204,7 +204,7 @@ enum Cmd {
         cmd: OpenWithCmd,
     },
     /// The Skiff agent's task ledger: ledger.db in its folder.
-    #[command(after_help = "States: sent, pending (not delivered: the pane was working), blocked (the pane needs the user), done.\nls and show print interrupted for a sent or blocked task whose pane restarted since the send: a restore runs a new shell under the old pane id.\nID is the row number or the 8-character uid that add prints. Neither is ever reused.\nResults: a task writes to results/<date>-<uid>-<slug>.md next to the ledger; a plan owns results/<date>-<uid>-<slug>/ with plan.md, and its tasks write <uid>-<slug>.md in that folder. add stores and prints the path and makes no file. rm keeps the files.\nThe ledger is ~/skiff-agent/ledger.db, or ledger.db in the [skiff_agent] folder override. SKIFF_LEDGER overrides the path.\nOn first use, an old ledger.md next to it is imported and kept as ledger.md.bak.")]
+    #[command(after_help = "States: sent, pending (not delivered: the pane was working), blocked (the pane needs the user), done.\nls and show print interrupted for a sent or blocked task whose pane restarted since the send: a restore runs a new shell under the old pane id. They print gone for an open task whose pane no longer exists. A plan with tasks shows done when every task is done, else sent.\nID is the row number or the 8-character uid that add prints. Neither is ever reused.\nResults: a task writes to results/<date>-<uid>-<slug>.md next to the ledger; a plan owns results/<date>-<uid>-<slug>/ with plan.md, and its tasks write <uid>-<slug>.md in that folder. add stores and prints the path and makes no file. rm keeps the files.\nThe ledger is ~/skiff-agent/ledger.db, or ledger.db in the [skiff_agent] folder override. SKIFF_LEDGER overrides the path.\nOn first use, an old ledger.md next to it is imported and kept as ledger.md.bak.")]
     Ledger {
         #[command(subcommand)]
         cmd: LedgerCmd,
@@ -288,7 +288,7 @@ pub enum LedgerCmd {
     /// List tasks, oldest first, each plan's tasks under it. LIVE says if
     /// the pane still exists.
     Ls {
-        /// sent, pending, blocked, done or interrupted.
+        /// sent, pending, blocked, done, interrupted or gone.
         #[arg(long)]
         state: Option<String>,
         #[arg(long)]

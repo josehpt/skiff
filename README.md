@@ -84,7 +84,7 @@ apps/desktop         Tauri v2 app, vanilla TypeScript + xterm.js
   src-tauri          Rust side: config, git, open with, the skiffd connection, menus
   src/app            state, actions, keyboard, startup connections
   src/ui             DOM builders, dialogs, menus
-  src/workspace      rail, session tree, layouts, files, project actions
+  src/workspace      session tree, fleets, layouts, files, project actions
   src/terminal       xterm runtime, panes, search, clipboard, font size
   src/appearance     themes, colors, icons, settings
   src/platform       wire types, IPC bytes, file actions

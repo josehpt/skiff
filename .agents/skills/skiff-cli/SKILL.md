@@ -232,6 +232,7 @@ skiff g new --name pair "$a" "$b" --dir row
 ## Rules
 
 - Never run `skiff attach` or `skiff skipper` without `--no-attach`. They take over the terminal and need a person at the keys.
+- Never signal skiffd (`kill`, `pkill`, `killall`). skiffd ignores SIGTERM and SIGINT from its own panes and logs the sender. `skiff daemon stop` ends every session. Run it only when the user asks for it.
 - Do not `kill` a session, or remove a session from its group, unless the user asked for that session by name or you started it in this task.
 - Do not `send` into a session you did not start unless the user asked you to. A request in the current conversation counts. A standing authorization in the instructions file of your own folder also counts, for example the Skiff agent's `AGENTS.md`. With it, you can send to any session in a Skiff project. All other checks stay: peek first, do not add to or submit a draft, do not retry, and obey every `send` and `wait` refusal.
 - A standing authorization covers `send` only. It does not cover `kill`, removal from a group, approvals or theme changes.

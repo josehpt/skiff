@@ -62,8 +62,10 @@ agent's session. If none runs, it sets up the folder, starts the agent and its
 `skiff watch`, then attaches. If skiffd does not run, it starts skiffd. skiffd
 marks the session, so the app and the CLI open the same one, and two opens at
 once start one. Ctrl-\ detaches. The agent keeps running. While attached, the
-session has the terminal's size, in the app too. `skiff skipper --no-attach`
-prints the session id and does not attach.
+session has the terminal's size, in the app too. On detach, the pane gets its
+size back, unless the app sized it since. A second Ctrl-C within 2 seconds is
+held back once. `skiff skipper --no-attach` prints the session id and does not
+attach.
 
 - Each row has an id and an 8-character uid. Both are never used again. Each
   command that takes an ID also takes the uid.

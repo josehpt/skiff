@@ -64,9 +64,13 @@ impl SessionPool {
         };
         let mut groups = ws.groups;
         let mut restored = 0;
+        // At most one coordinator, whatever the file holds.
+        let mut coordinator = false;
         for saved in ws.sessions {
             // A worktree removed meanwhile: start in the home folder instead.
             let cwd = saved.cwd.is_dir().then(|| saved.cwd.clone());
+            let first = saved.coordinator && !coordinator;
+            coordinator |= first;
             let spec = SessionSpec {
                 label: String::new(),
                 name: saved.name.clone(),
@@ -76,6 +80,7 @@ impl SessionPool {
                 args: Vec::new(),
                 cols: saved.cols,
                 rows: saved.rows,
+                coordinator: first,
                 ..Default::default()
             };
             match self.spawn(spec, Some(saved.id.clone())) {

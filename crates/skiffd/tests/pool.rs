@@ -83,3 +83,36 @@ async fn write_reaches_the_process() {
     }
     pool.kill(&info.id).unwrap();
 }
+
+/// Two opens at once start one coordinator. `CreateSession` cannot set the mark.
+#[tokio::test]
+async fn coordinator_starts_once() {
+    use skiffd::session::Ask;
+    let pool = SessionPool::new();
+    let ask = || Ask {
+        spec: Some(SessionSpec { name: Some("Skipper".into()), command: Some("sleep".into()), args: vec!["30".into()], ..Default::default() }),
+        start: None,
+        resume: None,
+        expect: None,
+    };
+    let opens: Vec<_> = (0..4)
+        .map(|_| {
+            let pool = pool.clone();
+            std::thread::spawn(move || pool.coordinator(ask()).unwrap().unwrap())
+        })
+        .collect();
+    let got: Vec<_> = opens.into_iter().map(|t| t.join().unwrap()).collect();
+    assert!(got.iter().all(|c| c.session.id == got[0].session.id));
+    assert_eq!(got.iter().filter(|c| c.created).count(), 1);
+    let marked: Vec<_> = pool.list().into_iter().filter(|s| s.coordinator).collect();
+    assert_eq!(marked.len(), 1);
+    // Only find: no spec, no new session.
+    let found = pool.coordinator(Ask { spec: None, start: None, resume: None, expect: None }).unwrap().unwrap();
+    assert_eq!(found.session.id, got[0].session.id);
+    // The mark is not on the wire, so a plain create cannot claim it.
+    let spec: SessionSpec = serde_json::from_str(r#"{"coordinator":true,"command":"sleep","args":["30"]}"#).unwrap();
+    assert!(!pool.create(spec).unwrap().coordinator);
+    for s in pool.list() {
+        pool.kill(&s.id).unwrap();
+    }
+}

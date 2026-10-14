@@ -33,4 +33,4 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 ///   (`#[serde(default)]`) field. An older daemon answers an unknown request
 ///   with an error, and both sides skip a message they cannot read.
 /// - Do not raise it to remove a request the app no longer sends.
-pub const PROTOCOL: u32 = 25;
+pub const PROTOCOL: u32 = 26;

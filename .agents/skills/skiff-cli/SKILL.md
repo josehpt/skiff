@@ -56,6 +56,15 @@ paths. It is `ledger.db` in its folder. Read and change it only with
 `skiff ledger ls`, `add`, `update`, `show` and `rm`. Never edit the file. Read the
 ledger before you send a task or report on pending work, and keep it current.
 
+A person opens the Skiff agent from its row in the app, or with `skiff skipper`
+from any terminal, an SSH login included. `skiff skipper` attaches to the Skiff
+agent's session. If none runs, it sets up the folder, starts the agent and its
+`skiff watch`, then attaches. If skiffd does not run, it starts skiffd. skiffd
+marks the session, so the app and the CLI open the same one, and two opens at
+once start one. Ctrl-\ detaches. The agent keeps running. While attached, the
+session has the terminal's size, in the app too. `skiff skipper --no-attach`
+prints the session id and does not attach.
+
 - Each row has an id and an 8-character uid. Both are never used again. Each
   command that takes an ID also takes the uid.
 - `skiff ledger add` prints the id, the uid and a result path in `results/`.
@@ -222,7 +231,7 @@ skiff g new --name pair "$a" "$b" --dir row
 
 ## Rules
 
-- Never run `skiff attach`. It takes over the terminal and needs a person at the keys.
+- Never run `skiff attach` or `skiff skipper` without `--no-attach`. They take over the terminal and need a person at the keys.
 - Do not `kill` a session, or remove a session from its group, unless the user asked for that session by name or you started it in this task.
 - Do not `send` into a session you did not start unless the user asked you to. A request in the current conversation counts. A standing authorization in the instructions file of your own folder also counts, for example the Skiff agent's `AGENTS.md`. With it, you can send to any session in a Skiff project. All other checks stay: peek first, do not add to or submit a draft, do not retry, and obey every `send` and `wait` refusal.
 - A standing authorization covers `send` only. It does not cover `kill`, removal from a group, approvals or theme changes.

@@ -139,7 +139,8 @@ pub async fn handle(stream: UnixStream, pool: Arc<SessionPool>) -> Result<()> {
             },
             req @ (Request::CreateSession { .. }
             | Request::ListAgents
-            | Request::ListAgentSessions { .. }) => {
+            | Request::ListAgentSessions { .. }
+            | Request::Coordinator { .. }) => {
                 if slow_tx.send((env.id, req)).is_err() {
                     break;
                 }

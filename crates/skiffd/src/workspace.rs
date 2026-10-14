@@ -45,6 +45,9 @@ pub struct SavedSession {
     pub agent_exit: Option<i32>,
     pub cols: u16,
     pub rows: u16,
+    /// The Skiff agent's session.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub coordinator: bool,
 }
 
 impl From<&SessionInfo> for SavedSession {
@@ -62,6 +65,7 @@ impl From<&SessionInfo> for SavedSession {
             agent_exit: info.agent_exit,
             cols: info.cols,
             rows: info.rows,
+            coordinator: info.coordinator,
         }
     }
 }

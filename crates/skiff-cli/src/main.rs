@@ -21,6 +21,7 @@ mod peek;
 mod print;
 mod resolve;
 mod sessions;
+mod skipper;
 mod theme;
 mod wait;
 mod watch;
@@ -104,6 +105,16 @@ enum Cmd {
     /// Run a session in this terminal. Ctrl-\ detaches. The session
     /// takes this terminal's size, in the app too.
     Attach { session: String },
+    /// Attach to the Skiff agent (Skipper). Start it first if it does not
+    /// run. Ctrl-\ detaches; the agent keeps running.
+    #[command(
+        after_help = "Reads [skiff_agent] in projects.toml: the folder, the name, the agent and whether it is on.\nWith no Skiff agent session, it sets up the folder (missing files come back, existing ones stay), starts the agent, and starts `skiff watch` for it. One watcher runs per daemon.\nA Skiff agent session that is a bare shell (after a restore, or after its agent quit) gets the agent again: its last conversation when Settings continues on restore, else a new one.\nWith no skiffd running, it starts one, as the app does.\nThe app and this command find the same session: skiffd marks it, and two starts at once give one.\nAttach gives the session this terminal's size, in the app too, until you detach. A phone screen makes the desktop pane small."
+    )]
+    Skipper {
+        /// Do not attach. Print the session id.
+        #[arg(long)]
+        no_attach: bool,
+    },
     /// Print a session's screen as plain text.
     Peek {
         session: String,
@@ -477,6 +488,8 @@ async fn run(cli: Cli) -> Result<i32> {
         Cmd::Status => return info::status(&socket).await.map(|_| 0),
         Cmd::Daemon(DaemonCmd::Reload { binary }) => return daemon::reload(&socket, binary).await.map(|_| 0),
         Cmd::Daemon(DaemonCmd::Stop) => return daemon::stop(&socket).await.map(|_| 0),
+        // Starts skiffd when it does not run.
+        Cmd::Skipper { no_attach } => return skipper::run(&socket, no_attach).await.map(|_| 0),
         // It connects again after a daemon reload, so it holds no connection here.
         Cmd::Watch { skipper, no_notify } => {
             return watch::watch(&socket, watch::Options { skipper, notify: !no_notify }).await
@@ -508,7 +521,7 @@ async fn run(cli: Cli) -> Result<i32> {
         Cmd::Seen { session } => sessions::seen(&c, &session).await,
         Cmd::Agents { json } => info::agents(&c, json).await,
         Cmd::Theme { cmd: ThemeCmd::Session { cmd } } => theme::session(&c, cmd).await,
-        Cmd::Status | Cmd::Daemon(_) | Cmd::Projects { .. } | Cmd::Theme { .. } | Cmd::OpenWith { .. } | Cmd::Ledger { .. } | Cmd::Wait { .. } | Cmd::Events { .. } | Cmd::Watch { .. } | Cmd::Send { .. } => {
+        Cmd::Status | Cmd::Daemon(_) | Cmd::Projects { .. } | Cmd::Theme { .. } | Cmd::OpenWith { .. } | Cmd::Ledger { .. } | Cmd::Wait { .. } | Cmd::Events { .. } | Cmd::Watch { .. } | Cmd::Send { .. } | Cmd::Skipper { .. } => {
             unreachable!()
         }
     }

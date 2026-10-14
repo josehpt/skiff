@@ -21,7 +21,8 @@ use tokio::{
 };
 
 mod requests;
-pub use requests::{DaemonInfo, Refused};
+pub mod skipper;
+pub use requests::{Coordinated, Coordinator, DaemonInfo, Refused};
 
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Response>>>>;
 type Outputs = Arc<Mutex<HashMap<SessionId, OutputTx>>>;

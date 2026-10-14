@@ -1,13 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { showError } from "../ui/alerts";
 import type { AgentInfo, SessionInfo } from "../platform/types";
-import { newSession } from "./daemon";
 import { setSkiffAgentName } from "./keys";
 import { render } from "./renderRequest";
-import { S, sessions } from "./state";
-import { continueLine } from "../terminal/resume";
+import { S, sessions, upsert } from "./state";
 import { agentKind } from "../appearance/agentIcon";
-import { byStart, samePath } from "../workspace/model";
 import { keepRow } from "../workspace/selection";
 import { revealSession } from "../workspace/view";
 
@@ -54,44 +51,49 @@ export function skiffAgentChoice(agents: AgentInfo[] = S.agents, id = S.skiffAge
   return agents.find((a) => a.id === id && a.installed && (a.enabled || a.custom)) ?? agents.find((a) => a.enabled) ?? null;
 }
 
-/** The session the row started. A shell or another agent opened in the folder does not take its place. */
-let startedId: string | null = null;
-
 /**
- * The Skiff agent's session: the one the row started while it lives. After a
- * restart that id is gone: then the oldest agent session in the folder.
+ * The Skiff agent's session: the one skiffd marks as the coordinator. The
+ * daemon keeps the mark across reloads and restores, and `skiff skipper`
+ * finds the same session.
  */
 export function skiffAgentSession(): SessionInfo | null {
-  const folder = skiffAgentFolder();
-  if (!folder) return null;
-  const started = startedId ? sessions.get(startedId) : undefined;
-  if (started && started.state !== "done" && samePath(started.cwd, folder)) return started;
-  return [...sessions.values()].filter((s) => s.state !== "done" && s.role === "agent" && samePath(s.cwd, folder)).sort(byStart)[0] ?? null;
+  if (!skiffAgentFolder()) return null;
+  return [...sessions.values()].find((s) => s.coordinator && s.state !== "done") ?? null;
 }
 
 /** True for the Skiff agent's session. It has no project, no splits and no rename: its name lives in Settings. */
 export const isSkiffAgent = (id: string | null | undefined) => !!id && skiffAgentSession()?.id === id;
 
-/** The row and the key: show the Skiff agent's pane, or start it in its folder. */
+/** What `open_skiff_agent` answers. */
+interface Opened {
+  session: SessionInfo;
+  created: boolean;
+  typed: boolean;
+}
+
+/**
+ * The row and the key: show the Skiff agent's pane, or start it. skiffd finds
+ * or starts it in one guarded step, so two quick opens start one. A pane that
+ * is a bare shell gets its agent again.
+ */
 export function openSkiffAgent() {
-  const folder = skiffAgentFolder();
-  if (!folder) return;
+  if (!skiffAgentFolder()) return;
   const s = skiffAgentSession();
-  if (s) {
-    revealSession(s.id);
-    requestAnimationFrame(() => keepRow(s.id));
-    return;
-  }
-  const a = skiffAgentChoice();
-  if (!a) return showError("No agent is on. Turn one on in Settings › Agents.");
-  // The folder is made ready first: files the user deleted come back.
-  invoke<string>("ensure_skiff_agent")
-    .then((dir) => newSession(dir, a.command, a.id, "agent", undefined, skiffAgentName()))
-    .then((id) => {
-      startedId = id;
-      watch(id);
+  if (s) show(s.id);
+  if (s && agentKind(s) !== "shell") return;
+  if (!s && !skiffAgentChoice()) return showError("No agent is on. Turn one on in Settings › Agents.");
+  invoke<Opened | null>("open_skiff_agent", { restore: null })
+    .then((o) => {
+      if (!o) return;
+      upsert(o.session);
+      if (o.session.id !== s?.id) show(o.session.id);
     })
     .catch(showError);
+}
+
+function show(id: string) {
+  revealSession(id);
+  requestAnimationFrame(() => keepRow(id));
 }
 
 /** When the app last asked for a watcher, so a render does not ask each time. */
@@ -109,7 +111,7 @@ function watch(id: string) {
   invoke<boolean>("start_skiff_watch", { session: id }).catch(console.error);
 }
 
-/** Restored panes Skiff already typed the continue line into. Once each. */
+/** Restored panes Skiff already asked skiffd to continue. Once each. */
 const continued = new Set<string>();
 
 /**
@@ -129,12 +131,10 @@ export function syncSkiffAgent() {
   if (!s) return;
   watch(s.id);
   if (!S.skiffAgent.continue_on_restore || !s.resume || continued.has(s.id) || agentKind(s) !== "shell") return;
-  const a = skiffAgentChoice();
-  const line = a && continueLine(a.id, a.command);
-  if (!line) return;
   continued.add(s.id);
-  // Refused when the person typed in the pane first: their line stays theirs.
-  invoke("pty_submit", { session: s.id, data: line, expect: s.input_gen ?? 0 }).catch(showError);
+  // skiffd types the continue line, the same as for `skiff skipper`. Refused
+  // when the person typed in the pane first: their line stays theirs.
+  invoke("open_skiff_agent", { restore: s.input_gen ?? 0 }).catch(showError);
 }
 
 /** The name the last render saw, so a change from Settings shows. */

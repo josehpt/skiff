@@ -2,7 +2,7 @@ use std::{os::fd::{AsRawFd, FromRawFd}, path::PathBuf};
 
 use anyhow::{bail, Context, Result};
 use skiff_core::socket::socket_path;
-use skiffd::{paths, pty, server, session::{reload, SessionPool}, shellenv};
+use skiffd::{paths, pty, server, session::{reload, SessionPool}, shellenv, stop};
 use tokio::net::{UnixListener, UnixStream};
 use tracing_subscriber::filter::LevelFilter;
 
@@ -79,10 +79,8 @@ async fn run(start: Start) -> Result<()> {
     let path = paths::socket();
     tracing::info!("skiffd {} listening on {}", skiff_core::VERSION, path.display());
 
-    let ctrl_c = tokio::signal::ctrl_c();
-    tokio::pin!(ctrl_c);
-    #[cfg(unix)]
-    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    // SIGTERM and SIGINT from inside a session are ignored; see `stop`.
+    let mut stops = stop::install()?;
 
     loop {
         tokio::select! {
@@ -95,8 +93,7 @@ async fn run(start: Start) -> Result<()> {
                     }
                 });
             }
-            _ = &mut ctrl_c => break,
-            _ = term.recv() => break,
+            _ = stops.recv() => break,
         }
     }
 

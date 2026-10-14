@@ -1,4 +1,4 @@
-//! daemon reload.
+//! daemon reload and stop.
 
 use std::{collections::HashMap, path::{Path, PathBuf}, time::{Duration, Instant}};
 
@@ -8,6 +8,8 @@ use skiff_core::session::SessionState;
 
 /// How long the new image may take to adopt the sessions and answer.
 const RECONNECT: Duration = Duration::from_secs(15);
+/// How long a stopping daemon may take to save and let go of its socket.
+const STOP: Duration = Duration::from_secs(10);
 
 /// Reloads the daemon onto `binary`, then proves the sessions survived:
 /// the same daemon pid, and each live session with the same id and pid.
@@ -56,5 +58,23 @@ pub async fn reload(socket: &Path, binary: Option<PathBuf>) -> Result<()> {
         let ids: Vec<&str> = lost.iter().map(|s| s.as_str()).collect();
         bail!("lost in the reload: {}", ids.join(", "));
     }
+    Ok(())
+}
+
+/// Asks the daemon to stop, then waits until its socket no longer answers.
+pub async fn stop(socket: &Path) -> Result<()> {
+    let c = crate::connect(socket).await?;
+    let info = c.daemon_info().await?;
+    c.shutdown().await.with_context(|| format!("skiffd {} did not take the request", info.version))?;
+    drop(c);
+    let start = Instant::now();
+    while Client::connect(socket).await.is_ok() {
+        if start.elapsed() > STOP {
+            bail!("skiffd still answers at {}", socket.display());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let pid = info.pid.map_or(String::new(), |p| format!(", pid {p}"));
+    println!("skiffd {} stopped{pid}", info.version);
     Ok(())
 }

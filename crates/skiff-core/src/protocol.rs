@@ -115,6 +115,10 @@ pub enum Request {
         #[serde(default)]
         binary: Option<PathBuf>,
     },
+    /// Stops skiffd as SIGTERM from outside does: it saves the layout and
+    /// ends every session. Answers `ok` first. A pane uses this for a
+    /// deliberate stop: skiffd ignores signals from its own sessions.
+    Shutdown,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

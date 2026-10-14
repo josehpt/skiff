@@ -129,6 +129,11 @@ pub async fn handle(stream: UnixStream, pool: Arc<SessionPool>) -> Result<()> {
                 });
                 continue;
             }
+            Request::Shutdown => {
+                tracing::info!("shutdown requested over the socket");
+                crate::stop::request();
+                Response::Ok
+            }
             Request::ListSessions => Response::Sessions {
                 sessions: pool.list(),
             },

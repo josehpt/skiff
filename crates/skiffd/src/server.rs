@@ -4,7 +4,10 @@
 
 use std::{
     collections::HashMap,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 
@@ -34,7 +37,25 @@ fn slow_ms(since: Instant) -> Option<u128> {
     (took > SLOW).then(|| took.as_millis())
 }
 
+/// Numbers each client connection, for the watcher registry.
+static CONNECTIONS: AtomicU64 = AtomicU64::new(1);
+
+/// Ends the connection's watcher registration, on every way out of [`handle`].
+struct Unwatch {
+    pool: Arc<SessionPool>,
+    conn: u64,
+}
+
+impl Drop for Unwatch {
+    fn drop(&mut self) {
+        self.pool.unwatch(self.conn);
+    }
+}
+
 pub async fn handle(stream: UnixStream, pool: Arc<SessionPool>) -> Result<()> {
+    let conn = CONNECTIONS.fetch_add(1, Ordering::Relaxed);
+    let peer = stream.peer_cred().ok().and_then(|c| c.pid()).and_then(|p| u32::try_from(p).ok());
+    let _unwatch = Unwatch { pool: pool.clone(), conn };
     let (rd, mut wr) = stream.into_split();
     // Output and snapshots, with when the PTY read of the output's first byte came.
     let (tx, mut rx) = mpsc::channel::<(ServerMessage, Option<Instant>)>(4096);
@@ -253,6 +274,10 @@ pub async fn handle(stream: UnixStream, pool: Arc<SessionPool>) -> Result<()> {
                 }
                 Response::Ok
             }
+            Request::Watching { session, failure } => match pool.watching(conn, peer, &session, failure) {
+                Ok(()) => Response::Ok,
+                Err(e) => error(e),
+            },
             Request::Seen { session } => match pool.seen(&session) {
                 Ok(()) => Response::Ok,
                 Err(e) => error(e),

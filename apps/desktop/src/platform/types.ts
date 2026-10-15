@@ -45,6 +45,26 @@ export interface SessionInfo {
   input_gen?: number;
   /** The Skiff agent's session. skiffd marks at most one live session. */
   coordinator?: boolean;
+  /** The `skiff watch` processes registered for this session. Absent when none is, or from a daemon older than protocol 27. */
+  watch?: WatchInfo | null;
+}
+
+/** The watchers registered for a session. */
+export interface WatchInfo {
+  /** Unix ms of the oldest live registration. */
+  since: number;
+  pids: number[];
+  /** The newest failure a watcher reports. */
+  failure?: WatchFailure | null;
+}
+
+export interface WatchFailure {
+  /** "undelivered": a line was typed and no turn started. "ledger": the ledger could not be read. */
+  kind: string;
+  /** The watch log line. */
+  message: string;
+  /** Unix ms. */
+  at: number;
 }
 
 /** An agent that ran in a session, and the last title it set. */
@@ -128,6 +148,8 @@ export interface Appearance {
 export interface DaemonStatus {
   connected: boolean;
   version: string | null;
+  /** The daemon's protocol. `null` when the app could not ask. Absent from an older app backend. */
+  protocol?: number | null;
   socket: string;
   /** The daemon's pid, when the app could read it. */
   pid: number | null;

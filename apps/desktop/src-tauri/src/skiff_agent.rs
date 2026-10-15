@@ -47,12 +47,20 @@ pub async fn start_skiff_watch(session: String) -> Result<bool, String> {
     blocking(move || skipper::start_watch(&skiff_core::socket::socket_path(), &cli(), &session)).await
 }
 
+/// The watch log beside the socket, for the row's Open watch log.
+#[tauri::command]
+pub fn skiff_watch_log() -> String {
+    skiff_core::socket::socket_path().with_extension("watch.log").display().to_string()
+}
+
 /// The Skiff agent's session, and what the open did to it.
 #[derive(Serialize)]
 pub struct Opened {
     session: SessionInfo,
     created: bool,
     typed: bool,
+    /// Why its watcher did not start, for the row's tooltip.
+    watch_error: Option<String>,
 }
 
 /// The row and the key: find the Skiff agent's session or start it, through
@@ -68,10 +76,11 @@ pub async fn open_skiff_agent(app: State<'_, App>, restore: Option<u64>) -> Resu
     };
     let Some(found) = skipper::open(&c, how).await.map_err(err)? else { return Ok(None) };
     let id = found.session.id.clone();
-    if let Err(e) = blocking(move || skipper::start_watch(&skiff_core::socket::socket_path(), &cli(), &id)).await {
+    let watch_error = blocking(move || skipper::start_watch(&skiff_core::socket::socket_path(), &cli(), &id)).await.err();
+    if let Some(e) = &watch_error {
         eprintln!("skiff watch: {e}");
     }
-    Ok(Some(Opened { session: found.session, created: found.created, typed: found.typed }))
+    Ok(Some(Opened { session: found.session, created: found.created, typed: found.typed, watch_error }))
 }
 
 /// `[skiff_agent]` as the page reads it: the folder without `~`.

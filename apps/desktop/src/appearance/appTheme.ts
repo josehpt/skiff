@@ -38,7 +38,7 @@ const VARS = [
   "--state-done", "--state-idle", "--error", "--project-default", "--accent",
   "--hover", "--press",
   "--error-bg", "--error-bg-hover", "--error-rule", "--error-text",
-  "--danger", "--danger-hover", "--danger-text", "--ok", "--scrim", "--on-working",
+  "--danger", "--danger-hover", "--danger-text", "--ok", "--scrim", "--on-working", "--watch",
 ];
 
 /**
@@ -109,6 +109,8 @@ function themeVars(t: TerminalTheme): Record<string, string> {
   lightScheme = isLight(set["--bg"]);
   for (const [k, min] of Object.entries(TEXT_MIN)) set[k] = legible(set[k], min);
   Object.assign(set, alerts(set, t.palette[2]));
+  // The watcher's teal takes the theme's cyan.
+  set["--watch"] = legible(t.palette[6], 3);
   set["--hover"] = lightScheme ? "rgba(0, 0, 0, 0.05)" : "rgba(255, 255, 255, 0.05)";
   set["--press"] = lightScheme ? "rgba(0, 0, 0, 0.09)" : "rgba(255, 255, 255, 0.09)";
   return set;

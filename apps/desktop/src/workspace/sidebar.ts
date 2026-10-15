@@ -34,7 +34,7 @@ import { animateFold, growOpened } from "../ui/fold";
 import { dragTree } from "./treeDrag";
 import { bareWorktree, fleetKey, folded, isOpen, openToFocused, projectBadge, projectKey, rollup, toggleRow, treeDrag, treeSections, type Section } from "./tree";
 import { render } from "../app/renderRequest";
-import { openSkiffAgent, SKIFF_AGENT_KEY, skiffAgentChoice, skiffAgentFolder, skiffAgentName, skiffAgentSession, syncSkiffAgent } from "../app/skiffAgent";
+import { openSkiffAgent, SKIFF_AGENT_KEY, skiffAgentChoice, skiffAgentFolder, skiffAgentName, skiffAgentSession, skiffWatch, syncSkiffAgent } from "../app/skiffAgent";
 
 /** 20px lines, flush against whatever follows. */
 function sessionBlock(lines: Line[], color: string): HTMLElement {
@@ -163,7 +163,9 @@ function sidebarSig(): string {
     ]),
   ]);
   // The agent icons are inked against the applied app theme: a new theme re-inks them.
-  const agent = skiffAgentFolder() ? [skiffAgentName(), skiffAgentSession()?.id ?? null, skiffAgentChoice()?.id ?? null] : null;
+  // The watcher state changes with no session event when the grace ends.
+  const sa = skiffAgentSession();
+  const agent = skiffAgentFolder() ? [skiffAgentName(), sa?.id ?? null, skiffAgentChoice()?.id ?? null, sa ? skiffWatch(sa) : null] : null;
   return JSON.stringify([
     listGen, appliedTheme(), S.selectedProject, [...folded],
     S.selection, S.renamingSession, S.renaming?.id ?? null, rows, groups, projects, agent,
@@ -245,7 +247,17 @@ function skiffAgentRow(): HTMLElement {
     return row;
   }
   row.dataset.session = s.id;
-  row.setAttribute("aria-label", `${name}, the Skiff agent, ${s.title ?? agentName(s)}, ${s.state}`);
+  // The agent icon shows the watcher: teal with a ping while it runs and the
+  // agent is idle, red while none runs or the last line failed.
+  const watch = skiffWatch(s);
+  if (watch.state === "runs" && s.state === "idle") {
+    row.classList.add("watch-ping");
+    // The row is rebuilt often. Start the ring at the elapsed phase, not at its first frame.
+    row.style.setProperty("--ping-delay", `${-(performance.now() % 2800)}ms`);
+  }
+  if (watch.state === "missing" || watch.state === "failed") row.classList.add("watch-error");
+  if (watch.text) row.title = watch.text;
+  row.setAttribute("aria-label", `${name}, the Skiff agent, ${s.title ?? agentName(s)}, ${s.state}${watch.text ? `. ${watch.text}` : ""}`);
   row.append(agentIcon(s), h("span", "skiff-agent-name", name), h("span", "title", s.title?.replace(/^[^\p{L}\p{N}]+/u, "") ?? ""), stateIcon(s));
   row.addEventListener("mousedown", (e) => {
     if (e.button === 0) row.focus();

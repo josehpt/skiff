@@ -32,6 +32,8 @@
   --danger-hover: #8e3237;
   --danger-text: #ffe0e0;
   --ok: #7ee0cb;
+  /* The Skiff agent's icon while its watcher runs. */
+  --watch: #3fd0b4;
   --scrim: rgba(5, 7, 10, 0.72);
   /* Text on a filled --state-working button. */
   --on-working: #0b0e12;

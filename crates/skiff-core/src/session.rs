@@ -143,6 +143,37 @@ pub struct SessionInfo {
     /// daemon has it. A restore keeps it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub coordinator: bool,
+    /// The `skiff watch` processes registered for this session. `None` when
+    /// none is, or from a daemon older than protocol 27. Not saved, not
+    /// restored, not in a reload handover.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch: Option<WatchInfo>,
+}
+
+/// The watchers registered for a session with [`Request::Watching`].
+///
+/// [`Request::Watching`]: crate::protocol::Request::Watching
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct WatchInfo {
+    /// Unix ms of the oldest live registration.
+    pub since: u64,
+    /// Watcher pids, from the connection's peer credentials.
+    pub pids: Vec<u32>,
+    /// The newest failure any registered watcher reports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<WatchFailure>,
+}
+
+/// A watcher's last line did not reach the agent, or it cannot read the ledger.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct WatchFailure {
+    /// "undelivered": a line was typed and no turn started.
+    /// "ledger": the ledger could not be read 3 steps in a row.
+    pub kind: String,
+    /// The watch log line, for the tooltip.
+    pub message: String,
+    /// Unix ms.
+    pub at: u64,
 }
 
 impl SessionInfo {

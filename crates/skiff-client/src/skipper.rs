@@ -302,7 +302,7 @@ pub fn start_watch(socket: &Path, cli: &Path, session: &str) -> Result<bool> {
             return Ok(false);
         }
     }
-    let log = std::fs::File::create(socket.with_extension("watch.log")).context("create the watch log")?;
+    let log = fresh_log(&socket.with_extension("watch.log"))?;
     let mut cmd = outliving(cli, &unit_for("skiff-watch", socket));
     cmd.args(["watch", session])
         .env("SKIFF_SOCKET", socket)
@@ -316,6 +316,17 @@ pub fn start_watch(socket: &Path, cli: &Path, session: &str) -> Result<bool> {
         let _ = child.wait();
     });
     Ok(true)
+}
+
+/// A new, empty watch log. The last one moves to `<log>.1`, so the log of a
+/// watcher that died is still there when the next one starts.
+fn fresh_log(path: &Path) -> Result<std::fs::File> {
+    if path.exists() {
+        let mut old = path.as_os_str().to_owned();
+        old.push(".1");
+        std::fs::rename(path, &old).context("keep the last watch log")?;
+    }
+    std::fs::File::create(path).context("create the watch log")
 }
 
 /// A command for `program` that outlives the login that starts it, an SSH
@@ -412,6 +423,18 @@ pub fn detach(cmd: &mut std::process::Command) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_watch_log_keeps_the_last_one() {
+        let dir = std::env::temp_dir().join(format!("skiff-watch-log-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("s.watch.log");
+        std::io::Write::write_all(&mut fresh_log(&log).unwrap(), b"first").unwrap();
+        fresh_log(&log).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("s.watch.log.1")).unwrap(), "first");
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), "");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn writes_the_template_and_fills_in_only_what_is_missing() {

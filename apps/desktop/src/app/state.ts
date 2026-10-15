@@ -20,7 +20,8 @@ export const removing = new Set<string>();
 /** Merge a daemon copy into the known session, so menus and closures holding it see the change. */
 export function upsert(info: SessionInfo) {
   const known = sessions.get(info.id);
-  if (known) Object.assign(known, info);
+  // skiffd leaves `watch` out when no watcher runs: that clears it.
+  if (known) Object.assign(known, { watch: null }, info);
   else sessions.set(info.id, info);
 }
 

@@ -46,6 +46,8 @@ pub(crate) struct Warning {
 pub(crate) struct DaemonStatus {
     connected: bool,
     version: Option<String>,
+    /// The daemon's protocol. `None` when the app could not ask.
+    protocol: Option<u32>,
     socket: String,
     /// The daemon's pid, from the socket's peer credentials.
     pid: Option<i32>,
@@ -320,19 +322,24 @@ pub(crate) async fn daemon_status(app: State<'_, App>) -> Result<DaemonStatus, S
 pub(crate) async fn status_now(app: &App) -> DaemonStatus {
     let socket = socket_path().display().to_string();
     match ensure_client(app).await {
-        Ok((c, spawned)) => DaemonStatus {
-            connected: true,
-            version: tokio::time::timeout(HELLO_TIMEOUT, c.ping()).await.ok().and_then(|r| r.ok()),
-            socket,
-            pid: c.daemon_pid,
-            spawned,
-            warning: app.warning.lock().await.clone(),
-            replaced: app.replaced.lock().await.clone(),
-            reload: app.reload.lock().await.is_some(),
-        },
+        Ok((c, spawned)) => {
+            let hello = tokio::time::timeout(HELLO_TIMEOUT, c.hello()).await.ok().and_then(|r| r.ok());
+            DaemonStatus {
+                connected: true,
+                version: hello.as_ref().map(|(v, _)| v.clone()),
+                protocol: hello.map(|(_, p)| p),
+                socket,
+                pid: c.daemon_pid,
+                spawned,
+                warning: app.warning.lock().await.clone(),
+                replaced: app.replaced.lock().await.clone(),
+                reload: app.reload.lock().await.is_some(),
+            }
+        }
         Err(_) => DaemonStatus {
             connected: false,
             version: None,
+            protocol: None,
             socket,
             pid: None,
             spawned: false,

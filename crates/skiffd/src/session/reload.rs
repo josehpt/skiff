@@ -274,7 +274,8 @@ impl SessionPool {
                 Front::Program => FrontSave::Program,
             };
             metas.push(SessionMeta {
-                info: s.info(),
+                // Watchers register again on the new process.
+                info: SessionInfo { watch: None, ..s.info() },
                 fd: s.pty.raw_fd(),
                 done: s.reader_done(),
                 last_output: s.last_output.load(Ordering::Relaxed),

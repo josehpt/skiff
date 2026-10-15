@@ -17,7 +17,7 @@ use portable_pty::{native_pty_system, PtySize};
 use skiff_core::{
     group::Group,
     protocol::{EchoTimes, Event},
-    session::{now_ms, SessionId, SessionInfo, SessionSpec, SessionState, ENTER_DELAY},
+    session::{now_ms, SessionId, SessionInfo, SessionSpec, SessionState, WatchFailure, WatchInfo, ENTER_DELAY},
 };
 use tokio::sync::{broadcast, Notify};
 
@@ -450,6 +450,19 @@ pub struct SessionPool {
     /// Held while a coordinator request finds or starts one. Holds the
     /// last session a start or resume line went into, and when.
     coordinator: Mutex<Option<(SessionId, Instant)>>,
+    /// `skiff watch` registrations by connection number. Not saved and not
+    /// handed over: a watcher registers again when it connects again.
+    watchers: Mutex<HashMap<u64, Watcher>>,
+}
+
+/// One connection's [`Request::Watching`] registration.
+///
+/// [`Request::Watching`]: skiff_core::protocol::Request::Watching
+struct Watcher {
+    session: SessionId,
+    pid: Option<u32>,
+    since: u64,
+    failure: Option<WatchFailure>,
 }
 
 impl Default for SessionPool {
@@ -467,6 +480,7 @@ impl Default for SessionPool {
             reload: Mutex::new(()),
             listener: AtomicI32::new(-1),
             coordinator: Mutex::new(None),
+            watchers: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -514,6 +528,60 @@ impl SessionPool {
 
     pub fn get(&self, id: &str) -> Option<Arc<Session>> {
         self.sessions.read().unwrap().get(id).cloned()
+    }
+
+    /// Registers connection `conn` as a watcher of `session`, or replaces its
+    /// registration. A replacement keeps `since`.
+    pub fn watching(&self, conn: u64, pid: Option<u32>, session: &str, failure: Option<WatchFailure>) -> Result<()> {
+        if self.get(session).is_none() {
+            bail!("no such session: {session}");
+        }
+        let old = {
+            let mut w = self.watchers.lock().unwrap();
+            let since = w.get(&conn).filter(|o| o.session == session).map_or_else(now_ms, |o| o.since);
+            w.insert(conn, Watcher { session: session.to_string(), pid, since, failure })
+        };
+        if let Some(old) = old.filter(|o| o.session != session) {
+            self.publish_watch(&old.session);
+        }
+        self.publish_watch(session);
+        Ok(())
+    }
+
+    /// Connection `conn` closed: its registration, if any, ends.
+    pub fn unwatch(&self, conn: u64) {
+        let old = self.watchers.lock().unwrap().remove(&conn);
+        if let Some(old) = old {
+            self.publish_watch(&old.session);
+        }
+    }
+
+    /// Writes the registry's view of `id` into its info, and sends
+    /// `SessionUpdated` when it changed.
+    fn publish_watch(&self, id: &str) {
+        let Some(session) = self.get(id) else { return };
+        let watch = {
+            let w = self.watchers.lock().unwrap();
+            let mine: Vec<&Watcher> = w.values().filter(|x| x.session == id).collect();
+            (!mine.is_empty()).then(|| WatchInfo {
+                since: mine.iter().map(|x| x.since).min().unwrap_or(0),
+                pids: {
+                    let mut p: Vec<u32> = mine.iter().filter_map(|x| x.pid).collect();
+                    p.sort_unstable();
+                    p
+                },
+                failure: mine.iter().filter_map(|x| x.failure.clone()).max_by_key(|f| f.at),
+            })
+        };
+        let changed = {
+            let mut info = session.info.lock().unwrap();
+            let changed = info.watch != watch;
+            info.watch = watch;
+            changed
+        };
+        if changed {
+            let _ = self.events.send(Event::SessionUpdated { session: session.info() });
+        }
     }
 
     pub fn create(self: &Arc<Self>, spec: SessionSpec) -> Result<SessionInfo> {
@@ -596,6 +664,7 @@ impl SessionPool {
             interactive: false,
             input_gen: 0,
             coordinator: spec.coordinator,
+            watch: None,
         };
 
         let (input, queued, wrote) = start_writer(&id, &pty)?;

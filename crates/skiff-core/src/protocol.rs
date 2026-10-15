@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::group::Group;
 use crate::project::AgentInfo;
-use crate::session::{Away, SessionId, SessionInfo, SessionSpec, SessionState};
+use crate::session::{Away, SessionId, SessionInfo, SessionSpec, SessionState, WatchFailure};
 
 /// Base64 for byte payloads so the wire stays valid UTF-8 JSON.
 pub mod b64 {
@@ -155,6 +155,16 @@ pub enum Request {
         #[serde(default)]
         expect: Option<u64>,
     },
+    /// This connection watches `session` for the Skiff agent. The
+    /// registration lasts until the connection closes. A second call on the
+    /// same connection replaces it: the watcher sends it again to report or
+    /// clear a failure. Answers `Ok`, or `Error` when the session does not
+    /// exist.
+    Watching {
+        session: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        failure: Option<WatchFailure>,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -297,6 +307,7 @@ impl Request {
             Request::Reload { .. } => "reload",
             Request::Shutdown => "shutdown",
             Request::Coordinator { .. } => "coordinator",
+            Request::Watching { .. } => "watching",
         }
     }
 }
@@ -345,6 +356,40 @@ mod tests {
             }
             other => panic!("expected output event, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn watching_round_trips() {
+        let failure = WatchFailure { kind: "undelivered".into(), message: "undelivered: x".into(), at: 5 };
+        for f in [None, Some(failure)] {
+            let req = Request::Watching { session: "s1".into(), failure: f.clone() };
+            let json = serde_json::to_string(&Envelope { id: 3, request: req }).unwrap();
+            assert!(json.contains("\"cmd\":\"watching\""));
+            assert_eq!(json.contains("failure"), f.is_some());
+            match serde_json::from_str::<Envelope>(&json).unwrap().request {
+                Request::Watching { session, failure } => {
+                    assert_eq!(session, "s1");
+                    assert_eq!(failure, f);
+                }
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn session_info_watch_is_optional() {
+        let mut v = serde_json::json!({
+            "id": "s1", "label": "claude", "role": "agent", "cwd": "/", "command": "claude", "args": [],
+            "state": "idle", "cols": 80, "rows": 24, "pid": null, "exit_code": null,
+        });
+        let s: SessionInfo = serde_json::from_value(v.clone()).unwrap();
+        assert_eq!(s.watch, None);
+        assert!(!serde_json::to_string(&s).unwrap().contains("watch"));
+        v["watch"] = serde_json::json!({ "since": 1, "pids": [41234], "failure": { "kind": "ledger", "message": "busy", "at": 2 } });
+        let s: SessionInfo = serde_json::from_value(v).unwrap();
+        let back: SessionInfo = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.watch.as_ref().map(|w| w.pids.clone()), Some(vec![41234]));
+        assert_eq!(back, s);
     }
 
     #[test]

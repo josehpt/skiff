@@ -4,8 +4,9 @@ use std::path::Path;
 
 use anyhow::Result;
 use skiff_client::Client;
+use skiff_core::session::SessionInfo;
 
-use crate::print;
+use crate::{print, resolve};
 
 pub async fn status(socket: &Path) -> Result<()> {
     let exe = std::env::current_exe().ok();
@@ -34,7 +35,56 @@ pub async fn status(socket: &Path) -> Result<()> {
     println!("pid       {pid}");
     println!("reload    {}", info.reload_state.map_or("no".to_string(), |v| format!("yes (handover {v})")));
     println!("socket    {}", socket.display());
+    let line = if protocol < 27 {
+        format!("unknown (skiffd speaks {protocol})")
+    } else {
+        let all = crate::sessions::sorted(&c).await?;
+        let agent = all.iter().find(|s| s.coordinator && s.state != skiff_core::session::SessionState::Done);
+        watcher_line(agent, || watch_lock_held(socket), &socket.with_extension("watch.log"))
+    };
+    println!("watcher   {line}");
     Ok(())
+}
+
+/// The `watcher` line of `skiff status`, for the Skiff agent's session.
+/// `lock_held` is asked only when no watcher registered: then a held lock
+/// means a watcher that does not register (an older `skiff watch`) runs.
+fn watcher_line(agent: Option<&SessionInfo>, lock_held: impl FnOnce() -> bool, log: &Path) -> String {
+    let Some(s) = agent else { return "no Skiff agent session".into() };
+    let who = format!("{} ({})", resolve::display_name(s), print::short_id(&s.id));
+    let Some(w) = &s.watch else {
+        return if lock_held() {
+            format!("none for {who}. The watch lock is held: an older skiff watch runs. See {}", log.display())
+        } else {
+            format!("none for {who}")
+        };
+    };
+    let pids = w.pids.iter().map(u32::to_string).collect::<Vec<_>>().join(" ");
+    let mut line = match w.pids.len() {
+        0 | 1 => format!("runs for {who} since {}, pid {}", clock(w.since), if pids.is_empty() { "?" } else { &pids }),
+        n => format!("{n} run for {who}, pids {pids}"),
+    };
+    if let Some(f) = &w.failure {
+        line.push_str(&format!("  last failure {} {}: {}", clock(f.at), f.kind, f.message));
+    }
+    line
+}
+
+/// Another process holds the watch lock beside the socket.
+fn watch_lock_held(socket: &Path) -> bool {
+    std::fs::File::open(socket.with_extension("watch.lock"))
+        .is_ok_and(|f| matches!(f.try_lock(), Err(std::fs::TryLockError::WouldBlock)))
+}
+
+/// Unix ms as local `HH:MM`.
+fn clock(ms: u64) -> String {
+    let t = (ms / 1000) as libc::time_t;
+    // SAFETY: localtime_r writes only into `tm`.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    if unsafe { libc::localtime_r(&t, &mut tm) }.is_null() {
+        return "?".into();
+    }
+    format!("{:02}:{:02}", tm.tm_hour, tm.tm_min)
 }
 
 /// Why the `skiff` a shell runs is not `exe`: another one comes first on
@@ -92,7 +142,32 @@ pub fn projects(json: bool) -> Result<()> {
 mod tests {
     use std::{os::unix::fs::PermissionsExt, path::PathBuf};
 
-    use super::path_warning;
+    use super::{path_warning, watcher_line};
+    use skiff_core::session::{SessionInfo, WatchFailure, WatchInfo};
+
+    #[test]
+    fn the_watcher_line_names_each_case() {
+        let log = std::path::Path::new("/s.watch.log");
+        assert_eq!(watcher_line(None, || false, log), "no Skiff agent session");
+        let mut s: SessionInfo = serde_json::from_value(serde_json::json!({
+            "id": "3a136a60ffff", "label": "claude", "name": "Skipper", "role": "agent", "cwd": "/", "command": "claude",
+            "args": [], "state": "idle", "cols": 80, "rows": 24, "pid": null, "exit_code": null,
+        }))
+        .unwrap();
+        assert_eq!(watcher_line(Some(&s), || false, log), "none for Skipper (3a136a60)");
+        assert!(watcher_line(Some(&s), || true, log).ends_with("an older skiff watch runs. See /s.watch.log"));
+        s.watch = Some(WatchInfo { since: 0, pids: vec![41234], failure: None });
+        assert!(watcher_line(Some(&s), || unreachable!(), log).starts_with("runs for Skipper (3a136a60) since "));
+        assert!(watcher_line(Some(&s), || false, log).ends_with(", pid 41234"));
+        s.watch = Some(WatchInfo {
+            since: 0,
+            pids: vec![41234, 41300],
+            failure: Some(WatchFailure { kind: "ledger".into(), message: "busy".into(), at: 0 }),
+        });
+        let line = watcher_line(Some(&s), || false, log);
+        assert!(line.starts_with("2 run for Skipper (3a136a60), pids 41234 41300  last failure "), "{line}");
+        assert!(line.ends_with(" ledger: busy"));
+    }
 
     fn bin(dir: &PathBuf) -> PathBuf {
         std::fs::create_dir_all(dir).unwrap();

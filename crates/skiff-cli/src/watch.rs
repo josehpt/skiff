@@ -36,8 +36,8 @@ use alacritty_terminal::{
 use anyhow::{bail, Context, Result};
 use skiff_client::Client;
 use skiff_core::{
-    protocol::Event,
-    session::{SessionInfo, SessionState},
+    protocol::{Event, Request, Response},
+    session::{now_ms, SessionInfo, SessionState, WatchFailure},
 };
 use tokio::{
     sync::broadcast::error::{RecvError, TryRecvError},
@@ -52,6 +52,8 @@ const TICK: Duration = Duration::from_secs(2);
 const RECONNECT_LIMIT: Duration = Duration::from_secs(600);
 /// How long a new watcher waits for the lock, so an old one can finish.
 const LOCK_WAIT: Duration = Duration::from_secs(10);
+/// Failed ledger reads in a row before the watcher reports a failure.
+const LEDGER_FAILS: u32 = 3;
 
 pub struct Options {
     /// The Skiff agent's session.
@@ -213,6 +215,14 @@ struct Watcher {
     prompted: HashSet<String>,
     /// Sessions that worked or showed a prompt since the last step.
     busy: HashSet<String>,
+    /// The failure to show in the app, sent with `Watching`.
+    failure: Option<WatchFailure>,
+    /// Failed ledger reads in a row.
+    bad_reads: u32,
+    /// What this connection registered last. `None`: nothing yet.
+    sent: Option<Option<WatchFailure>>,
+    /// skiffd refused `Watching` on this connection: it is older than 27.
+    unregistered: bool,
 }
 
 /// What came of a line typed into the agent's pane.
@@ -408,6 +418,62 @@ impl Watcher {
         self.held.clear();
         msg
     }
+
+    /// The failure after a delivery: an undelivered line sets one, a line
+    /// taken clears it, and a refused line changes nothing.
+    fn after_delivery(&mut self, d: Delivery, msg: &str) {
+        match d {
+            Delivery::NoTurn => self.failure = Some(WatchFailure { kind: "undelivered".into(), message: msg.into(), at: now_ms() }),
+            Delivery::Taken if self.failure.as_ref().is_some_and(|f| f.kind == "undelivered") => self.failure = None,
+            Delivery::Taken | Delivery::Refused => {}
+        }
+    }
+
+    /// The failure after a ledger read: [`LEDGER_FAILS`] bad reads in a row
+    /// set one, a good read clears it.
+    fn after_ledger(&mut self, read: Result<(), &str>) {
+        match read {
+            Ok(()) => {
+                self.bad_reads = 0;
+                if self.failure.as_ref().is_some_and(|f| f.kind == "ledger") {
+                    self.failure = None;
+                }
+            }
+            Err(e) => {
+                self.bad_reads += 1;
+                if self.bad_reads >= LEDGER_FAILS && self.failure.as_ref().is_none_or(|f| f.kind == "ledger") {
+                    self.failure = Some(WatchFailure { kind: "ledger".into(), message: e.into(), at: now_ms() });
+                }
+            }
+        }
+    }
+
+    /// Tells skiffd this connection watches `skipper`, with the failure, when
+    /// that changed since the last report on this connection.
+    async fn register(&mut self, c: &Client, skipper: &str) -> Result<()> {
+        if self.unregistered || self.sent.as_ref() == Some(&self.failure) {
+            return Ok(());
+        }
+        let req = Request::Watching { session: skipper.to_string(), failure: self.failure.clone() };
+        match c.request(req).await? {
+            Response::Ok => self.sent = Some(self.failure.clone()),
+            Response::Error { message } if message.starts_with("bad request") => {
+                log("skiffd is too old to show this watcher in the app");
+                self.unregistered = true;
+            }
+            Response::Error { message } => log(format!("cannot register with skiffd: {message}")),
+            other => log(format!("cannot register with skiffd: unexpected reply {other:?}")),
+        }
+        Ok(())
+    }
+}
+
+/// The refusal for a session that is not the Skiff agent's, if it is not.
+/// A daemon older than 27 may not mark the coordinator: `coordinator_known`
+/// is false then, and any session passes.
+fn not_the_agent(all: &[SessionInfo], skipper: &str, coordinator_known: bool) -> Option<String> {
+    let s = resolve::session(all, skipper).ok()?;
+    (coordinator_known && !s.coordinator).then(|| format!("skiff watch: {skipper} is not the Skiff agent's session"))
 }
 
 fn log(msg: impl std::fmt::Display) {
@@ -415,8 +481,18 @@ fn log(msg: impl std::fmt::Display) {
 }
 
 /// Runs until the agent's session ends. Exit codes: 0 when it ends or another
-/// watcher runs; 1 when skiffd does not come back.
+/// watcher runs; 1 when skiffd does not come back; 2 when the session is not
+/// the Skiff agent's.
 pub async fn watch(socket: &Path, o: Options) -> Result<i32> {
+    // Checked before the lock, so a stray watcher never holds the lock that
+    // the agent's watcher needs.
+    if let Ok(c) = Client::connect(socket).await {
+        let known = matches!(c.request(Request::Ping).await, Ok(Response::Pong { protocol, .. }) if protocol >= 27);
+        if let Some(refusal) = not_the_agent(&sessions::sorted(&c).await?, &o.skipper, known) {
+            eprintln!("{refusal}");
+            return Ok(2);
+        }
+    }
     let Some(_lock) = lock(socket).await? else {
         log("another watcher runs for this daemon");
         return Ok(0);
@@ -427,6 +503,9 @@ pub async fn watch(socket: &Path, o: Options) -> Result<i32> {
     loop {
         if let Ok(c) = Client::connect(socket).await {
             lost = None;
+            // A new connection has no registration yet.
+            w.sent = None;
+            w.unregistered = false;
             match follow(&c, &o, &mut w).await {
                 Ok(code) => return Ok(code),
                 Err(e) => log(format!("lost skiffd: {e:#}")),
@@ -507,15 +586,20 @@ async fn step(c: &Client, o: &Options, w: &mut Watcher) -> Result<Option<i32>> {
         return Ok(Some(0));
     };
     w.skipper = Some(skipper.id.clone());
+    w.register(c, &skipper.id).await?;
     // A read that fails (the file busy past its timeout) skips this step: the
     // next tick reads again. An empty list would forget the open panes.
     let tasks = match ledger::open_tasks() {
         Ok(t) => t,
         Err(e) => {
             log(format!("cannot read the ledger: {e:#}"));
+            w.after_ledger(Err(&format!("{e:#}")));
+            w.register(c, &skipper.id).await?;
             return Ok(None);
         }
     };
+    w.after_ledger(Ok(()));
+    w.register(c, &skipper.id).await?;
 
     let (groups, interrupted) = group(&tasks, &all, &skipper.id);
     for wake in w.take(&groups, &interrupted) {
@@ -550,7 +634,10 @@ async fn step(c: &Client, o: &Options, w: &mut Watcher) -> Result<Option<i32>> {
         } else {
             Delivery::NoTurn
         };
-        log(w.delivered(d, &line));
+        let msg = w.delivered(d, &line);
+        log(&msg);
+        w.after_delivery(d, &msg);
+        w.register(c, &skipper.id).await?;
     }
     Ok(None)
 }
@@ -726,6 +813,43 @@ mod tests {
             "state": state, "cols": 80, "rows": 24, "pid": null, "exit_code": null, "unread": unread,
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn deliveries_and_ledger_reads_set_and_clear_the_failure() {
+        let mut w = Watcher::default();
+        w.after_delivery(Delivery::Refused, "held");
+        assert!(w.failure.is_none());
+        w.after_delivery(Delivery::NoTurn, "undelivered: x");
+        assert_eq!(w.failure.as_ref().map(|f| (f.kind.as_str(), f.message.as_str())), Some(("undelivered", "undelivered: x")));
+        w.after_delivery(Delivery::Refused, "held");
+        assert_eq!(w.failure.as_ref().map(|f| f.kind.as_str()), Some("undelivered"));
+        w.after_delivery(Delivery::Taken, "woke");
+        assert!(w.failure.is_none());
+
+        w.after_ledger(Err("busy"));
+        w.after_ledger(Err("busy"));
+        assert!(w.failure.is_none());
+        w.after_ledger(Err("busy"));
+        assert_eq!(w.failure.as_ref().map(|f| (f.kind.as_str(), f.message.as_str())), Some(("ledger", "busy")));
+        w.after_ledger(Ok(()));
+        assert!(w.failure.is_none());
+        // A good read starts the count again.
+        w.after_ledger(Err("busy"));
+        w.after_ledger(Err("busy"));
+        assert!(w.failure.is_none());
+    }
+
+    #[test]
+    fn only_the_agents_session_is_watched() {
+        let mut agent = info("abc12345", "idle", false);
+        agent.coordinator = true;
+        let all = [agent, info("def67890", "idle", false)];
+        assert_eq!(not_the_agent(&all, "abc12345", true), None);
+        assert_eq!(not_the_agent(&all, "def67890", true).as_deref(), Some("skiff watch: def67890 is not the Skiff agent's session"));
+        // An older daemon cannot tell, and an unknown session ends the watch as before.
+        assert_eq!(not_the_agent(&all, "def67890", false), None);
+        assert_eq!(not_the_agent(&all, "zzz", true), None);
     }
 
     #[test]

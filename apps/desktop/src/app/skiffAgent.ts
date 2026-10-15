@@ -1,12 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { showError } from "../ui/alerts";
-import type { AgentInfo, SessionInfo } from "../platform/types";
+import type { AgentInfo, DaemonStatus, SessionInfo } from "../platform/types";
 import { setSkiffAgentName } from "./keys";
 import { render } from "./renderRequest";
 import { S, sessions, upsert } from "./state";
 import { agentKind } from "../appearance/agentIcon";
 import { keepRow } from "../workspace/selection";
 import { revealSession } from "../workspace/view";
+import { openPath } from "../terminal/peek";
 
 /** The name until Settings has one. skiffd's setup keeps the same default. */
 export const DEFAULT_NAME = "Skipper";
@@ -69,6 +70,8 @@ interface Opened {
   session: SessionInfo;
   created: boolean;
   typed: boolean;
+  /** Why its watcher did not start. */
+  watch_error: string | null;
 }
 
 /**
@@ -85,6 +88,7 @@ export function openSkiffAgent() {
   invoke<Opened | null>("open_skiff_agent", { restore: null })
     .then((o) => {
       if (!o) return;
+      noteAsk(o.session.id, o.watch_error);
       upsert(o.session);
       if (o.session.id !== s?.id) show(o.session.id);
     })
@@ -99,16 +103,112 @@ function show(id: string) {
 /** When the app last asked for a watcher, so a render does not ask each time. */
 let watchAsked = { id: "", at: 0 };
 
+/** Why the last start of the watcher failed. `null`: it did not fail. */
+let startError: string | null = null;
+
+/** The daemon's protocol, and when the app last connected to it. */
+let daemon = { protocol: null as number | null, at: 0 };
+
+/** A watcher has this long to register after a start or a connect. */
+const WATCH_GRACE = 5_000;
+
+/** Re-renders once the grace ends, so a watcher that did not register shows. */
+let graceTimer = 0;
+function graceRender() {
+  clearTimeout(graceTimer);
+  graceTimer = window.setTimeout(render, WATCH_GRACE + 100);
+}
+
+/** setDaemon calls it on each status: the protocol, and a new grace after a connect. */
+export function noteDaemon(status: DaemonStatus) {
+  daemon.protocol = status.protocol ?? null;
+  if (status.connected) daemon.at = Date.now();
+  graceRender();
+}
+
+function noteAsk(id: string, error: string | null) {
+  watchAsked = { id, at: Date.now() };
+  startError = error;
+  graceRender();
+}
+
 /**
  * Starts `skiff watch` for the Skiff agent's session: on start, and again after
  * an app restart or a daemon restart. The backend starts none while one runs,
- * so this asks again now and then.
+ * so this asks again now and then. `now` skips the 30 s wait and shows a failure.
  */
-function watch(id: string) {
+function watch(id: string, now = false) {
+  if (!now && watchAsked.id === id && Date.now() - watchAsked.at < 30_000) return;
+  noteAsk(id, startError);
+  invoke<boolean>("start_skiff_watch", { session: id })
+    .then(() => {
+      if (startError === null) return;
+      startError = null;
+      render();
+    })
+    .catch((e) => {
+      startError = String(e);
+      render();
+      if (now) showError(e);
+      else console.error(e);
+    });
+}
+
+/** The row menu's Start watcher. */
+export function startSkiffWatch() {
+  const s = skiffAgentSession();
+  if (s) watch(s.id, true);
+}
+
+/** The row menu's Open watch log, as Settings › Open with says. */
+export function openWatchLog() {
+  invoke<string>("skiff_watch_log").then(openPath).catch(showError);
+}
+
+/**
+ * Whether `skiff watch` runs for the Skiff agent's session:
+ * - runs: a watcher registered and reports no failure.
+ * - failed: a registered watcher reports a failure.
+ * - missing: none registered, past the grace.
+ * - starting: none registered, within the grace after a connect or a start.
+ * - unknown: skiffd is older than protocol 27, or the session is not live.
+ */
+export type WatchState = "runs" | "failed" | "missing" | "starting" | "unknown";
+
+export function watchMark(s: SessionInfo | null, protocol: number | null, lastAsk: number, now: number): WatchState {
+  if (!s || s.state === "done" || protocol === null || protocol < 27) return "unknown";
+  if (s.watch) return s.watch.failure ? "failed" : "runs";
+  return now - lastAsk < WATCH_GRACE ? "starting" : "missing";
+}
+
+/** Local `HH:MM`. */
+const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+
+/** The tooltip text for a state. Empty for starting and unknown. */
+export function watchText(state: WatchState, s: SessionInfo, name: string, error: string | null): string {
+  const f = s.watch?.failure;
+  switch (state) {
+    case "runs":
+      return `skiff watch runs for ${name} since ${clock(s.watch!.since)}.`;
+    case "missing":
+      return `No watcher runs for ${name}. ${name} does not hear when its panes finish. Skiff tries to start it every 30 seconds.` +
+        (error ? ` Last start failed: ${error}.` : "");
+    case "failed":
+      return f?.kind === "ledger"
+        ? `The watcher cannot read the ledger: ${f.message}.`
+        : `At ${clock(f?.at ?? 0)} a watcher line did not start a turn. It can be in ${name}'s input box.`;
+    default:
+      return "";
+  }
+}
+
+/** The Skiff agent's watcher state now, and its tooltip text. */
+export function skiffWatch(s: SessionInfo): { state: WatchState; text: string } {
   const now = Date.now();
-  if (watchAsked.id === id && now - watchAsked.at < 30_000) return;
-  watchAsked = { id, at: now };
-  invoke<boolean>("start_skiff_watch", { session: id }).catch(console.error);
+  // A session not asked for yet is asked on this render.
+  const asked = watchAsked.id === s.id ? watchAsked.at : now;
+  const state = watchMark(s, daemon.protocol, Math.max(daemon.at, asked), now);
+  return { state, text: watchText(state, s, skiffAgentName(), startError) };
 }
 
 /** Restored panes Skiff already asked skiffd to continue. Once each. */

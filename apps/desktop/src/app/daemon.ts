@@ -22,7 +22,7 @@ import { hasKeys, markSeen, quietSeen } from "./seen";
 import { peekExited, peekUpdated, previewToken, strayPeek } from "../terminal/peek";
 import { activeGroupObj, awayPlaces, currentWorktree, place, shownIds } from "./stateQueries";
 import { agentKind } from "../appearance/agentIcon";
-import { loadSkiffAgent } from "./skiffAgent";
+import { loadSkiffAgent, noteDaemon } from "./skiffAgent";
 import { taskTitle } from "../workspace/model";
 import { panes } from "../terminal/terminalState";
 import { ptySized } from "../terminal/terminal";
@@ -43,6 +43,7 @@ export function setDaemon(status: DaemonStatus) {
   if (status.pid) socket.replaceChildren(`${status.socket} · pid ${status.pid}`, pidCopy(status.pid));
   else socket.textContent = status.socket;
   daemonBadge(status.warning);
+  noteDaemon(status);
 }
 
 /** Counts event subscriptions. An event from an older one is dropped. */

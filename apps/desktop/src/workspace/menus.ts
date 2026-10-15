@@ -1,6 +1,6 @@
 import { ctxMenu } from "../ui/contextMenu";
 /** Right-click menus for projects, sessions, panes and groups. */
-import { isSkiffAgent, skiffAgentFolder, skiffAgentName } from "../app/skiffAgent";
+import { isSkiffAgent, openWatchLog, skiffAgentFolder, skiffAgentName, skiffWatch, startSkiffWatch } from "../app/skiffAgent";
 import { launchIcon } from "../appearance/agentIcon";
 import { confirmAction, promptAction } from "../ui/confirm";
 import { pickColor } from "../appearance/colorPicker";
@@ -424,6 +424,10 @@ export function skiffAgentMenu(s: SessionInfo | null, x: number, y: number) {
     ? [{ icon: "indicators-square-arrow-out-up-right", label: "Show in file manager", run: () => void openPath(folder).catch(showError) }]
     : [];
   if (s) {
+    // Only while the row's icon is red: no watcher runs, or its last line failed.
+    const watch = skiffWatch(s).state;
+    if (watch === "missing") entries.push({ icon: "schedule-refresh-cw", label: "Start watcher", run: startSkiffWatch });
+    if (watch === "missing" || watch === "failed") entries.push({ icon: "indicators-square-arrow-out-up-right", label: "Open watch log", run: openWatchLog });
     entries.push(
       { icon: "view-focus", label: S.focusMode ? "Leave focus mode" : "Focus mode", hint: keyLabel("focus-mode"), run: toggleFocusMode },
       themeEntry(s),

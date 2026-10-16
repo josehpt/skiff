@@ -102,8 +102,6 @@ pub struct SkiffAgent {
     /// `ready` (a Skiff folder), `new` (setup makes it at On), `other` (it
     /// holds other files) or `refused`.
     folder_status: &'static str,
-    /// The ledger and results, for a ready folder.
-    folder_counts: Option<agent_folder::Counts>,
     continue_on_restore: bool,
     /// `[skiff_agent.tasks]` in file order, with the command each row starts.
     tasks: Vec<TaskType>,
@@ -116,11 +114,11 @@ fn read() -> anyhow::Result<SkiffAgent> {
         Err(e) => (None, Some(format!("{e:#}"))),
     };
     let configured = skipper::configured(&cfg)?;
-    let (folder_status, folder_counts) = match (&folder, agent_folder::kind(&configured)) {
-        (None, _) => ("refused", None),
-        (_, Ok(Kind::Skiff)) => ("ready", Some(agent_folder::counts(&configured, &skipper::name(&cfg)))),
-        (_, Ok(Kind::New | Kind::Empty)) => ("new", None),
-        _ => ("other", None),
+    let folder_status = match (&folder, agent_folder::kind(&configured)) {
+        (None, _) => "refused",
+        (_, Ok(Kind::Skiff)) => "ready",
+        (_, Ok(Kind::New | Kind::Empty)) => "new",
+        _ => "other",
     };
     let configured = configured.display().to_string();
     let a = cfg.skiff_agent;
@@ -134,7 +132,6 @@ fn read() -> anyhow::Result<SkiffAgent> {
         folder_error,
         configured,
         folder_status,
-        folder_counts,
         continue_on_restore: a.continue_on_restore,
         tasks,
     })

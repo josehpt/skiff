@@ -5,8 +5,9 @@ import { DEFAULT_NAME, skiffAgentChoice } from "../app/skiffAgent";
 import { continueLine } from "../terminal/resume";
 import { rowTable, type RowTableState } from "./rowTable";
 import { BAD_TASK_TYPE_NAME, modelError, modelFlag, taskCommand, TASK_TYPE_NAME } from "./taskTypes";
-import { countsLine } from "./skiffFolderDialog";
 import { reveal } from "../platform/fileActions";
+import { copyText } from "../platform/clipboard";
+import { showError } from "../ui/alerts";
 
 /** A task type row as `set_skiff_agent` takes it. Null model: the agent's default. */
 export interface TaskEdit {
@@ -77,12 +78,28 @@ export function skiffAgentSection(
   return [onRow, ...folderRows(set, changeFolder), name, agentRow, cont];
 }
 
-/** The Folder row and its status line: the path to copy, Show in file manager and Change…. */
+/**
+ * The Folder row: the path, Copy path, Show in file manager and Change…. A
+ * line under it says why only when the folder is not usable; the counts and
+ * safety checks show in the Change… preview. The path is a read-only text field, so it selects,
+ * copies and selects all as any field does, with the keys and the field's
+ * own right-click menu. Cut and paste do nothing in it: only Change… sets the
+ * folder, after its preview.
+ */
 function folderRows(set: SkiffAgentSettings, change: () => void): HTMLElement[] {
   const row = h("div", "set-row set-open set-agent set-folder on");
-  const path = h("span", "c-cmd mono set-path", set.configured);
+  const path = h("input", "c-cmd mono set-path");
+  path.type = "text";
+  path.readOnly = true;
+  path.spellcheck = false;
+  path.value = set.configured;
   path.title = set.configured;
+  path.setAttribute("aria-label", "Skiff agent folder");
   const acts = h("span", "c-mode set-folder-acts");
+  const copy = h("button", "set-rm", "Copy path");
+  copy.type = "button";
+  copy.addEventListener("click", () => void copyText(set.configured).catch(showError));
+  acts.append(copy);
   if (set.folder_status === "ready") {
     const show = h("button", "set-rm", "Show in file manager");
     show.type = "button";
@@ -94,15 +111,17 @@ function folderRows(set: SkiffAgentSettings, change: () => void): HTMLElement[] 
   edit.addEventListener("click", change);
   acts.append(edit);
   row.append(h("span", "c-name", "Folder"), path, acts);
-
-  const words: Record<SkiffAgentSettings["folder_status"], string> = {
-    ready: `Ready · ${set.folder_counts ? countsLine(set.folder_counts) : ""}`,
-    new: "New: Skiff makes it at On.",
-    other: "Not usable: it holds other files. Choose another folder.",
-    refused: set.folder_error ?? "Refused.",
-  };
-  const meta = h("div", `set-folder-meta ${set.folder_status}`);
-  meta.append(h("span", "sq"), h("span", "", words[set.folder_status]));
+  const why =
+    set.folder_status === "other"
+      ? "Not usable: it holds other files. Choose another folder."
+      : set.folder_status === "refused"
+        ? (set.folder_error ?? "Refused.")
+        : null;
+  if (!why) return [row];
+  const meta = h("div", "set-folder-meta", why);
+  meta.id = "set-folder-why";
+  path.setAttribute("aria-invalid", "true");
+  path.setAttribute("aria-describedby", meta.id);
   return [row, meta];
 }
 

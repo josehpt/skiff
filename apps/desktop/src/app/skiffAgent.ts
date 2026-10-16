@@ -8,7 +8,6 @@ import { agentKind } from "../appearance/agentIcon";
 import { keepRow } from "../workspace/selection";
 import { revealSession } from "../workspace/view";
 import { openPath } from "../terminal/peek";
-import type { FolderCounts } from "../appearance/skiffFolderDialog";
 
 /** The name until Settings has one. skiffd's setup keeps the same default. */
 export const DEFAULT_NAME = "Skipper";
@@ -30,8 +29,6 @@ export interface SkiffAgentSettings {
   configured: string;
   /** ready: a Skiff folder. new: setup makes it at On. other: it holds other files. */
   folder_status: "ready" | "new" | "other" | "refused";
-  /** The ledger and results of a ready folder. */
-  folder_counts: FolderCounts | null;
   continue_on_restore: boolean;
   /** `[skiff_agent.tasks]` in file order. */
   tasks: TaskType[];

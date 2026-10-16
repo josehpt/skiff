@@ -130,8 +130,10 @@ fn every_rule_refuses_with_its_reason() {
     let cfg = config::parse(&format!("[[project]]\nname = \"app\"\npath = \"{}\"\n", project.display())).unwrap();
     skipper::setup(&home.join("skiff-agent"), "Skipper").unwrap();
 
-    // Each choice is equal: the default, a dot-folder, Documents, another volume's path.
+    // Each choice is equal: the visible and hidden suggestions, any other dot-folder,
+    // Documents, another volume's path.
     assert_eq!(kind(&home, &cfg, "~/skiff-agent").0, Kind::Current);
+    assert_eq!(kind(&home, &cfg, "~/.skiff-agent"), (Kind::New, None));
     assert_eq!(kind(&home, &cfg, "~/.skiff"), (Kind::New, None));
     assert_eq!(kind(&home, &cfg, "~/Documents/Skipper"), (Kind::New, None));
     assert_eq!(kind(&home, &cfg, "~/empty"), (Kind::Empty, None));
@@ -174,8 +176,13 @@ fn every_rule_refuses_with_its_reason() {
         let cfg = config::parse(&format!("[skiff_agent]\nfolder = \"{bad}\"\n")).unwrap();
         assert!(skipper::folder(&cfg).is_err(), "{bad}");
     }
-    let cfg = config::parse("[skiff_agent]\nfolder = \"~/.skiff\"\n").unwrap();
-    assert_eq!(skipper::folder(&cfg).unwrap(), home.join(".skiff"));
+    for dot in [".skiff-agent", ".skiff"] {
+        let cfg = config::parse(&format!("[skiff_agent]\nfolder = \"~/{dot}\"\n")).unwrap();
+        assert_eq!(skipper::folder(&cfg).unwrap(), home.join(dot));
+    }
+    // A Skiff folder at the old suggestion, ~/.skiff, is still switched to as it is.
+    skipper::setup(&home.join(".skiff"), "Skipper").unwrap();
+    assert_eq!(kind(&home, &cfg, "~/.skiff"), (Kind::Skiff, None));
     done(&home);
 }
 
@@ -212,7 +219,7 @@ fn a_copy_keeps_every_row_and_moves_the_result_paths() {
     let home = world("copy");
     let old = current(&home);
     let before = snapshot(&old);
-    let to = agent_folder::resolve("~/.skiff", &home, &home).unwrap();
+    let to = agent_folder::resolve("~/.skiff-agent", &home, &home).unwrap();
 
     let p = agent_folder::preview(&cfg(), &to, &panes()).unwrap();
     assert_eq!(p.kind, Kind::New);
@@ -323,7 +330,7 @@ fn start_empty_sets_up_a_new_ledger() {
     let _t = TURN.lock().unwrap_or_else(|e| e.into_inner());
     let home = world("empty");
     // First run: nothing at ~/skiff-agent, so there is nothing to copy.
-    let to = agent_folder::resolve("~/.skiff", &home, &home).unwrap();
+    let to = agent_folder::resolve("~/.skiff-agent", &home, &home).unwrap();
     let p = agent_folder::preview(&cfg(), &to, &Panes::new()).unwrap();
     assert!(!p.can_copy && p.from_counts.is_none());
     assert!(agent_folder::change(&cfg(), &to, Mode::Copy, &Panes::new(), false).is_err());

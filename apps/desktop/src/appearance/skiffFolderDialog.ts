@@ -167,8 +167,8 @@ export function changeSkiffFolder(o: { current: string; changed: () => void }) {
     if (typeof dir === "string") await show(dir);
   });
   choices.append(
-    pick("~/skiff-agent", "~/skiff-agent", "The default."),
-    pick("~/.skiff", "~/.skiff", "A hidden folder in your home folder."),
+    pick("~/skiff-agent", "~/skiff-agent", "Visible agent workspace in your home folder."),
+    pick("~/.skiff-agent", "~/.skiff-agent", "Hidden agent workspace in your home folder."),
     chooser,
   );
   typed.addEventListener("keydown", (e) => {

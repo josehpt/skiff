@@ -187,7 +187,7 @@ const HERMES_FILES: [&str; 5] = ["config.yaml", "SOUL.md", "state.db", "auth.jso
 
 /// Why `d` (absolute, links resolved) cannot be the agent's folder, in one
 /// line, or `None`. Settings, `skiff skipper --move-to` and the override in
-/// projects.toml share these rules. A dot-folder such as `~/.skiff` is a
+/// projects.toml share these rules. A dot-folder such as `~/.skiff-agent` is a
 /// folder like any other: the agent homes match by exact path.
 pub(crate) fn refusal(d: &Path, home: &Path, cfg: &Config) -> Option<String> {
     let home = real(home);
@@ -560,6 +560,8 @@ mod tests {
             assert!(check(&bad, &home, &cfg).is_err(), "{}", bad.display());
         }
         assert!(check(&home.join("skiff-agent"), &home, &cfg).is_ok());
+        assert!(check(&home.join(".skiff-agent"), &home, &cfg).is_ok());
+        // Any other dot-folder is still a folder like any other.
         assert!(check(&home.join(".skiff"), &home, &cfg).is_ok());
         std::fs::remove_dir_all(&home).unwrap();
     }

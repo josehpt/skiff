@@ -5,6 +5,8 @@ import { DEFAULT_NAME, skiffAgentChoice } from "../app/skiffAgent";
 import { continueLine } from "../terminal/resume";
 import { rowTable, type RowTableState } from "./rowTable";
 import { BAD_TASK_TYPE_NAME, modelError, modelFlag, taskCommand, TASK_TYPE_NAME } from "./taskTypes";
+import { countsLine } from "./skiffFolderDialog";
+import { reveal } from "../platform/fileActions";
 
 /** A task type row as `set_skiff_agent` takes it. Null model: the agent's default. */
 export interface TaskEdit {
@@ -22,11 +24,17 @@ export type SkiffAgentEdit =
   | { key: "remove_task"; value: string };
 
 /**
- * Settings › Skiff agent: on or off, its name, the agent it starts, and
- * whether a restored pane continues the last conversation. The folder is
- * fixed: `~/skiff-agent`, or an override in projects.toml.
+ * Settings › Skiff agent: on or off, its folder, its name, the agent it
+ * starts, and whether a restored pane continues the last conversation.
+ * `changeFolder` opens the Change… dialog: a change copies, checks and
+ * switches, so the ledger and results go with the folder.
  */
-export function skiffAgentSection(set: SkiffAgentSettings, agents: AgentInfo[], save: (e: SkiffAgentEdit) => void): HTMLElement[] {
+export function skiffAgentSection(
+  set: SkiffAgentSettings,
+  agents: AgentInfo[],
+  save: (e: SkiffAgentEdit) => void,
+  changeFolder: () => void,
+): HTMLElement[] {
   // Enabled agents and the user's own. A custom agent is on when the user added it.
   const choices = agents.filter((a) => a.enabled || a.custom);
   const chosen = skiffAgentChoice(agents, set.agent);
@@ -46,9 +54,9 @@ export function skiffAgentSection(set: SkiffAgentSettings, agents: AgentInfo[], 
   pick.disabled = !choices.length;
   pick.addEventListener("change", () => save({ key: "agent", value: pick.value }));
   agentRow.append(h("span", "c-name", "Agent"), pick, h("span", "c-mode", "At next start"));
-  // On sets up the fixed folder and shows the row. A refused override stays off, with the reason.
+  // On sets up the folder and shows the row. A refused override stays off: the Folder row says why.
   const onRow = switchRow("On", set.enabled && !!set.folder, !!set.folder, (on) => save({ key: "enabled", value: on }));
-  onRow.insertBefore(set.folder ? h("span", "c-cmd mono", set.folder) : h("span", "c-cmd", set.folder_error ?? ""), onRow.lastChild);
+  onRow.insertBefore(h("span", "c-cmd", set.folder ? "" : "Change the folder to turn it on."), onRow.lastChild);
 
   // A custom agent has no continue line: the switch shows off, with the reason.
   const line = chosen ? continueLine(chosen.id, chosen.command) : null;
@@ -66,7 +74,36 @@ export function skiffAgentSection(set: SkiffAgentSettings, agents: AgentInfo[], 
     ? h("span", "c-cmd mono", line)
     : h("span", "c-cmd", chosen ? `${chosen.id} has no continue command. The pane restores as a shell.` : "No agent is on.");
   cont.append(h("span", "c-name", "Continue on restore"), what, sw);
-  return [onRow, name, agentRow, cont];
+  return [onRow, ...folderRows(set, changeFolder), name, agentRow, cont];
+}
+
+/** The Folder row and its status line: the path to copy, Show in file manager and Change…. */
+function folderRows(set: SkiffAgentSettings, change: () => void): HTMLElement[] {
+  const row = h("div", "set-row set-open set-agent set-folder on");
+  const path = h("span", "c-cmd mono set-path", set.configured);
+  path.title = set.configured;
+  const acts = h("span", "c-mode set-folder-acts");
+  if (set.folder_status === "ready") {
+    const show = h("button", "set-rm", "Show in file manager");
+    show.type = "button";
+    show.addEventListener("click", () => reveal(set.configured));
+    acts.append(show);
+  }
+  const edit = h("button", "set-rm", "Change…");
+  edit.type = "button";
+  edit.addEventListener("click", change);
+  acts.append(edit);
+  row.append(h("span", "c-name", "Folder"), path, acts);
+
+  const words: Record<SkiffAgentSettings["folder_status"], string> = {
+    ready: `Ready · ${set.folder_counts ? countsLine(set.folder_counts) : ""}`,
+    new: "New: Skiff makes it at On.",
+    other: "Not usable: it holds other files. Choose another folder.",
+    refused: set.folder_error ?? "Refused.",
+  };
+  const meta = h("div", `set-folder-meta ${set.folder_status}`);
+  meta.append(h("span", "sq"), h("span", "", words[set.folder_status]));
+  return [row, meta];
 }
 
 /**

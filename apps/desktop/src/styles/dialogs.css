@@ -18,3 +18,17 @@
 .opacity-slider::-webkit-slider-runnable-track { height: calc(3 * var(--u)); background: var(--rule-strong); }
 .opacity-slider::-webkit-slider-thumb { appearance: none; -webkit-appearance: none; width: calc(14 * var(--u)); height: calc(14 * var(--u)); margin-top: calc(-5.5 * var(--u)); border: 2px solid var(--bg-panel); border-radius: 50%; background: var(--state-working); }
 .opacity-value { width: calc(40 * var(--u)); text-align: right; font-family: var(--mono); font-size: calc(12px * var(--zoom, 1)); color: var(--text-2); font-variant-numeric: tabular-nums; }
+/* Change the Skiff agent folder: the choices, the resolved path and what Skiff will do. */
+.folder-panel { width: calc(600 * var(--u)); max-height: calc(100vh - calc(32 * var(--u))); }
+.folder-choices { display: flex; flex-direction: column; flex-shrink: 0; }
+.folder-choice { height: var(--row); display: flex; align-items: center; gap: calc(16 * var(--u)); padding: 0 calc(20 * var(--u)); border: 0; border-bottom: 1px solid var(--rule); border-radius: 0; background: transparent; color: var(--text); text-align: left; font: calc(13px * var(--zoom, 1)) var(--font); }
+.folder-choice:hover { background: var(--bg-raised); }
+.folder-choice-name { width: calc(120 * var(--u)); flex-shrink: 0; }
+.folder-choice-hint { color: var(--text-3); font-size: calc(12px * var(--zoom, 1)); }
+.folder-preview { overflow-y: auto; min-height: 0; }
+.folder-resolved { height: var(--row); display: flex; align-items: center; gap: calc(12 * var(--u)); padding: 0 calc(20 * var(--u)); border-bottom: 1px solid var(--rule); font-size: calc(13px * var(--zoom, 1)); overflow-wrap: anywhere; }
+.folder-kind { flex-shrink: 0; padding: 0 calc(8 * var(--u)); border: 1px solid var(--rule-strong); color: var(--text-2); font-size: calc(11px * var(--zoom, 1)); }
+.folder-kind.bad, .folder-verdict.bad { color: var(--error-text); }
+.folder-verdict { padding: calc(10 * var(--u)) calc(20 * var(--u)); border-bottom: 1px solid var(--rule); font-size: calc(13px * var(--zoom, 1)); font-weight: 600; }
+.folder-wait { padding: calc(10 * var(--u)) calc(20 * var(--u)); border-bottom: 1px solid var(--rule); background: var(--error-bg); color: var(--error-text); font-size: calc(12px * var(--zoom, 1)); white-space: pre-wrap; }
+.folder-panel .confirm-foot button:disabled { cursor: not-allowed; opacity: 0.5; }

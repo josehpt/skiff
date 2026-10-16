@@ -78,6 +78,8 @@ pub fn run() {
             skiff_agent::start_skiff_watch,
             skiff_agent::skiff_watch_log,
             skiff_agent::open_skiff_agent,
+            skiff_agent::preview_skiff_folder,
+            skiff_agent::change_skiff_folder,
             commands::list_sessions,
             commands::create_session,
             commands::pty_write,

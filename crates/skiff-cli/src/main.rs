@@ -120,12 +120,23 @@ enum Cmd {
     /// Attach to the Skiff agent (Skipper). Start it first if it does not
     /// run. Ctrl-\ detaches; the agent keeps running.
     #[command(
-        after_help = "Reads [skiff_agent] in projects.toml: the folder, the name, the agent and whether it is on.\nWith no Skiff agent session, it sets up the folder (missing files come back, existing ones stay), starts the agent, and starts `skiff watch` for it. One watcher runs per daemon.\nA Skiff agent session that is a bare shell (after a restore, or after its agent quit) gets the agent again: its last conversation when Settings continues on restore, else a new one.\nWith no skiffd running, it starts one, as the app does.\nThe app and this command find the same session: skiffd marks it, and two starts at once give one.\nAttach gives the session this terminal's size, in the app too, until you detach. Then the pane gets its own size back."
+        after_help = "Reads [skiff_agent] in projects.toml: the folder, the name, the agent and whether it is on.\nWith no Skiff agent session, it sets up the folder (missing files come back, existing ones stay), starts the agent, and starts `skiff watch` for it. One watcher runs per daemon.\nA Skiff agent session that is a bare shell (after a restore, or after its agent quit) gets the agent again: its last conversation when Settings continues on restore, else a new one.\nWith no skiffd running, it starts one, as the app does.\nThe app and this command find the same session: skiffd marks it, and two starts at once give one.\nAttach gives the session this terminal's size, in the app too, until you detach. Then the pane gets its own size back.\n--move-to resolves a relative PATH against this shell's folder and stores the full path. The old folder keeps every file and gets MOVED.md; Skiff never deletes it. The conversation does not move. Skipper's session ends first, and tasks that still run stop the change unless you confirm."
     )]
     Skipper {
         /// Do not attach. Print the session id.
         #[arg(long)]
         no_attach: bool,
+        /// Change the Skiff agent's folder to PATH, as Settings › Skiff agent ›
+        /// Folder does: copy, check and switch to a new or empty folder, or
+        /// switch to a Skiff folder. It shows the preview and asks first.
+        #[arg(long, value_name = "PATH", conflicts_with = "no_attach")]
+        move_to: Option<std::path::PathBuf>,
+        /// With --move-to: set up a new ledger in place of a copy.
+        #[arg(long, requires = "move_to")]
+        empty: bool,
+        /// With --move-to: show the preview and change nothing.
+        #[arg(long, requires = "move_to")]
+        dry_run: bool,
     },
     /// Print a session's screen as plain text.
     Peek {
@@ -532,7 +543,8 @@ async fn run(cli: Cli) -> Result<i32> {
         Cmd::Daemon(DaemonCmd::Reload { binary }) => return daemon::reload(&socket, binary).await.map(|_| 0),
         Cmd::Daemon(DaemonCmd::Stop) => return daemon::stop(&socket).await.map(|_| 0),
         // Starts skiffd when it does not run.
-        Cmd::Skipper { no_attach } => return skipper::run(&socket, no_attach).await.map(|_| 0),
+        Cmd::Skipper { move_to: Some(to), empty, dry_run, .. } => return skipper::move_to(&socket, &to, empty, dry_run).await.map(|_| 0),
+        Cmd::Skipper { no_attach, .. } => return skipper::run(&socket, no_attach).await.map(|_| 0),
         // It connects again after a daemon reload, so it holds no connection here.
         Cmd::Watch { skipper, no_notify } => {
             return watch::watch(&socket, watch::Options { skipper, notify: !no_notify }).await

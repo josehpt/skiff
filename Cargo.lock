@@ -3528,6 +3528,8 @@ version = "1.6.0"
 dependencies = [
  "anyhow",
  "libc",
+ "rusqlite",
+ "serde",
  "serde_json",
  "skiff-core",
  "tokio",

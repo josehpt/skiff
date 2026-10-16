@@ -241,14 +241,15 @@ pub enum SkiffAgentKey<'a> {
 }
 
 /// Sets one `[skiff_agent]` key, keeping the rest of the file. The folder is
-/// written as `~/x` under the home directory.
+/// written as the absolute path it is given.
 pub fn set_skiff_agent(key: SkiffAgentKey) -> Result<()> {
     let text = |v: Option<&str>| v.map(str::trim).filter(|v| !v.is_empty()).map(str::to_owned);
     edit_table("skiff_agent", |t| {
         let (k, v) = match key {
             SkiffAgentKey::Name(v) => ("name", text(v).map(toml_edit::value)),
             SkiffAgentKey::Agent(v) => ("agent", text(v).map(toml_edit::value)),
-            SkiffAgentKey::Folder(v) => ("folder", v.map(|p| toml_edit::value(super::persistence::home_relative(p)))),
+            // The full path, never `~` or a relative one: the folder is the same wherever Skiff starts.
+            SkiffAgentKey::Folder(v) => ("folder", v.map(|p| toml_edit::value(p.to_string_lossy().into_owned()))),
             SkiffAgentKey::Enabled(on) => ("enabled", on.then(|| toml_edit::value(true))),
             // Off is the default: the key goes.
             SkiffAgentKey::ContinueOnRestore(on) => ("continue_on_restore", on.then(|| toml_edit::value(true))),

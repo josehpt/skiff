@@ -39,6 +39,14 @@ a task's pane ends a turn, exits or restarts. `skiff skipper` attaches to it fro
 terminal, an SSH login included, and starts it first when it does not run. Ctrl-\
 detaches. See the [wiki Skiff agent page](https://github.com/solutionscay/skiff/wiki/Skiff-agent).
 
+Settings › Skiff agent › Folder › Change… moves the folder: `~/skiff-agent`, `~/.skiff`, or
+any folder of its own outside a Git repository, a project, an agent's home or a Hermes
+profile. A new or empty folder gets a copy (checked before the switch) or a new ledger. A
+folder that is already a Skiff folder is switched to as it is; Skiff never merges two
+ledgers. The old folder keeps every file and gets `MOVED.md`. The conversation does not
+move: Skipper starts a new one in the new folder. `skiff skipper --move-to PATH [--dry-run]`
+does the same from a terminal.
+
 Each session row shows what needs you. A bell means an agent asks for approval. A flag means an agent finished its turn, or a shell command ended, while you were in another pane. `skiffd` reads this from the screen and from the program in front of the terminal, not from hooks.
 
 ## Install

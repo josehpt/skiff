@@ -9,6 +9,7 @@ import { type Action, actionFor, isMac } from "../app/keys";
 import { editField, fieldEditKey, textField } from "../ui/fieldClipboard";
 import type { SkiffAgentSettings } from "../app/skiffAgent";
 import { type SkiffAgentEdit, skiffAgentSection, taskTypesSection } from "./skiffAgentSettings";
+import { changeSkiffFolder } from "./skiffFolderDialog";
 import { rowTable, tableState } from "./rowTable";
 
 /**
@@ -362,6 +363,18 @@ export function createSettings(onAgents: (a: AgentInfo[]) => void, onClose: () =
     render();
   }
 
+  /** Settings › Skiff agent › Folder › Change…. The page reads the folder again after a change. */
+  function changeFolder() {
+    if (!agentSet) return;
+    changeSkiffFolder({
+      current: agentSet.configured,
+      changed: async () => {
+        agentSet = await invoke<SkiffAgentSettings>("get_skiff_agent").catch(() => agentSet);
+        render();
+      },
+    });
+  }
+
   /** The one agent session that coordinates the others. */
   function skiffAgent(): HTMLElement {
     const main = h("div", "set-main");
@@ -371,7 +384,7 @@ export function createSettings(onAgents: (a: AgentInfo[]) => void, onClose: () =
       h("div", "set-sub", "One agent for all projects."),
     );
     main.append(intro);
-    if (agentSet) main.append(...skiffAgentSection(agentSet, agents, (e) => void setSkiffAgent(e)));
+    if (agentSet) main.append(...skiffAgentSection(agentSet, agents, (e) => void setSkiffAgent(e), changeFolder));
     if (error) {
       const err = h("div", "set-error", error);
       err.setAttribute("role", "alert");

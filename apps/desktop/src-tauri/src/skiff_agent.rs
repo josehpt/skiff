@@ -6,7 +6,10 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
-use skiff_client::skipper;
+use skiff_client::{
+    agent_folder::{self, Kind, Mode},
+    skipper,
+};
 use skiff_core::{
     config::{self, SkiffAgentKey},
     session::SessionInfo,
@@ -90,10 +93,17 @@ pub struct SkiffAgent {
     name: Option<String>,
     agent: Option<String>,
     enabled: bool,
-    /// The fixed folder, or the override. Absent when the override is refused.
+    /// `~/skiff-agent`, or the override. Absent when the override is refused.
     folder: Option<String>,
     /// Why the override in projects.toml is refused.
     folder_error: Option<String>,
+    /// The folder projects.toml names, refused or not, for the Folder row.
+    configured: String,
+    /// `ready` (a Skiff folder), `new` (setup makes it at On), `other` (it
+    /// holds other files) or `refused`.
+    folder_status: &'static str,
+    /// The ledger and results, for a ready folder.
+    folder_counts: Option<agent_folder::Counts>,
     continue_on_restore: bool,
     /// `[skiff_agent.tasks]` in file order, with the command each row starts.
     tasks: Vec<TaskType>,
@@ -105,10 +115,29 @@ fn read() -> anyhow::Result<SkiffAgent> {
         Ok(f) => (Some(f.display().to_string()), None),
         Err(e) => (None, Some(format!("{e:#}"))),
     };
+    let configured = skipper::configured(&cfg)?;
+    let (folder_status, folder_counts) = match (&folder, agent_folder::kind(&configured)) {
+        (None, _) => ("refused", None),
+        (_, Ok(Kind::Skiff)) => ("ready", Some(agent_folder::counts(&configured, &skipper::name(&cfg)))),
+        (_, Ok(Kind::New | Kind::Empty)) => ("new", None),
+        _ => ("other", None),
+    };
+    let configured = configured.display().to_string();
     let a = cfg.skiff_agent;
     // The command lines come from projects.toml, so the local list builds the same ones skiffd would.
     let tasks = tasks::resolve(&a.tasks, &skiff_core::project::agents());
-    Ok(SkiffAgent { name: a.name, agent: a.agent, enabled: a.enabled, folder, folder_error, continue_on_restore: a.continue_on_restore, tasks })
+    Ok(SkiffAgent {
+        name: a.name,
+        agent: a.agent,
+        enabled: a.enabled,
+        folder,
+        folder_error,
+        configured,
+        folder_status,
+        folder_counts,
+        continue_on_restore: a.continue_on_restore,
+        tasks,
+    })
 }
 
 /// One edit from Settings › Skiff agent. `null` or empty takes the default.
@@ -176,6 +205,64 @@ pub async fn set_skiff_agent(app: AppHandle, edit: Edit) -> Result<SkiffAgent, S
     Ok(out)
 }
 
+/// A preview for the Change… dialog, with Skipper's session when it runs.
+#[derive(Serialize)]
+pub struct FolderPreview {
+    #[serde(flatten)]
+    preview: agent_folder::Preview,
+    /// Skipper's session runs: the change ends it first.
+    skipper_runs: bool,
+}
+
+/// The chosen folder, resolved and read. A relative path resolves against
+/// the home folder. Changes nothing.
+#[tauri::command]
+pub async fn preview_skiff_folder(app: State<'_, App>, path: String) -> Result<FolderPreview, String> {
+    let (panes, skipper) = live(&app).await;
+    blocking(move || {
+        let home = skipper::home()?;
+        let to = agent_folder::resolve(&path, &home, &home)?;
+        let preview = agent_folder::preview(&config::load()?, &to, &panes)?;
+        Ok(FolderPreview { preview, skipper_runs: skipper.is_some() })
+    })
+    .await
+}
+
+/// The live panes and Skipper's session. With no daemon, none run.
+async fn live(app: &App) -> (agent_folder::Panes, Option<SessionInfo>) {
+    match ensure_client(app).await {
+        Ok((c, _)) => agent_folder::sessions(&c).await.unwrap_or_default(),
+        Err(_) => Default::default(),
+    }
+}
+
+/// Copy, check and switch, start empty, or switch to a Skiff folder. `path`
+/// is the preview's resolved folder. Skipper's session ends first when
+/// `end_skipper`, else a running one stops the change. `anyway` lets the
+/// change run while tasks still run.
+#[tauri::command]
+pub async fn change_skiff_folder(
+    app: State<'_, App>,
+    handle: AppHandle,
+    path: PathBuf,
+    mode: Mode,
+    end_skipper: bool,
+    anyway: bool,
+) -> Result<agent_folder::Done, String> {
+    let (mut panes, skipper) = live(&app).await;
+    if let Some(s) = skipper {
+        if !end_skipper {
+            return Err("Skipper runs. It ends before the change.".into());
+        }
+        let (c, _) = ensure_client(&app).await?;
+        c.kill(&s.id).await.map_err(err)?;
+        panes.remove(&s.id);
+    }
+    let done = blocking(move || agent_folder::change(&config::load()?, &path, mode, &panes, anyway)).await?;
+    let _ = handle.emit(PROJECTS_CHANGED, ());
+    Ok(done)
+}
+
 #[cfg(test)]
 mod tests {
     use super::Edit;
@@ -192,5 +279,14 @@ mod tests {
         assert!(matches!(rename, Edit::RenameTask { from, to } if from == "review" && to == "code-review"));
         assert!(matches!(edit(serde_json::json!({ "key": "remove_task", "value": "review" })), Edit::RemoveTask(t) if t == "review"));
         assert!(matches!(edit(serde_json::json!({ "key": "name", "value": null })), Edit::Name(None)));
+    }
+
+    /// The modes `Mode` in apps/desktop/src/appearance/skiffFolderDialog.ts sends.
+    #[test]
+    fn reads_the_folder_modes_the_page_sends() {
+        use skiff_client::agent_folder::Mode;
+        for (text, mode) in [("copy", Mode::Copy), ("empty", Mode::Empty), ("switch", Mode::Switch)] {
+            assert_eq!(serde_json::from_value::<Mode>(serde_json::json!(text)).unwrap(), mode);
+        }
     }
 }

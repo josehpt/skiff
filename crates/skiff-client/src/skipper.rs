@@ -35,7 +35,12 @@ const SKILL: &[(&str, &[u8], bool)] = &[
 ];
 
 /// The marker setup leaves, so a later run knows the folder is the agent's.
-const MARKER: &str = ".skiff-agent";
+pub(crate) const MARKER: &str = ".skiff-agent";
+
+/// `AGENTS.md` as setup writes it for `name`.
+pub(crate) fn template(name: &str) -> String {
+    TEMPLATE.replace("{{name}}", name)
+}
 
 /// The configured name, or the default.
 pub fn name(cfg: &Config) -> String {
@@ -111,38 +116,114 @@ pub fn sync_skill() -> Result<PathBuf> {
 }
 
 /// The agent's folder: `~/skiff-agent`, or the override in projects.toml when
-/// it passes [`check`]. The folder is fixed, so its conversation and ledger
-/// never move.
+/// it passes [`check`]. Settings › Skiff agent › Folder changes it with a
+/// copy, check and switch ([`crate::agent_folder`]), so the ledger, the
+/// results and the instructions go with it.
 pub fn folder(cfg: &Config) -> Result<PathBuf> {
-    let home = std::env::var_os("HOME").map(PathBuf::from).context("HOME is not set")?;
+    let home = home()?;
     let Some(dir) = cfg.skiff_agent.folder.clone() else { return Ok(home.join("skiff-agent")) };
     check(&dir, &home, cfg)?;
     Ok(dir)
 }
 
+/// The folder projects.toml names, refused or not: the override, else
+/// `~/skiff-agent`. A change of folder copies from it.
+pub fn configured(cfg: &Config) -> Result<PathBuf> {
+    Ok(cfg.skiff_agent.folder.clone().unwrap_or(home()?.join("skiff-agent")))
+}
+
+/// The home folder, from `HOME`.
+pub fn home() -> Result<PathBuf> {
+    std::env::var_os("HOME").map(PathBuf::from).context("HOME is not set")
+}
+
 /// Refuses a folder whose instructions would reach other sessions: an agent
 /// reads `CLAUDE.md` in every folder above its own, and `AGENTS.md` up to its
 /// repository's root. So the folder must not be the home, the root, the config
-/// folder, a project, or a folder above or inside one.
+/// folder, a project, a folder above or inside one, or a folder in a Git
+/// repository. Nor may it be an agent's own home or a Hermes profile: Skiff
+/// writes nothing in an agent's setup.
 fn check(dir: &Path, home: &Path, cfg: &Config) -> Result<()> {
-    let real = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
-    let d = real(dir);
     let shown = dir.display();
-    if !dir.is_absolute() || d.parent().is_none() || d == real(home) {
-        bail!("[skiff_agent] folder = \"{shown}\" is not allowed. Use a folder of its own, such as ~/skiff-agent");
+    if !dir.is_absolute() {
+        bail!("[skiff_agent] folder = \"{shown}\" is not a full path. Use one such as ~/skiff-agent");
+    }
+    if let Some(why) = refusal(&real(dir), home, cfg) {
+        bail!("[skiff_agent] folder = \"{shown}\": {why}");
+    }
+    Ok(())
+}
+
+/// `p` made canonical: `.` and `..` gone and links resolved. For a path
+/// that does not exist yet, the nearest existing parent is made canonical
+/// and the rest added to it. `p` is absolute.
+pub(crate) fn real(p: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            c => {
+                out.push(c);
+                // Each step resolves its link, so `..` after a link leaves the link's target.
+                if let Ok(r) = out.canonicalize() {
+                    out = r;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The agents' own homes, from the home folder. Skiff never writes there.
+const AGENT_HOMES: [(&str, &str); 5] =
+    [(".claude", "claude"), (".codex", "codex"), (".gemini", "gemini"), (".config/opencode", "opencode"), (".grok", "grok")];
+
+/// The files that make a folder a Hermes profile.
+const HERMES_FILES: [&str; 5] = ["config.yaml", "SOUL.md", "state.db", "auth.json", "profile.yaml"];
+
+/// Why `d` (absolute, links resolved) cannot be the agent's folder, in one
+/// line, or `None`. Settings, `skiff skipper --move-to` and the override in
+/// projects.toml share these rules. A dot-folder such as `~/.skiff` is a
+/// folder like any other: the agent homes match by exact path.
+pub(crate) fn refusal(d: &Path, home: &Path, cfg: &Config) -> Option<String> {
+    let home = real(home);
+    if d.parent().is_none() {
+        return Some("The root folder holds instructions for every session. Use a folder of its own.".into());
+    }
+    if d == home {
+        return Some("Your home folder holds instructions for every session. Use a folder of its own.".into());
     }
     if let Some(c) = config::config_path().parent().map(real) {
         if d.starts_with(&c) {
-            bail!("[skiff_agent] folder = \"{shown}\" is in Skiff's config folder. Use a folder of its own");
+            return Some("This is Skiff's config folder. Use a folder of its own.".into());
+        }
+    }
+    let hermes = std::env::var_os("HERMES_HOME").map(PathBuf::from).into_iter().chain([home.join(".hermes")]);
+    if hermes.map(|h| real(&h)).any(|h| d.starts_with(h)) || HERMES_FILES.iter().any(|f| d.join(f).exists()) {
+        return Some("This is a Hermes profile. Choose another folder for Skipper.".into());
+    }
+    for (dir, agent) in AGENT_HOMES {
+        if d.starts_with(real(&home.join(dir))) {
+            return Some(format!("This is the home folder of {agent}. Skiff does not write in an agent's setup."));
         }
     }
     for p in &cfg.projects {
         let pr = real(&p.path);
-        if d.starts_with(&pr) || pr.starts_with(&d) {
-            bail!("[skiff_agent] folder = \"{shown}\" mixes with the project {}. Use a folder of its own", p.name);
+        if d.starts_with(&pr) || pr.starts_with(d) {
+            return Some(format!("This folder mixes with the project {}. Choose a folder outside any project.", p.name));
         }
     }
-    Ok(())
+    if d.ancestors().any(|a| a.join(".git").symlink_metadata().is_ok()) {
+        return Some("This folder is inside a Git repository. Choose a folder outside any project.".into());
+    }
+    if d.file_name().is_some_and(|n| n.to_string_lossy().contains(crate::agent_folder::STAGING)) {
+        return Some("This is an unfinished copy. Skiff removes it at the next change.".into());
+    }
+    None
 }
 
 /// Makes the agent's folder ready: writes the template parts it lacks, with
@@ -168,20 +249,24 @@ pub fn ensure(cfg: &Config) -> Result<PathBuf> {
 /// ```
 pub fn setup(dir: &Path, name: &str) -> Result<PathBuf> {
     let _lock = lock()?;
+    setup_in(dir, name, &sync_skill()?)
+}
+
+/// [`setup`] for a caller that holds the lock. `skill` is the skill's copy.
+pub(crate) fn setup_in(dir: &Path, name: &str, skill: &Path) -> Result<PathBuf> {
     if dir.metadata().is_ok_and(|m| !m.is_dir()) {
         bail!("{} is not a folder", dir.display());
     }
     if dir.is_dir() && !dir.join(MARKER).exists() && std::fs::read_dir(dir)?.next().is_some() {
-        bail!("{} holds other files. Move them, or set another folder in projects.toml: [skiff_agent] folder", dir.display());
+        bail!("{} holds other files. Move them, or choose another folder in Settings › Skiff agent › Folder", dir.display());
     }
-    let skill = sync_skill()?;
 
     std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
     let dir = dir.canonicalize().with_context(|| format!("find {}", dir.display()))?;
     // A broken link counts as there: setup does not replace what the user made.
     let missing = |p: &Path| p.symlink_metadata().is_err();
     if missing(&dir.join("AGENTS.md")) {
-        write_new(&dir.join("AGENTS.md"), &TEMPLATE.replace("{{name}}", name))?;
+        write_new(&dir.join("AGENTS.md"), &template(name))?;
     }
     for f in ["CLAUDE.md", "GEMINI.md"] {
         if missing(&dir.join(f)) {
@@ -192,7 +277,7 @@ pub fn setup(dir: &Path, name: &str) -> Result<PathBuf> {
     let skills = dir.join(".agents").join("skills");
     std::fs::create_dir_all(&skills).context("create .agents/skills")?;
     if missing(&skills.join("skiff-cli")) {
-        link(&skill, &skills.join("skiff-cli"))?;
+        link(skill, &skills.join("skiff-cli"))?;
     }
     if missing(&dir.join(".claude")) {
         link(Path::new(".agents"), &dir.join(".claude"))?;
@@ -203,8 +288,9 @@ pub fn setup(dir: &Path, name: &str) -> Result<PathBuf> {
     Ok(dir)
 }
 
-/// The setup lock. It frees itself when the process ends.
-fn lock() -> Result<std::fs::File> {
+/// The setup lock. It frees itself when the process ends. A change of
+/// folder holds it from the first step to the last.
+pub(crate) fn lock() -> Result<std::fs::File> {
     let config = config::config_path();
     let dir = config.parent().context("find the config folder")?;
     std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
@@ -470,10 +556,11 @@ mod tests {
         let project = home.join("code/app");
         std::fs::create_dir_all(&project).unwrap();
         let cfg = config::parse(&format!("[[project]]\nname = \"app\"\npath = \"{}\"\n", project.display())).unwrap();
-        for bad in [home.clone(), PathBuf::from("/"), home.join("code"), project.clone(), project.join("sub")] {
+        for bad in [home.clone(), PathBuf::from("/"), home.join("code"), project.clone(), project.join("sub"), PathBuf::from("rel/x")] {
             assert!(check(&bad, &home, &cfg).is_err(), "{}", bad.display());
         }
         assert!(check(&home.join("skiff-agent"), &home, &cfg).is_ok());
+        assert!(check(&home.join(".skiff"), &home, &cfg).is_ok());
         std::fs::remove_dir_all(&home).unwrap();
     }
 

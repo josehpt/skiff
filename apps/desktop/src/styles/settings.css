@@ -95,3 +95,12 @@
 .set-agent.missing .c-state { color: var(--text-dim); }
 .set-agent.missing .c-state .sq { background: var(--rule-strong); }
 .set-table .set-cols > .c-field, .set-table .set-cols > .c-preview { padding: 0 calc(12 * var(--u)); }
+/* Settings › Skiff agent › Folder: the path to copy, its buttons, and a status line under it. */
+.set-folder { grid-template-columns: calc(200 * var(--u)) minmax(0, 1fr) auto; }
+.set-folder .set-path { user-select: text; -webkit-user-select: text; cursor: text; }
+.set-folder-acts { gap: calc(8 * var(--u)); }
+.set-folder-meta { height: calc(20 * var(--u)); flex-shrink: 0; display: flex; align-items: center; gap: calc(8 * var(--u)); padding-left: calc(212 * var(--u)); border-bottom: 1px solid var(--rule); font-size: calc(11px * var(--zoom, 1)); color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.set-folder-meta .sq { width: calc(8 * var(--u)); height: calc(8 * var(--u)); flex-shrink: 0; background: var(--rule-strong); }
+.set-folder-meta.ready .sq { background: var(--ok); }
+.set-folder-meta:is(.refused, .other) { color: var(--error-text); }
+.set-folder-meta:is(.refused, .other) .sq { background: var(--error-text); }

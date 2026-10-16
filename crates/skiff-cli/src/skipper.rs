@@ -8,7 +8,10 @@ use std::{
 };
 
 use anyhow::{bail, Context, Result};
-use skiff_client::{skipper, Client};
+use skiff_client::{
+    agent_folder::{self, Kind, Mode, Preview},
+    skipper, Client,
+};
 
 use crate::attach;
 
@@ -125,4 +128,144 @@ fn start_daemon(socket: &Path) -> Result<()> {
         let _ = child.wait();
     });
     Ok(())
+}
+
+/// `skiff skipper --move-to PATH`: the Change… dialog of Settings ›
+/// Skiff agent › Folder as text. Prints the preview, asks, then copies,
+/// checks and switches (or switches to a Skiff folder). Never without a
+/// terminal to ask in: there is no `--yes`.
+pub async fn move_to(socket: &Path, path: &Path, empty: bool, dry_run: bool) -> Result<()> {
+    let cwd = std::env::current_dir().context("find this folder")?;
+    let to = agent_folder::resolve(&path.to_string_lossy(), &cwd, &skipper::home()?)?;
+    // A daemon that does not run has no Skipper and no running tasks.
+    let c = Client::connect(socket).await.ok();
+    let (panes, running) = match &c {
+        Some(c) => agent_folder::sessions(c).await?,
+        None => Default::default(),
+    };
+    let cfg = skiff_core::config::load()?;
+    let p = agent_folder::preview(&cfg, &to, &panes)?;
+    print!("{}", preview_text(&p, running.is_some()));
+    let mode = match p.kind {
+        Kind::Current => bail!("Skipper uses this folder now"),
+        Kind::Refused => bail!("{}", p.refused.as_deref().unwrap_or("Skiff cannot use this folder")),
+        Kind::Skiff if empty => bail!("{} is a Skiff folder. Skiff switches to it as it is; --empty does not apply", p.to.display()),
+        Kind::Skiff => Mode::Switch,
+        _ if empty || !p.can_copy => Mode::Empty,
+        _ => {
+            if let Some(why) = &p.copy_refused {
+                bail!("{why} Add --empty to start empty");
+            }
+            Mode::Copy
+        }
+    };
+    println!(
+        "Skiff will {}.",
+        match mode {
+            Mode::Copy => "copy the current folder here, check the copy, then switch",
+            Mode::Empty => "set up a new folder here with a new ledger, then switch",
+            Mode::Switch => "switch to this folder",
+        }
+    );
+    if dry_run {
+        return Ok(());
+    }
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() {
+        bail!("--move-to asks before it changes the folder. Run it in a terminal, or use --dry-run");
+    }
+    let anyway = !p.running.is_empty();
+    if anyway && !ask("Tasks still run. Their results stay in the old folder. Change anyway?")? {
+        return Ok(());
+    }
+    let what = match mode {
+        Mode::Copy => "Copy and switch?",
+        Mode::Empty => "Start empty and switch?",
+        Mode::Switch => "Switch to this folder?",
+    };
+    if !ask(what)? {
+        return Ok(());
+    }
+    if let (Some(c), Some(s)) = (&c, &running) {
+        c.kill(&s.id).await.context("end Skipper's session")?;
+    }
+    let mut panes = panes;
+    if let Some(s) = &running {
+        panes.remove(&s.id);
+    }
+    let d = agent_folder::change(&cfg, &to, mode, &panes, anyway)?;
+    println!("Skipper now uses {}.", d.to.display());
+    if let Some(n) = &d.copied {
+        println!("Copied and checked: {} tasks, {} results ({}).", n.tasks, n.results, agent_folder::size(n.bytes));
+    }
+    if let Some(note) = &d.moved_note {
+        println!("The old folder stays, with every file. Skiff added {}.", note.display());
+    }
+    if let Some(w) = &d.warning {
+        eprintln!("skiff: {w}");
+    }
+    println!("Skipper starts in the new folder at the next `skiff skipper`, with a new conversation.");
+    Ok(())
+}
+
+/// The preview as the dialog shows it.
+fn preview_text(p: &Preview, skipper_runs: bool) -> String {
+    use std::fmt::Write;
+    let mut s = String::new();
+    let _ = writeln!(s, "From  {}\nTo    {}", p.from.display(), p.to.display());
+    let kind = match p.kind {
+        Kind::Current => "in use now",
+        Kind::New => "a new folder",
+        Kind::Empty => "an empty folder",
+        Kind::Skiff => "a Skiff folder: switch to it, no copy, no merge",
+        Kind::Refused => "refused",
+    };
+    let _ = writeln!(s, "The folder is {kind}.");
+    // The caller says why a folder is refused.
+    if p.refused.is_some() {
+        return s;
+    }
+    if let (true, Some(c)) = (matches!(p.kind, Kind::New | Kind::Empty) && p.can_copy, &p.from_counts) {
+        let _ = writeln!(
+            s,
+            "Copy: AGENTS.md{}, the ledger ({} tasks: {} open, {} done), results/ ({} files, {}){}.",
+            if c.agents_edited { " (edited)" } else { "" },
+            c.tasks,
+            c.open,
+            c.done,
+            c.results,
+            agent_folder::size(c.bytes),
+            if c.other.is_empty() { String::new() } else { format!(", and {}", c.other.join(", ")) }
+        );
+        let _ = writeln!(s, "Setup makes the links again. The old folder stays, with every file, and gets MOVED.md.");
+    }
+    if let (Kind::Skiff, Some(t)) = (p.kind, &p.to_counts) {
+        let _ = writeln!(s, "This folder: {} tasks, {} open. Skiff does not merge two ledgers.", t.tasks, t.open);
+    }
+    if p.moved.is_some() {
+        let _ = writeln!(s, "Skipper moved away from this folder before. Tasks added since then are only in the other folder.");
+    }
+    if p.kind != Kind::Current {
+        let _ = writeln!(s, "The conversation does not move.");
+    }
+    if skipper_runs {
+        let _ = writeln!(s, "Skipper runs in {}. Its session ends before the change.", p.from.display());
+    }
+    for r in &p.running {
+        let _ = writeln!(s, "Still runs: {}  {}", r.uid, r.task);
+    }
+    if let Some(l) = &p.ledger_env {
+        let _ = writeln!(s, "SKIFF_LEDGER is set to {l}. The change does not touch it.");
+    }
+    s
+}
+
+/// A yes or no on the terminal. No is the default.
+fn ask(question: &str) -> Result<bool> {
+    use std::io::Write;
+    eprint!("{question} [y/N] ");
+    std::io::stderr().flush()?;
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    Ok(matches!(line.trim(), "y" | "Y" | "yes"))
 }

@@ -20,6 +20,7 @@ use tokio::{
     sync::{broadcast, mpsc, oneshot},
 };
 
+pub mod agent_folder;
 mod requests;
 pub mod skipper;
 pub use requests::{Coordinated, Coordinator, DaemonInfo, Refused};

@@ -247,13 +247,13 @@ function skiffAgentRow(): HTMLElement {
     return row;
   }
   row.dataset.session = s.id;
-  // The agent icon shows the watcher: teal with a ping while it runs and the
-  // agent is idle, red while none runs or the last line failed.
+  // The agent icon shows the watcher: teal and slowly turning while it runs and
+  // the agent is idle, red while none runs or the last line failed.
   const watch = skiffWatch(s);
   if (watch.state === "runs" && s.state === "idle") {
-    row.classList.add("watch-ping");
-    // The row is rebuilt often. Start the ring at the elapsed phase, not at its first frame.
-    row.style.setProperty("--ping-delay", `${-(performance.now() % 2800)}ms`);
+    row.classList.add("watch-turn");
+    // The row is rebuilt often. Start the turn at the elapsed phase, not at its first frame.
+    row.style.setProperty("--turn-delay", `${-(performance.now() % 8000)}ms`);
   }
   if (watch.state === "missing" || watch.state === "failed") row.classList.add("watch-error");
   if (watch.text) row.title = watch.text;

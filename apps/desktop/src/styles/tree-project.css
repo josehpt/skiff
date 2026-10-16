@@ -134,18 +134,18 @@ body.dragging-tree, body.dragging-tree * { cursor: grabbing !important; user-sel
 .session-row.skiff-agent-row { height: var(--row); padding-left: calc(16 * var(--u)); }
 .skiff-agent-row .skiff-agent-name { flex-shrink: 0; font-size: calc(12px * var(--zoom, 1)); font-weight: 600; color: var(--text); }
 .skiff-agent-row:not([data-session]) .title { color: var(--text-dim); }
-/* The Skiff agent's watcher, on its agent icon. Runs: teal, and a 1px ring
-   spreads out every 2.8 s while the agent is idle. The icon stays still and
-   the ring takes no space. None runs, or a line failed: red, still. */
+/* The Skiff agent's watcher, on its agent icon. Runs: teal, and the icon turns
+   once every 8 s while the agent is idle, in place, like a ship's wheel at
+   rest. The box keeps its size, so the row does not move. None runs, or a
+   line failed: red, still. */
 .skiff-agent-row .agent-icon { position: relative; }
-.skiff-agent-row.watch-ping .agent-icon svg [stroke]:not([stroke="none"]) { stroke: var(--watch); }
-.skiff-agent-row.watch-ping .agent-icon svg [fill]:not([fill="none"]) { fill: var(--watch); }
+.skiff-agent-row.watch-turn .agent-icon svg [stroke]:not([stroke="none"]) { stroke: var(--watch); }
+.skiff-agent-row.watch-turn .agent-icon svg [fill]:not([fill="none"]) { fill: var(--watch); }
 .skiff-agent-row.watch-error .agent-icon svg [stroke]:not([stroke="none"]) { stroke: var(--error); }
 .skiff-agent-row.watch-error .agent-icon svg [fill]:not([fill="none"]) { fill: var(--error); }
-.skiff-agent-row.watch-ping .agent-icon::after {
-  content: ""; position: absolute; left: 0; top: 0; width: 100%; height: 100%; box-sizing: border-box;
-  border: 1px solid var(--watch); border-radius: 50%; opacity: 0; pointer-events: none;
-  animation: sk-ping 2.8s ease-out var(--ping-delay, 0ms) infinite;
+.skiff-agent-row.watch-turn .agent-icon {
+  transform-origin: center; transform-box: fill-box;
+  animation: sk-turn 8s linear var(--turn-delay, 0ms) infinite;
 }
-@keyframes sk-ping { 0% { transform: scale(0.4); opacity: 0.7; } 100% { transform: scale(1.6); opacity: 0; } }
-@media (prefers-reduced-motion: reduce) { .skiff-agent-row.watch-ping .agent-icon::after { content: none; animation: none; } }
+@keyframes sk-turn { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .skiff-agent-row.watch-turn .agent-icon { animation: none; } }

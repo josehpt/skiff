@@ -4,7 +4,7 @@ use skiff_client::Client;
 use skiff_core::{socket::socket_path, session::SessionState};
 use tauri::{async_runtime::JoinHandle, State};
 use tokio::sync::Mutex;
-use crate::{input::Input, reload::{self, Plan}, streaming::Flow};
+use crate::{input::Input, reload::{self, NoPlan, Plan}, streaming::Flow};
 
 #[derive(Default)]
 pub(crate) struct App {
@@ -183,6 +183,7 @@ pub(crate) async fn check_daemon(app: &App, c: &Client, may_replace: bool) -> Ch
         return Check::Use;
     }
     // Never a downgrade, and one try per app run.
+    let mut old_build = None;
     if order.is_lt() && !app.reload_tried.load(Ordering::Relaxed) {
         match reload::plan(&info).await {
             Ok(plan) => {
@@ -190,7 +191,8 @@ pub(crate) async fn check_daemon(app: &App, c: &Client, may_replace: bool) -> Ch
                 *app.warning.lock().await = None;
                 return Check::Use;
             }
-            Err(why) => eprintln!("skiffd {version} does not reload: {why}"),
+            Err(NoPlan::Stale(bundled)) => old_build = Some(bundled),
+            Err(NoPlan::Other(why)) => eprintln!("skiffd {version} does not reload: {why}"),
         }
     }
     let live = tokio::time::timeout(HELLO_TIMEOUT, c.list_sessions())
@@ -198,6 +200,22 @@ pub(crate) async fn check_daemon(app: &App, c: &Client, may_replace: bool) -> Ch
         .ok()
         .and_then(|r| r.ok())
         .map(|v| v.iter().filter(|s| s.state != SessionState::Done).count());
+    // The skiffd this app starts is no newer than the one that runs. A
+    // restart starts the same build again and asks again: no prompt, and no
+    // silent replace. Only a dev build gets here.
+    if let Some(bundled) = old_build {
+        let why = format!(
+            "the skiffd this app starts ({}) is {bundled}, older than the app's {}. Rebuild it: cargo build -p skiffd",
+            daemon_binary().display(),
+            skiff_core::VERSION
+        );
+        eprintln!("skiffd {version} does not reload: {why}");
+        *app.warning.lock().await = match same_protocol {
+            true => None,
+            false => Some(restart_warning(&version, info.protocol, live, Some(&why))),
+        };
+        return Check::Use;
+    }
     let stale = !same_protocol || order.is_lt();
     if let (true, true, Some(0), Some(pid)) = (may_replace, stale, live, c.daemon_pid) {
         if stop_daemon(pid).await {

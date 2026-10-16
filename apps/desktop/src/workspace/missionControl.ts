@@ -4,15 +4,17 @@
  * Ctrl+Shift+A or Esc closes it. A click or Enter goes to the session.
  * Ctrl+Shift+P searches the sessions on the board, and hides the rest. The
  * search stays until Esc clears it, so a close and an open keep it.
- * The Skipper lane (missionSkipper.ts) comes first while Skipper's watcher
- * or its ledger needs a look.
+ * All / Running beside the search (#133) hides idle sessions and shells at
+ * their prompt. It is All each time the board opens.
+ * The Skipper lane (missionSkipper.ts) comes first whenever Skipper has a
+ * folder: its open tasks, then its own screen.
  * This file is the board. missionMotion.ts opens and closes it.
  */
 
 import { invoke } from "@tauri-apps/api/core";
 
 import type { Project, SessionInfo } from "../platform/types";
-import { agentIcon } from "../appearance/agentIcon";
+import { agentIcon, agentKind } from "../appearance/agentIcon";
 import { stateIcon } from "../appearance/stateIcon";
 import { DEFAULT_THEME, isLight } from "../appearance/colors";
 import { appThemeOf, themeIdFor, xtermTheme } from "../appearance/themes";
@@ -29,7 +31,6 @@ import { nextWaiting } from "./view";
 import { settings } from "../app/panels";
 import {
   type SkipperView,
-  TASK_ROWS,
   freshSkipper,
   isSkipperKey,
   openUid,
@@ -38,7 +39,6 @@ import {
   skipperKeys,
   skipperLane,
   skipperMatch,
-  skipperScreens,
   skipperSession,
   skipperSignature,
   skipperView,
@@ -47,6 +47,8 @@ import {
 
 /** Rows of text per screen. */
 const ROWS = 12;
+/** Rows of Skipper's screen. It fills the rest of its lane, so it reads more and shows the last that fit. */
+const SELF_ROWS = 60;
 /** How often the open board reads the screens again. */
 const TICK = 1000;
 
@@ -92,6 +94,39 @@ document.getElementById("open-switcher")?.after(find);
 const noMatch = h("div", "mission-empty", "No match");
 let found: Set<string> | null = null;
 
+/** All / Running, beside the search. `running`: only sessions that work or wait. */
+let running = false;
+const scope = h("div", "tb-cell mission-scope");
+scope.setAttribute("role", "group");
+scope.setAttribute("aria-label", "Sessions to show");
+const scopeAll = h("button", "mission-scope-btn", "All");
+const scopeRunning = h("button", "mission-scope-btn", "Running");
+for (const [b, on] of [[scopeAll, false], [scopeRunning, true]] as const) {
+  b.type = "button";
+  b.tabIndex = -1;
+  // The keys stay where they are: on the board or in the search.
+  b.addEventListener("mousedown", (e) => e.preventDefault());
+  b.addEventListener("click", () => setRunning(on));
+  scope.appendChild(b);
+}
+find.after(scope);
+
+/** A session that works or waits. An idle session and a shell at its prompt are not. */
+const isRunning = (s: SessionInfo) => (s.state === "working" || s.state === "waiting") && agentKind(s) !== "shell";
+
+function setRunning(on: boolean) {
+  running = on;
+  scopeAll.setAttribute("aria-pressed", String(!on));
+  scopeRunning.setAttribute("aria-pressed", String(on));
+  if (!root.hidden) filter(lanes());
+}
+setRunning(false);
+
+/** The Running key here: All, or only the running sessions. */
+export function toggleRunning() {
+  setRunning(!running);
+}
+
 /** A project's sessions in tree order: each worktree's groups and their members, then the rest. */
 function projectSessions(p: Project): SessionInfo[] {
   const seen = new Set<string>();
@@ -114,16 +149,19 @@ function matchText(s: SessionInfo, p: Project): string {
 }
 
 /**
- * Hides the screens the search leaves out, and the projects and lanes left
- * with none. The light moves to the first match when its screen hides.
+ * Hides the screens the search and Running leave out, and the projects and
+ * lanes left with none. Running leaves the Skipper lane as it is. The light
+ * moves to the first match when its screen hides.
  */
 function filter(all: Lane[], scroll = false) {
   const q = search.value.trim();
   found = null;
-  if (q) {
+  if (q || running) {
     found = new Set();
-    for (const l of all) for (const { p, list } of l.projects) for (const s of list) if (fuzzy(q, matchText(s, p)) >= 0) found.add(s.id);
-    if (sk) for (const k of skipperKeys(sk)) if (fuzzy(q, skipperMatch(sk, k)) >= 0) found.add(k);
+    for (const l of all)
+      for (const { p, list } of l.projects)
+        for (const s of list) if ((!running || isRunning(s)) && (!q || fuzzy(q, matchText(s, p)) >= 0)) found.add(s.id);
+    if (sk) for (const k of skipperKeys(sk)) if (!q || fuzzy(q, skipperMatch(sk, k)) >= 0) found.add(k);
   }
   for (const t of root.querySelectorAll<HTMLElement>(".mission-tile")) t.hidden = !!found && !found.has(t.dataset.session ?? "");
   for (const el of root.querySelectorAll<HTMLElement>(".mission-group, .mission-lane")) el.hidden = !!found && !el.querySelector(".mission-tile:not([hidden])");
@@ -154,11 +192,11 @@ function lanes(): Lane[] {
     .filter((l) => l.projects.length);
 }
 
-/** The head's parts: state, agent, title, and the branch when it is not the main one. */
-function headParts(s: SessionInfo, p: Project): HTMLElement[] {
+/** The head's parts: state, agent, title, and the branch when it is not the main one. `p`: null for Skipper's own screen. */
+function headParts(s: SessionInfo, p: Project | null): HTMLElement[] {
   const out = [stateIcon(s), agentIcon(s), h("span", "title", taskTitle(s))];
   const w = place(s)?.worktree;
-  if (w && !bareWorktree(p) && !w.is_main) out.push(h("span", "where mono", branchName(w)));
+  if (p && w && !bareWorktree(p) && !w.is_main) out.push(h("span", "where mono", branchName(w)));
   // A pane with an open Skipper task names the task.
   const uid = openUid(sk, s.id);
   if (uid) {
@@ -184,8 +222,8 @@ function paint(pre: HTMLElement, s: SessionInfo) {
 }
 
 /** Brings a tile up to date in place. The tile stays, so its light does not flicker. */
-function fresh(b: HTMLElement, s: SessionInfo, p: Project) {
-  b.style.setProperty("--pc", accent(p));
+function fresh(b: HTMLElement, s: SessionInfo, p: Project | null) {
+  b.style.setProperty("--pc", p ? accent(p) : "var(--accent)");
   const label = `${taskTitle(s)}, ${s.state}`;
   if (b.getAttribute("aria-label") !== label) b.setAttribute("aria-label", label);
   const head = b.querySelector<HTMLElement>(".mission-head");
@@ -198,7 +236,7 @@ function fresh(b: HTMLElement, s: SessionInfo, p: Project) {
   if (pre) paint(pre, s);
 }
 
-function tile(s: SessionInfo, p: Project): HTMLElement {
+function tile(s: SessionInfo, p: Project | null): HTMLElement {
   const b = h("button", "mission-tile" + (s.id === lit ? " lit" : ""));
   b.type = "button";
   b.tabIndex = -1;
@@ -318,9 +356,10 @@ function build(all = lanes()) {
   for (const el of old?.querySelectorAll<HTMLElement>(".mission-lane") ?? []) tops.set(el.getAttribute("aria-label") ?? "", el.scrollTop);
 
   findKey.textContent = keyLabel("palette");
+  scope.title = `All sessions, or only the running ones: ${keyLabel("focus-mode")}`;
 
   const board = h("div", "mission-lanes");
-  if (sk) board.appendChild(skipperLane(sk, lit));
+  if (sk) board.appendChild(skipperLane(sk, lit, sk.self ? tile(sk.self, null) : null));
   for (const l of all) {
     const lane = h("section", "mission-lane");
     lane.setAttribute("aria-label", l.name);
@@ -358,7 +397,11 @@ function update(all: Lane[]) {
     const p = S.projects.find((x) => x.name === g.dataset.project);
     if (p) themed(g, p);
   }
-  if (sk) freshSkipper(root, sk);
+  if (sk) {
+    freshSkipper(root, sk);
+    const b = sk.self && tileOf(sk.self.id);
+    if (b && sk.self) fresh(b, sk.self, null);
+  }
   const heads = root.querySelectorAll(".mission-lane:not(.skipper) > .mission-lane-head");
   for (const [i, l] of all.entries()) {
     if (heads[i]) roll(heads[i], l);
@@ -380,10 +423,8 @@ function signature(all: Lane[], v: SkipperView | null): string {
 async function read() {
   if (reading) return;
   reading = true;
-  const jobs: [string, HTMLElement, number][] = [
-    ...[...screens].map(([id, pre]): [string, HTMLElement, number] => [id, pre, ROWS]),
-    ...skipperScreens().map(([id, pre]): [string, HTMLElement, number] => [id, pre, TASK_ROWS]),
-  ];
+  const self = sk?.self?.id;
+  const jobs = [...screens].map(([id, pre]): [string, HTMLElement, number] => [id, pre, id === self ? SELF_ROWS : ROWS]);
   await Promise.all(
     jobs.map(async ([id, pre, rows]) => {
       try {
@@ -475,6 +516,7 @@ export const board = {
   /** Builds the board lit on `focus` and reads every screen once. Shows nothing. */
   async prepare(focus: string | null) {
     paused = false;
+    setRunning(false);
     lit = focus;
     await skipper.read();
     const all = lanes();
@@ -590,6 +632,7 @@ function onKey(e: KeyboardEvent) {
     if (lit) light(lit);
   } else if (e.key === "Escape" || a === "mission-control") closeMission();
   else if (a === "maximize") maximizeLit();
+  else if (a === "focus-mode") toggleRunning();
   // The top bar's actions, as its buttons run them.
   else if (a === "next-waiting") goToSession(nextWaiting());
   else if (a === "settings") {
@@ -608,3 +651,4 @@ function onKey(e: KeyboardEvent) {
 }
 root.addEventListener("keydown", onKey);
 find.addEventListener("keydown", onKey);
+scope.addEventListener("keydown", onKey);

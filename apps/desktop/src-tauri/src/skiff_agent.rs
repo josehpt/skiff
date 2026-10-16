@@ -51,6 +51,106 @@ pub async fn start_skiff_watch(session: String) -> Result<bool, String> {
     blocking(move || skipper::start_watch(&skiff_core::socket::socket_path(), &cli(), &session)).await
 }
 
+/// Whether a watcher holds its lock, and which one, for Mission control's
+/// watcher tile. Changes nothing.
+#[tauri::command]
+pub async fn skiff_watch_status() -> Result<skipper::WatchLock, String> {
+    blocking(|| skipper::watch_status(&skiff_core::socket::socket_path())).await
+}
+
+/// Mission control's Restart watcher: stops the watcher that holds the lock
+/// (SIGTERM to a checked `skiff watch` only, never SIGKILL), then starts one.
+#[tauri::command]
+pub async fn restart_skiff_watch(session: String) -> Result<bool, String> {
+    #[cfg(unix)]
+    return blocking(move || skipper::restart_watch(&skiff_core::socket::socket_path(), &cli(), &session)).await;
+    #[cfg(not(unix))]
+    return blocking(move || skipper::start_watch(&skiff_core::socket::socket_path(), &cli(), &session)).await;
+}
+
+/// Runs `skiff ledger ARGS` for this daemon. Its stdout, or its error text.
+fn ledger(args: &[String]) -> anyhow::Result<(i32, String)> {
+    let out = std::process::Command::new(cli())
+        .arg("ledger")
+        .args(args)
+        .env("SKIFF_SOCKET", skiff_core::socket::socket_path())
+        .stdin(std::process::Stdio::null())
+        .output()
+        .context("run skiff ledger")?;
+    let code = out.status.code().unwrap_or(-1);
+    let text = |b: &[u8]| String::from_utf8_lossy(b).trim().trim_start_matches("skiff: ").to_string();
+    match code {
+        0 => Ok((0, text(&out.stdout))),
+        // `ledger send`: typed, but no turn started.
+        8 if args.first().is_some_and(|a| a == "send") => Ok((8, text(&out.stderr))),
+        _ => {
+            let err = text(&out.stderr);
+            anyhow::bail!(if err.is_empty() { format!("skiff ledger exited {code}") } else { err })
+        }
+    }
+}
+
+/// A uid as `ledger add` gives it: 8 hex characters.
+fn uid(v: &str) -> anyhow::Result<&str> {
+    if v.len() == 8 && v.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Ok(v)
+    } else {
+        anyhow::bail!("not a task uid: {v:?}")
+    }
+}
+
+/// The arguments of `skiff ledger update` for Mission control's Mark done,
+/// Mark resolved elsewhere… and Reassign…. Values go in `--flag=value` form,
+/// so a ref that starts with `-` stays a value.
+pub(crate) fn update_args(task: &str, state: Option<&str>, pane: Option<&str>, reference: Option<&str>) -> anyhow::Result<Vec<String>> {
+    let mut args = vec!["update".to_string(), uid(task)?.to_string()];
+    if let Some(st) = state {
+        anyhow::ensure!(matches!(st, "pending" | "done"), "Mission control sets pending or done, not {st:?}");
+        args.push(format!("--state={st}"));
+    }
+    if let Some(p) = pane {
+        anyhow::ensure!(!p.is_empty() && !p.starts_with('-') && p.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'), "not a pane id: {p:?}");
+        args.push(format!("--pane={p}"));
+    }
+    if let Some(r) = reference.map(str::trim).filter(|r| !r.is_empty()) {
+        args.push(format!("--ref={r}"));
+    }
+    anyhow::ensure!(args.len() > 2, "nothing to change");
+    Ok(args)
+}
+
+/// Every ledger row, as `skiff ledger ls --json` prints it, with LIVE and
+/// interrupted marked. Mission control reads it only while it is open.
+#[tauri::command]
+pub async fn skiff_open_work() -> Result<serde_json::Value, String> {
+    blocking(|| {
+        let (_, out) = ledger(&["ls".into(), "--json".into()])?;
+        serde_json::from_str(&out).context("read skiff ledger ls --json")
+    })
+    .await
+}
+
+/// `skiff ledger update`: the state, the pane or the ref of one task.
+#[tauri::command]
+pub async fn skiff_ledger_update(task: String, state: Option<String>, pane: Option<String>, reference: Option<String>) -> Result<(), String> {
+    blocking(move || {
+        ledger(&update_args(&task, state.as_deref(), pane.as_deref(), reference.as_deref())?)?;
+        Ok(())
+    })
+    .await
+}
+
+/// `skiff ledger send UID --enter`, with every `send` check. Null when the
+/// task went out; else why it is blocked (typed, but no turn started).
+#[tauri::command]
+pub async fn skiff_ledger_send(task: String) -> Result<Option<String>, String> {
+    blocking(move || {
+        let (code, err) = ledger(&["send".into(), uid(&task)?.to_string(), "--enter".into()])?;
+        Ok((code == 8).then(|| if err.is_empty() { "No turn started. The text can be in the pane's input box.".into() } else { err }))
+    })
+    .await
+}
+
 /// The watch log beside the socket, for the row's Open watch log.
 #[tauri::command]
 pub fn skiff_watch_log() -> String {
@@ -276,6 +376,27 @@ mod tests {
         assert!(matches!(rename, Edit::RenameTask { from, to } if from == "review" && to == "code-review"));
         assert!(matches!(edit(serde_json::json!({ "key": "remove_task", "value": "review" })), Edit::RemoveTask(t) if t == "review"));
         assert!(matches!(edit(serde_json::json!({ "key": "name", "value": null })), Edit::Name(None)));
+    }
+
+    /// Mission control's ledger edits: only pending or done, a checked uid and
+    /// pane, and a ref that cannot turn into a flag.
+    #[test]
+    fn builds_only_safe_ledger_updates() {
+        use super::update_args;
+        assert_eq!(update_args("d0e7b2f4", Some("done"), None, None).unwrap(), ["update", "d0e7b2f4", "--state=done"]);
+        assert_eq!(
+            update_args("d0e7b2f4", Some("done"), None, Some(" --state=sent PR #12 ")).unwrap(),
+            ["update", "d0e7b2f4", "--state=done", "--ref=--state=sent PR #12"]
+        );
+        assert_eq!(
+            update_args("d0e7b2f4", Some("pending"), Some("4ac9e7a1-77"), Some("  ")).unwrap(),
+            ["update", "d0e7b2f4", "--state=pending", "--pane=4ac9e7a1-77"]
+        );
+        assert!(update_args("d0e7b2f4", Some("sent"), None, None).is_err());
+        assert!(update_args("--help", Some("done"), None, None).is_err());
+        assert!(update_args("12", Some("done"), None, None).is_err());
+        assert!(update_args("d0e7b2f4", None, Some("--rm"), None).is_err());
+        assert!(update_args("d0e7b2f4", None, None, None).is_err());
     }
 
     /// The modes `Mode` in apps/desktop/src/appearance/skiffFolderDialog.ts sends.

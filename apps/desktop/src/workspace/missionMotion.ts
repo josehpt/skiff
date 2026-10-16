@@ -175,7 +175,7 @@ export function closeMission(go?: string, max = false) {
 
 /** Ctrl+Shift+Enter here: the lit session, maximized. */
 export function maximizeLit() {
-  const lit = board.lit();
+  const lit = board.litSession();
   if (lit) closeMission(lit, true);
 }
 

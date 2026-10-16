@@ -176,7 +176,8 @@ pub struct Wake {
     pub pane: String,
     pub name: String,
     pub id: String,
-    /// The task's uid, for an interrupted or a pending task.
+    /// The task's uid, for an interrupted or a pending task. For a gone
+    /// pane, its open uids, joined with ", ".
     pub task: Option<String>,
 }
 
@@ -184,6 +185,8 @@ impl Wake {
     fn tail(&self) -> String {
         match (&self.task, self.fact) {
             (Some(t), Fact::Pending) => format!(": task {t} is pending: skiff ledger send {t} --enter"),
+            (Some(t), Fact::Gone) if t.contains(", ") => format!(": tasks {t} are open"),
+            (Some(t), Fact::Gone) => format!(": task {t} is open"),
             (Some(t), _) => format!(": task {t} is interrupted"),
             (None, _) => String::new(),
         }
@@ -199,7 +202,18 @@ pub fn wake_line(wakes: &[Wake]) -> String {
             format!("pane {who}{} {}{}", print::short_id(&w.id), w.fact.phrase(), w.tail())
         })
         .collect();
-    let tail = if wakes.len() == 1 { "Read it, then mark it seen." } else { "Read them, then mark each seen." };
+    // A gone pane cannot be marked seen. Its tasks are reassigned or marked done.
+    let gone = |w: &&Wake| w.fact == Fact::Gone && w.task.is_some();
+    let lost = wakes.iter().filter(gone).count();
+    let tail = if lost == 0 {
+        if wakes.len() == 1 { "Read it, then mark it seen." } else { "Read them, then mark each seen." }
+    } else if lost < wakes.len() {
+        "Read the others, then mark each seen. Reassign each task of a gone pane or mark it done."
+    } else if lost == 1 && !wakes.iter().any(|w| w.task.as_deref().is_some_and(|t| t.contains(", "))) {
+        "Reassign it or mark it done."
+    } else {
+        "Reassign each task or mark it done."
+    };
     format!("[watch] {}. {tail}", parts.join("; "))
 }
 
@@ -244,6 +258,8 @@ struct Group<'a> {
     s: Option<&'a SessionInfo>,
     /// Its pending uids, oldest first.
     pending: Vec<String>,
+    /// All its open uids, oldest first: what a gone pane leaves open.
+    open: Vec<String>,
 }
 
 /// The open rows by pane, and the interrupted tasks apart. Rows that resolve
@@ -265,13 +281,14 @@ fn group<'a>(tasks: &'a [ledger::Row], all: &'a [SessionInfo], skipper: &str) ->
         let i = match groups.iter().position(|g| g.key == key) {
             Some(i) => i,
             None => {
-                groups.push(Group { key: key.to_string(), s, pending: Vec::new() });
+                groups.push(Group { key: key.to_string(), s, pending: Vec::new(), open: Vec::new() });
                 groups.len() - 1
             }
         };
         if t.state == "pending" {
             groups[i].pending.push(t.uid.clone());
         }
+        groups[i].open.push(t.uid.clone());
     }
     (groups, interrupted)
 }
@@ -385,7 +402,15 @@ impl Watcher {
         }
         for g in groups {
             open.insert(g.key.clone());
-            wakes.extend(self.track(&g.key, g.s, &g.pending));
+            let mut wake = self.track(&g.key, g.s, &g.pending);
+            // A gone pane cannot be marked seen: the line names its open tasks.
+            if let Some(w) = wake.as_mut().filter(|w| w.fact == Fact::Gone && !g.open.is_empty()) {
+                w.task = Some(g.open.join(", "));
+                if let Some(h) = self.held.iter_mut().find(|h| h.pane == g.key) {
+                    h.task = w.task.clone();
+                }
+            }
+            wakes.extend(wake);
         }
         self.turned.clear();
         self.prompted.clear();
@@ -533,7 +558,15 @@ async fn lock(socket: &Path) -> Result<Option<File>> {
     let until = Instant::now() + LOCK_WAIT;
     loop {
         match f.try_lock() {
-            Ok(()) => return Ok(Some(f)),
+            Ok(()) => {
+                // The app reads who holds the lock, to tell a watcher that did
+                // not register and to restart it. Not fatal: the lock still works.
+                let mut f = f;
+                if let Err(e) = skiff_client::skipper::write_holder(&mut f, socket) {
+                    log(format!("cannot write the watch lock: {e:#}"));
+                }
+                return Ok(Some(f));
+            }
             Err(std::fs::TryLockError::WouldBlock) if Instant::now() < until => sleep(Duration::from_millis(250)).await,
             Err(std::fs::TryLockError::WouldBlock) => return Ok(None),
             Err(std::fs::TryLockError::Error(e)) => return Err(e).with_context(|| format!("lock {}", path.display())),
@@ -798,6 +831,20 @@ mod tests {
         assert_eq!(
             wake_line(&[w(Fact::Idle, "api", "abc12345"), w(Fact::Gone, "", "def67890")]),
             "[watch] pane api abc12345 is idle; pane def67890 is gone. Read them, then mark each seen."
+        );
+        // A gone pane with open tasks: they are reassigned or marked done, not marked seen.
+        let gone = |id: &str, t: &str| Wake { fact: Fact::Gone, pane: id.into(), name: String::new(), id: id.into(), task: Some(t.into()) };
+        assert_eq!(
+            wake_line(&[gone("4ac9e7a1", "d0e7b2f4")]),
+            "[watch] pane 4ac9e7a1 is gone: task d0e7b2f4 is open. Reassign it or mark it done."
+        );
+        assert_eq!(
+            wake_line(&[gone("4ac9e7a1", "d0e7b2f4, 5b1c9e2a")]),
+            "[watch] pane 4ac9e7a1 is gone: tasks d0e7b2f4, 5b1c9e2a are open. Reassign each task or mark it done."
+        );
+        assert_eq!(
+            wake_line(&[w(Fact::Idle, "api", "abc12345"), gone("4ac9e7a1", "d0e7b2f4")]),
+            "[watch] pane api abc12345 is idle; pane 4ac9e7a1 is gone: task d0e7b2f4 is open. Read the others, then mark each seen. Reassign each task of a gone pane or mark it done."
         );
         let mut w = Watcher::default();
         let s = info("abc12345xyz", "idle", true);
@@ -1166,7 +1213,9 @@ mod tests {
         run(&mut w, &rows, &[info("a", "idle", false)]);
         // Gone after a held pending line: the gone line replaces it.
         assert_eq!(run(&mut w, &rows, &[]), [Fact::Gone]);
-        assert_eq!(held(&w), [(Fact::Gone, None)]);
+        // It names the open task, which is reassigned or marked done, not marked seen.
+        assert_eq!(held(&w), [(Fact::Gone, Some("u1"))]);
+        assert_eq!(wake_line(&w.held), "[watch] pane a a is gone: task u1 is open. Reassign it or mark it done.");
     }
 
     #[test]

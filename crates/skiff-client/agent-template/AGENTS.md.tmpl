@@ -72,6 +72,9 @@ the commands:
 - `ls` shows `interrupted` when the pane restarted after the send, and `gone`
   when the pane no longer exists. See First steps. A `[watch]` line that says
   a task is interrupted means the same.
+- A `[watch]` line that says a pane is gone names its open tasks. A gone pane
+  cannot be marked seen. Tell the user, then reassign each task with
+  `skiff ledger update UID --pane S --state pending`, or set it to `done`.
 
 ## Task types
 

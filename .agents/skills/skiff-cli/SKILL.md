@@ -85,6 +85,9 @@ attach.
   runs a new shell under the old pane id, so the task's process is gone.
   `gone` means that the pane no longer exists. A plan shows `done` when its
   tasks are done, else `sent`.
+- A gone pane cannot be marked seen. Its `[watch]` line names its open tasks.
+  Reassign each one with `skiff ledger update UID --pane S --state pending`,
+  or close it with `skiff ledger update UID --state done`.
 - `skiff ledger rm` removes the row only. The result files stay.
 - `--type TYPE` on `ledger add` stores the task type the task went out as.
   `ls` and `show` print it. Skiff does not act on it.

@@ -382,7 +382,7 @@ fn spec(agent: &AgentInfo, name: &str, dir: PathBuf) -> SessionSpec {
 /// reload, and stops when the session ends. Its lock beside the socket keeps
 /// it to one copy. True when it started one.
 pub fn start_watch(socket: &Path, cli: &Path, session: &str) -> Result<bool> {
-    let lock = socket.with_extension("watch.lock");
+    let lock = watch_lock(socket);
     if let Ok(f) = std::fs::File::options().create(true).truncate(false).write(true).open(&lock) {
         if f.try_lock().is_err() {
             return Ok(false);
@@ -402,6 +402,127 @@ pub fn start_watch(socket: &Path, cli: &Path, session: &str) -> Result<bool> {
         let _ = child.wait();
     });
     Ok(true)
+}
+
+/// The watcher that holds the lock, as it writes itself into the lock file.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WatchHolder {
+    pub pid: u32,
+    /// The daemon socket it watches.
+    pub socket: String,
+    /// Unix time in milliseconds.
+    pub started_at: u64,
+}
+
+/// The watch lock beside the socket, as [`watch_status`] reads it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct WatchLock {
+    /// A process holds the lock: a watcher runs for this daemon, registered or not.
+    pub held: bool,
+    /// What the holder wrote. `None` when the lock is free, or when a watcher
+    /// from before this record holds it.
+    pub holder: Option<WatchHolder>,
+}
+
+/// The lock file of the watcher for `socket`.
+pub fn watch_lock(socket: &Path) -> PathBuf {
+    socket.with_extension("watch.lock")
+}
+
+/// Writes this process into the lock file that `f` holds, for the app's
+/// stale-watcher check and Restart. The lock stays on the file.
+pub fn write_holder(f: &mut std::fs::File, socket: &Path) -> Result<()> {
+    use std::io::{Seek, Write};
+    let me = WatchHolder { pid: std::process::id(), socket: socket.display().to_string(), started_at: skiff_core::session::now_ms() };
+    f.set_len(0)?;
+    f.seek(std::io::SeekFrom::Start(0))?;
+    f.write_all(serde_json::to_string(&me)?.as_bytes())?;
+    f.flush()?;
+    Ok(())
+}
+
+/// Whether a watcher holds the lock for `socket`, and which one. Reads only:
+/// a free lock is let go at once.
+pub fn watch_status(socket: &Path) -> Result<WatchLock> {
+    let path = watch_lock(socket);
+    let Ok(f) = std::fs::File::options().read(true).write(true).open(&path) else {
+        return Ok(WatchLock { held: false, holder: None });
+    };
+    match f.try_lock() {
+        Ok(()) => Ok(WatchLock { held: false, holder: None }),
+        Err(std::fs::TryLockError::WouldBlock) => {
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            Ok(WatchLock { held: true, holder: serde_json::from_str(text.trim()).ok() })
+        }
+        Err(std::fs::TryLockError::Error(e)) => Err(e).with_context(|| format!("lock {}", path.display())),
+    }
+}
+
+/// How long [`restart_watch`] waits for a signalled watcher to let go of its lock.
+pub const RESTART_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// True for the command line of `skiff watch`: a program named `skiff`
+/// with `watch` as its first argument. The program is the first word, or
+/// the first word after `--` (systemd-run on Linux).
+pub fn is_watch_command(cmd: &str) -> bool {
+    let words: Vec<&str> = cmd.split_whitespace().collect();
+    let at = words.iter().position(|w| *w == "--").map_or(0, |i| i + 1);
+    words.get(at).is_some_and(|w| Path::new(w).file_name().is_some_and(|n| n == "skiff")) && words.get(at + 1) == Some(&"watch")
+}
+
+/// The command line of a live process. `None` when it does not run.
+#[cfg(unix)]
+fn command_of(pid: u32) -> Option<String> {
+    // SAFETY: signal 0 only checks that the process exists.
+    if pid == 0 || unsafe { libc::kill(pid as libc::pid_t, 0) } != 0 {
+        return None;
+    }
+    let out = std::process::Command::new("ps").args(["-o", "command=", "-p", &pid.to_string()]).output().ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()).filter(|c| !c.is_empty())
+}
+
+/// Why the lock holder is not ours to stop. `None`: it is a live `skiff
+/// watch` for `socket`.
+#[cfg(unix)]
+fn not_stoppable(h: &WatchHolder, socket: &Path) -> Option<String> {
+    if Path::new(&h.socket) != socket {
+        return Some(format!("The watch lock names another socket ({}). Nothing was stopped.", h.socket));
+    }
+    match command_of(h.pid) {
+        None => Some(format!("Process {} holds no watcher. Nothing was stopped.", h.pid)),
+        Some(c) if !is_watch_command(&c) => Some(format!("Process {} is not skiff watch. Nothing was stopped.", h.pid)),
+        Some(_) => None,
+    }
+}
+
+/// Stops the watcher that holds the lock for `socket`, then starts one for
+/// `session` as [`start_watch`] does. It signals only a live `skiff watch`
+/// that wrote itself into the lock for this socket, with SIGTERM, and waits
+/// up to [`RESTART_WAIT`] for the lock. It never sends SIGKILL, and it never
+/// ends, types into or changes a session. True when it started a watcher.
+#[cfg(unix)]
+pub fn restart_watch(socket: &Path, cli: &Path, session: &str) -> Result<bool> {
+    let st = watch_status(socket)?;
+    if st.held {
+        let Some(h) = st.holder else {
+            bail!("A watcher holds the lock, but its pid is unknown. Stop it from a terminal, then restart.");
+        };
+        if let Some(why) = not_stoppable(&h, socket) {
+            bail!(why);
+        }
+        // SAFETY: a plain syscall to a checked pid.
+        if unsafe { libc::kill(h.pid as libc::pid_t, libc::SIGTERM) } != 0 {
+            bail!("Cannot signal the watcher (pid {}): {}", h.pid, std::io::Error::last_os_error());
+        }
+        let until = std::time::Instant::now() + RESTART_WAIT;
+        while watch_status(socket)?.held {
+            if std::time::Instant::now() >= until {
+                bail!("The watcher (pid {}) did not stop within 5 seconds. Nothing else changed.", h.pid);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+    start_watch(socket, cli, session)
 }
 
 /// A new, empty watch log. The last one moves to `<log>.1`, so the log of a
@@ -509,6 +630,122 @@ pub fn detach(cmd: &mut std::process::Command) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The lock tests run one at a time: a process another test forks holds
+    /// a copy of each open file until it execs, and with it a lock.
+    static LOCKS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn knows_the_watch_command() {
+        assert!(is_watch_command("/Applications/Skiff.app/Contents/MacOS/skiff watch 4ac9e7a1"));
+        assert!(is_watch_command("skiff watch abc"));
+        assert!(is_watch_command("systemd-run --user --scope -- /usr/bin/skiff watch abc"));
+        assert!(!is_watch_command("skiff ledger ls"));
+        assert!(!is_watch_command("/usr/bin/skiffd"));
+        assert!(!is_watch_command("vim skiff watch"));
+        assert!(!is_watch_command(""));
+    }
+
+    /// A watcher that holds the lock reads as held, with what it wrote. A free
+    /// lock reads as free, and the read does not keep it.
+    #[test]
+    fn reads_the_watch_lock_and_its_holder() {
+        let _one = LOCKS.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("skiff-watch-lock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("s.sock");
+        assert_eq!(watch_status(&socket).unwrap(), WatchLock { held: false, holder: None });
+        let mut f = std::fs::File::options().create(true).truncate(false).write(true).open(watch_lock(&socket)).unwrap();
+        f.lock().unwrap();
+        write_holder(&mut f, &socket).unwrap();
+        let st = watch_status(&socket).unwrap();
+        assert!(st.held);
+        let h = st.holder.unwrap();
+        assert_eq!((h.pid, h.socket.as_str()), (std::process::id(), socket.to_str().unwrap()));
+        // A watcher from before the record: held, pid unknown.
+        f.set_len(0).unwrap();
+        assert_eq!(watch_status(&socket).unwrap(), WatchLock { held: true, holder: None });
+        drop(f);
+        assert!(!watch_status(&socket).unwrap().held);
+        assert!(!watch_status(&socket).unwrap().held);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Restart signals nothing that is not a live `skiff watch` for this
+    /// socket: here the holder is the test itself, and it keeps running.
+    #[cfg(unix)]
+    #[test]
+    fn restart_stops_only_a_skiff_watch() {
+        let _one = LOCKS.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("skiff-watch-restart-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("s.sock");
+        let cli = dir.join("no-skiff");
+        let mut f = std::fs::File::options().create(true).truncate(false).write(true).open(watch_lock(&socket)).unwrap();
+        f.lock().unwrap();
+        let err = restart_watch(&socket, &cli, "abc").unwrap_err().to_string();
+        assert!(err.contains("pid is unknown"), "{err}");
+        write_holder(&mut f, &socket).unwrap();
+        let err = restart_watch(&socket, &cli, "abc").unwrap_err().to_string();
+        assert!(err.contains("is not skiff watch"), "{err}");
+        // Another socket's record is refused before any process check.
+        let other = WatchHolder { pid: std::process::id(), socket: "/elsewhere.sock".into(), started_at: 0 };
+        assert!(not_stoppable(&other, &socket).unwrap().contains("another socket"));
+        assert!(watch_status(&socket).unwrap().held);
+        drop(f);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A watcher that holds the lock and never registers is stopped with
+    /// SIGTERM, and a new one starts. The stand-in shows as `skiff watch` in
+    /// `ps`: python takes the lock, then execs `cat` named `skiff` on a FIFO
+    /// named `watch`, which blocks. Skipped without python3 or mkfifo.
+    #[cfg(unix)]
+    #[test]
+    fn restart_stops_a_stale_watcher_and_starts_one() {
+        let _one = LOCKS.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("skiff-watch-stale-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("s.sock");
+        if !std::process::Command::new("mkfifo").arg(dir.join("watch")).status().is_ok_and(|s| s.success()) {
+            return;
+        }
+        let script = r#"
+import fcntl, json, os, sys, time
+lock, sock = sys.argv[1], sys.argv[2]
+fd = os.open(lock, os.O_WRONLY | os.O_CREAT)
+fcntl.flock(fd, fcntl.LOCK_EX)
+os.ftruncate(fd, 0)
+os.write(fd, json.dumps({"pid": os.getpid(), "socket": sock, "started_at": int(time.time() * 1000)}).encode())
+os.set_inheritable(fd, True)
+os.execv("/bin/cat", ["skiff", "watch"])
+"#;
+        let Ok(mut child) = std::process::Command::new("python3")
+            .args(["-c", script])
+            .arg(watch_lock(&socket))
+            .arg(&socket)
+            .current_dir(&dir)
+            .spawn()
+        else {
+            return;
+        };
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !watch_status(&socket).unwrap().held || !command_of(child.id()).is_some_and(|c| is_watch_command(&c)) {
+            assert!(std::time::Instant::now() < until, "the stand-in watcher did not start");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let st = watch_status(&socket).unwrap();
+        assert_eq!(st.holder.map(|h| h.pid), Some(child.id()));
+        // `true` stands in for the skiff that starts the new watcher.
+        let started = restart_watch(&socket, Path::new("/usr/bin/true"), "abc").unwrap();
+        assert!(started);
+        let code = child.wait().unwrap();
+        assert_eq!(std::os::unix::process::ExitStatusExt::signal(&code), Some(libc::SIGTERM));
+        assert!(!watch_status(&socket).unwrap().held);
+        assert!(socket.with_extension("watch.log").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_new_watch_log_keeps_the_last_one() {

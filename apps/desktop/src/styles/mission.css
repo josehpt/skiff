@@ -66,3 +66,41 @@ body:has(.mission-search:focus) .mission-tile.lit::after { visibility: hidden; }
 .mission-count { flex-shrink: 0; font-size: calc(12px * var(--zoom, 1)); color: var(--text-3); }
 .mission-find:focus-within .mission-find-key { visibility: hidden; }
 .mission-tile[hidden], .mission-group[hidden], .mission-lane[hidden] { display: none; }
+
+/* The Skipper lane: first, and only while the watcher or an open task needs a look. */
+.mission-watch-state { flex-shrink: 0; font-size: calc(11px * var(--zoom, 1)); color: var(--text-3); }
+.mission-watch-state.bad { color: var(--error); }
+.mission-watch-state.waiting { color: var(--state-waiting-text); }
+.mission-open-count { flex-shrink: 0; font-size: calc(11px * var(--zoom, 1)); color: var(--text-3); }
+.mission-section { height: calc(20 * var(--u)); flex-shrink: 0; display: flex; align-items: center; padding: 0 calc(12 * var(--u)); border-bottom: 1px solid var(--rule); font-size: calc(11px * var(--zoom, 1)); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); }
+/* State shows as a word and a square: filled when it needs the user, hollow for the rest. */
+.mission-mark { flex-shrink: 0; width: calc(8 * var(--u)); height: calc(8 * var(--u)); box-sizing: border-box; border: 1px solid currentColor; }
+.mission-mark.filled { background: currentColor; }
+.mission-mark.bad { color: var(--error); }
+.mission-mark.waiting { color: var(--state-waiting); }
+.mission-mark.working { color: var(--state-working); }
+.mission-mark.idle { color: var(--state-idle); }
+.mission-head .mission-state { flex-shrink: 0; font-size: calc(11px * var(--zoom, 1)); font-weight: 600; color: var(--text-2); }
+.mission-meta { height: calc(20 * var(--u)); flex-shrink: 0; display: flex; align-items: center; padding: 0 calc(10 * var(--u)); border-bottom: 1px solid var(--rule); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(11px * var(--zoom, 1)); color: var(--text-dim); }
+.mission-screen.task { height: calc(4 * 14 * var(--u) + 16 * var(--u)); }
+.mission-note { padding: calc(8 * var(--u)) calc(10 * var(--u)); font-size: calc(12px * var(--zoom, 1)); line-height: 1.4; color: var(--text-2); white-space: normal; }
+.mission-foot { height: calc(28 * var(--u)); flex-shrink: 0; display: flex; align-items: center; gap: calc(8 * var(--u)); padding: 0 calc(10 * var(--u)); border-top: 1px solid var(--rule); background: var(--bg-panel); }
+.mission-uid { flex-shrink: 0; font-size: calc(11px * var(--zoom, 1)); color: var(--text-3); }
+.mission-hint { flex-grow: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(11px * var(--zoom, 1)); color: var(--text-3); }
+.mission-hint.error { color: var(--error); }
+/* Foot buttons are for the mouse; the keys reach the same actions through Enter and the menu. */
+.mission-act { flex-shrink: 0; height: calc(20 * var(--u)); padding: 0 calc(8 * var(--u)); border: 1px solid var(--rule-strong); border-radius: 0; background: var(--bg-raised); color: var(--text-2); font: inherit; font-size: calc(11px * var(--zoom, 1)); cursor: pointer; transition: background 120ms; }
+.mission-act:hover:not(:disabled) { background: var(--bg-panel); color: var(--text); }
+.mission-act:disabled { opacity: 0.5; cursor: default; }
+.mission-act.more { padding: 0 calc(6 * var(--u)); }
+.mission-tile.mission-skipper { background: var(--bg-deep); }
+.mission-head .mission-task-uid { color: var(--text-3); }
+
+/* Reassign…: the live panes, the task's project first. */
+.mission-pick { max-height: calc(240 * var(--u)); overflow-y: auto; margin-top: calc(8 * var(--u)); border: 1px solid var(--rule); }
+.mission-pick-row { height: calc(28 * var(--u)); display: flex; align-items: center; gap: calc(8 * var(--u)); padding: 0 calc(8 * var(--u)); cursor: pointer; font-size: calc(12px * var(--zoom, 1)); color: var(--text-2); }
+.mission-pick-row:has(input:checked) { background: var(--bg-raised); color: var(--text); }
+.mission-pick-row .name { flex-grow: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mission-pick-row .where { flex-shrink: 0; font-size: calc(11px * var(--zoom, 1)); color: var(--text-dim); }
+.mission-send { display: flex; align-items: center; gap: calc(8 * var(--u)); margin-top: calc(8 * var(--u)); font-size: calc(12px * var(--zoom, 1)); color: var(--text-2); }
+.mission-send-note { font-size: calc(11px * var(--zoom, 1)); color: var(--text-dim); }

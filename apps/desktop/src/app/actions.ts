@@ -26,7 +26,7 @@ import { fontTarget, setFontSize, stepPaneFont } from "../terminal/terminalFont"
 import { modeGate, modeKeyBlocked, toggleFocusMode, toggleMaximize } from "./modes";
 import { closePane, goBack, moveFocus, nextWaiting, removeFromGroup } from "../workspace/view";
 import { switcher } from "./commandUi";
-import { missionKey, missionOpen, toggleSearch } from "../workspace/missionControl";
+import { missionKey, missionMenu, missionOpen, toggleSearch } from "../workspace/missionControl";
 import { closeMission, goToSession, maximizeLit, toggleMission } from "../workspace/missionMotion";
 import { showShortcuts } from "../ui/infoDialogs";
 import { isSkiffAgent, openSkiffAgent, skiffAgentSession } from "./skiffAgent";
@@ -50,6 +50,8 @@ export function runAction(a: Action) {
   // the palette key searches its sessions; the list keys step its screens.
   if (missionOpen() && a === "maximize") return maximizeLit();
   if (missionOpen() && a === "palette") return toggleSearch();
+  // The menu key opens the lit Skipper tile's menu. On a session's screen it does nothing.
+  if (missionOpen() && a === "project-menu") return void missionMenu();
   if (missionKey(a)) return;
   // The top bar shows over the board, so its actions work there: Next waiting leaves the board on that session; Settings closes the board.
   // The Skiff agent's key leaves the board on its pane, or closes the board and starts it.

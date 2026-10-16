@@ -6,17 +6,23 @@ import { rune } from "../ui/runes";
  * Skiff agent › Task types. One implementation for both, so they add, edit,
  * remove and report errors the same way.
  *
- * - The draft row is always last. Enter in it, or its +, adds. An empty
- *   required cell gets the focus and no message. A bad value shows the error
- *   line, marks the cell and keeps the text. A good one adds the row, clears
- *   the draft and puts focus back in its first field.
+ * - The draft row is always last, on the panel color, with "New …" in its
+ *   name field. Enter in it, or its "Add agent" button, adds. Blur never
+ *   adds. The line under it says what the draft needs: nothing while it is
+ *   empty, "Not added yet. …" once it has text, "Adding x…" while it saves
+ *   and "Added x." after. The button fills when the draft can add, and a
+ *   second add while one saves does nothing. An empty required cell gets the
+ *   focus. A bad value shows its error on the line, marks the cell and keeps
+ *   the text. A good one adds the row, clears the draft and puts focus back
+ *   in its first field.
  * - In a row, a text cell saves on Enter or blur, Esc puts the old value
  *   back, and a select saves on change. A rename to an empty or taken name
  *   reverts, and the error line says why.
  * - − removes at once. Focus goes to the − now at the same place, else the
  *   last one, else the draft.
- * - The draft and the error live in the caller's {@link RowTableState}, so a
- *   redraw for any other reason keeps what the person typed.
+ * - The draft, the error and the save in flight live in the caller's
+ *   {@link RowTableState}, so a redraw for any other reason, a tab change or
+ *   closing Settings keeps what the person typed and what the line says.
  *
  * Every control is a native input, select or button, so the Settings arrow
  * keys reach each one. The table adds no key.
@@ -91,26 +97,27 @@ export interface RowTableState {
   error: string | null;
   /** The draft column the error is about. */
   bad: string | null;
+  /** The name of the draft being saved. While set, another add does nothing. */
+  pending: string | null;
+  /** The name of the last draft added. The line says so until the next edit. */
+  done: string | null;
 }
 
-export const tableState = (): RowTableState => ({ draft: {}, error: null, bad: null });
+export const tableState = (): RowTableState => ({ draft: {}, error: null, bad: null, pending: null, done: null });
+
+/** What the line under the draft says. "hidden": nothing. "error" is an alert, the others are polite. */
+export type LineKind = "hidden" | "incomplete" | "check" | "ready" | "adding" | "added" | "blocked" | "error";
 
 const FIELDS = new Set(["key", "text", "select"]);
 
 export function rowTable<R>(spec: RowTableSpec<R>, state: RowTableState, redraw: () => void): HTMLElement {
-  const errId = `${spec.grid}-error`;
+  const lineId = `${spec.grid}-line`;
   const table = h("div", `set-table ${spec.grid}`);
   table.dataset.rowTable = spec.grid;
   table.setAttribute("role", "table");
   table.setAttribute("aria-labelledby", spec.labelledBy);
 
-  const initial = (c: RowCol<R>) => c.initial?.() ?? "";
-  const value = (c: RowCol<R>) => {
-    const v = state.draft[c.key] ?? initial(c);
-    // A draft select keeps a value only while it is an option.
-    if (c.kind === "select" && !(c.options?.(null) ?? []).some(([o]) => o === v)) return initial(c);
-    return v;
-  };
+  const value = (c: RowCol<R>) => draftValue(c, state);
   const current = (): Draft => Object.fromEntries(spec.cols.map((c) => [c.key, value(c)]));
   const draftLabel = (c: RowCol<R>) => `New ${spec.noun} ${c.name}`;
   const firstField = spec.cols.find((c) => FIELDS.has(c.kind));
@@ -124,9 +131,10 @@ export function rowTable<R>(spec: RowTableSpec<R>, state: RowTableState, redraw:
   const focusDraft = () => firstField && focus(draftLabel(firstField));
 
   /** Shows the outcome of a save. True when it worked. */
-  function settle(error: string | null, bad: string | null = null): boolean {
+  function settle(error: string | null, bad: string | null = null, done: string | null = null): boolean {
     state.error = error;
     state.bad = error ? bad : null;
+    state.done = done;
     redraw();
     return !error;
   }
@@ -193,18 +201,24 @@ export function rowTable<R>(spec: RowTableSpec<R>, state: RowTableState, redraw:
     table.appendChild(row);
   });
 
-  // The draft row.
+  // The draft row. It looks unlike the rows above: the panel color, "New …" and a labeled button.
   const draft = h("div", "set-row set-draft");
   draft.setAttribute("role", "row");
+  draft.setAttribute("aria-label", `New ${spec.noun}`);
   let preview: HTMLElement | null = null;
   const values = current();
+  const inputs: HTMLInputElement[] = [];
   for (const c of spec.cols) {
     const cell = h("span", cellClass(c));
     cell.setAttribute("role", "cell");
     const label = draftLabel(c);
     const note = c.note?.(null, values);
     if (c.kind === "lead") {
-      // Blank: the draft has no switch.
+      // No switch: a dim + says the row is new.
+      const plus = rune("indicators-plus");
+      plus.classList.add("set-draft-mark");
+      plus.setAttribute("aria-hidden", "true");
+      cell.appendChild(plus);
     } else if (c.kind === "preview") {
       preview = fillPreview(cell, spec.preview?.(values) ?? "", false);
     } else if (note !== null && note !== undefined) {
@@ -213,22 +227,29 @@ export function rowTable<R>(spec: RowTableSpec<R>, state: RowTableState, redraw:
       const el =
         c.kind === "select"
           ? select(c, c.options?.(null) ?? [], value(c), label)
-          : field(c, value(c), c.placeholder?.(null) ?? (c.kind === "key" ? `Add ${spec.noun}` : ""), label);
-      if (state.bad === c.key && state.error) {
-        el.setAttribute("aria-invalid", "true");
-        el.setAttribute("aria-describedby", errId);
-      }
+          : field(c, value(c), c.placeholder?.(null) ?? (c.kind === "key" ? newName(spec, c) : ""), label);
+      el.setAttribute("aria-describedby", lineId);
+      if (state.bad === c.key && state.error) el.setAttribute("aria-invalid", "true");
       if (el instanceof HTMLSelectElement) {
         el.addEventListener("change", () => {
+          if (state.pending !== null) {
+            el.value = value(c);
+            return;
+          }
           state.draft[c.key] = el.value;
+          state.error = state.bad = state.done = null;
           // The agent decides whether the model is a field.
           redraw();
           focus(label);
         });
       } else {
+        inputs.push(el);
         el.addEventListener("input", () => {
           state.draft[c.key] = el.value;
+          // An edit ends what the line said about the last add or error. No redraw: the keys stay in the field.
+          state.error = state.bad = state.done = null;
           if (preview) preview.textContent = preview.title = spec.preview?.(current()) ?? "";
+          paint();
         });
       }
       el.addEventListener("keydown", (e) => {
@@ -236,7 +257,7 @@ export function rowTable<R>(spec: RowTableSpec<R>, state: RowTableState, redraw:
         if (k === "Enter") {
           e.preventDefault();
           void submit();
-        } else if (k === "Escape" && dirty()) {
+        } else if (k === "Escape" && dirty() && state.pending === null) {
           // Clears the draft. Settings stays open: Esc in an empty draft closes it.
           e.stopPropagation();
           e.preventDefault();
@@ -251,51 +272,78 @@ export function rowTable<R>(spec: RowTableSpec<R>, state: RowTableState, redraw:
   }
   const end = h("span", "c-status c-end");
   end.setAttribute("role", "cell");
-  // Never off: the + always says what is missing.
-  const add = iconButton("indicators-plus", "Add", `Add ${spec.noun}`);
+  // Never disabled: an add that cannot go says why on the line. While a save runs it is aria-disabled and does nothing.
+  const addText = `Add ${spec.noun}`;
+  const add = h("button", "set-add");
+  add.type = "button";
+  add.setAttribute("aria-label", addText);
+  add.setAttribute("aria-describedby", lineId);
+  const addWord = h("span", "", addText);
+  add.append(rune("indicators-plus"), addWord);
   add.addEventListener("click", () => void submit());
   end.appendChild(add);
   draft.appendChild(end);
   table.appendChild(draft);
 
-  if (state.error) {
-    const err = h("div", "set-error", state.error);
-    err.id = errId;
-    err.setAttribute("role", "alert");
-    table.appendChild(err);
-  }
+  // One line under the draft: the hint, the save in flight, the outcome or the error.
+  // It stays in the DOM when empty, so a screen reader hears each change.
+  const line = h("div", "set-hint");
+  line.id = lineId;
+  table.appendChild(line);
+  paint();
   return table;
 
+  /** Puts the line, the button and the fields in step with the state, in place. */
+  function paint() {
+    const { kind, text } = draftLine(spec, state);
+    line.dataset.kind = kind;
+    line.classList.toggle("set-error", kind === "error");
+    line.setAttribute("role", kind === "error" ? "alert" : "status");
+    line.textContent = text;
+    const adding = kind === "adding";
+    add.classList.toggle("ready", kind === "ready");
+    if (adding) add.setAttribute("aria-disabled", "true");
+    else add.removeAttribute("aria-disabled");
+    addWord.textContent = adding ? "Adding…" : addText;
+    // While it saves, the draft keeps what was sent.
+    for (const i of inputs) i.readOnly = adding;
+    if (!state.error) for (const el of draft.querySelectorAll("[aria-invalid]")) el.removeAttribute("aria-invalid");
+  }
+
   function dirty(): boolean {
-    return spec.cols.some((c) => FIELDS.has(c.kind) && value(c) !== initial(c));
+    return draftDirty(spec, state);
   }
 
   async function submit() {
+    if (state.pending !== null) return;
     const blocked = spec.blocked?.();
     if (blocked) {
       settle(blocked, firstField?.key ?? null);
       return focusDraft();
     }
-    const d = current();
-    for (const c of spec.cols) d[c.key] = d[c.key].trim();
-    const shown = (c: RowCol<R>) => c.note?.(null, d) == null;
-    // A cell that shows a note has no field: what was typed there before does not count.
-    for (const c of spec.cols) if (!shown(c)) d[c.key] = "";
+    const { d, shown } = draftValues(spec, state);
     // An empty required cell: the keys go there, and nothing is wrong yet.
-    const empty = spec.cols.find((c) => c.required && shown(c) && !d[c.key]);
+    const empty = missing(spec, d, shown);
     if (empty) return focus(draftLabel(empty));
-    for (const c of spec.cols.filter((c) => FIELDS.has(c.kind) && shown(c) && d[c.key])) {
-      const why =
-        c.check?.(d[c.key]) ??
-        (c.kind === "key" && spec.rows.some((r) => spec.id(r) === d[c.key]) ? `${spec.article} named ${d[c.key]} exists. ${spec.dupHint}` : null);
-      if (why) {
-        settle(why, c.key);
-        return focus(draftLabel(c));
-      }
+    const bad = invalid(spec, d, shown);
+    if (bad) {
+      settle(bad.why, bad.col.key);
+      return focus(draftLabel(bad.col));
     }
-    const error = await spec.add(d);
+    const name = d[spec.cols.find((c) => c.kind === "key")?.key ?? ""];
+    state.pending = name;
+    state.error = state.bad = state.done = null;
+    paint();
+    let error: string | null;
+    try {
+      error = await spec.add(d);
+    } catch (e) {
+      error = String(e);
+    } finally {
+      state.pending = null;
+    }
     if (!error) state.draft = {};
-    settle(error);
+    settle(error, null, error ? null : name);
     focusDraft();
   }
 
@@ -324,6 +372,74 @@ export function rowTable<R>(spec: RowTableSpec<R>, state: RowTableState, redraw:
     if (next) next.focus();
     else focusDraft();
   }
+}
+
+/** The draft as it would be sent: trimmed, and empty where a cell shows a note. */
+export function draftValues<R>(spec: RowTableSpec<R>, state: RowTableState): { d: Draft; shown: (c: RowCol<R>) => boolean } {
+  const d: Draft = {};
+  for (const c of spec.cols) d[c.key] = draftValue(c, state).trim();
+  const shown = (c: RowCol<R>) => c.note?.(null, d) == null;
+  // A cell that shows a note has no field: what was typed there before does not count.
+  for (const c of spec.cols) if (!shown(c)) d[c.key] = "";
+  return { d, shown };
+}
+
+const initialOf = <R>(c: RowCol<R>) => c.initial?.() ?? "";
+
+/** A draft cell's value as it shows. */
+function draftValue<R>(c: RowCol<R>, state: RowTableState): string {
+  const v = state.draft[c.key] ?? initialOf(c);
+  // A draft select keeps a value only while it is an option.
+  if (c.kind === "select" && !(c.options?.(null) ?? []).some(([o]) => o === v)) return initialOf(c);
+  return v;
+}
+
+/** True when a draft field differs from its starting value. */
+export function draftDirty<R>(spec: RowTableSpec<R>, state: RowTableState): boolean {
+  return spec.cols.some((c) => FIELDS.has(c.kind) && draftValue(c, state) !== initialOf(c));
+}
+
+/** The first required cell that is empty, if one is. */
+function missing<R>(spec: RowTableSpec<R>, d: Draft, shown: (c: RowCol<R>) => boolean): RowCol<R> | undefined {
+  return spec.cols.find((c) => c.required && shown(c) && !d[c.key]);
+}
+
+/** The first cell with a value that cannot be added, and why. */
+function invalid<R>(spec: RowTableSpec<R>, d: Draft, shown: (c: RowCol<R>) => boolean): { col: RowCol<R>; why: string } | null {
+  for (const c of spec.cols.filter((c) => FIELDS.has(c.kind) && shown(c) && d[c.key])) {
+    const why =
+      c.check?.(d[c.key]) ??
+      (c.kind === "key" && spec.rows.some((r) => spec.id(r) === d[c.key]) ? `${spec.article} named ${d[c.key]} exists. ${spec.dupHint}` : null);
+    if (why) return { col: c, why };
+  }
+  return null;
+}
+
+/** "a command", "an agent name": the field named in "Type …". */
+function fieldWords<R>(spec: RowTableSpec<R>, c: RowCol<R>): string {
+  if (c.kind === "key") return `${spec.article.toLowerCase()} name`;
+  return `${/^[aeiou]/i.test(c.name) ? "an" : "a"} ${c.name}`;
+}
+
+/** The kind and the text of the line under the draft. */
+export function draftLine<R>(spec: RowTableSpec<R>, state: RowTableState): { kind: LineKind; text: string } {
+  const add = `Add ${spec.noun}`;
+  if (state.pending !== null) return { kind: "adding", text: `Adding ${state.pending}…` };
+  if (state.error) return { kind: "error", text: state.error };
+  const blocked = spec.blocked?.();
+  if (blocked) return { kind: "blocked", text: blocked };
+  if (!draftDirty(spec, state)) return state.done !== null ? { kind: "added", text: `Added ${state.done}.` } : { kind: "hidden", text: "" };
+  const { d, shown } = draftValues(spec, state);
+  const empty = missing(spec, d, shown);
+  if (empty) return { kind: "incomplete", text: `Not added yet. Type ${fieldWords(spec, empty)}, then press Enter.` };
+  const name = d[spec.cols.find((c) => c.kind === "key")?.key ?? ""] || `The new ${spec.noun}`;
+  if (invalid(spec, d, shown)) return { kind: "check", text: `${name} is not added yet. Press Enter or ${add} to see what to change.` };
+  return { kind: "ready", text: `${name} is not added yet. Press Enter or ${add}.` };
+}
+
+/** The draft's name placeholder: "New agent name", "New task type". */
+function newName<R>(spec: RowTableSpec<R>, c: RowCol<R>): string {
+  return spec.noun.endsWith(c.name) ? `New ${spec.noun}` : `New ${spec.noun} ${c.name}`;
 }
 
 function cellClass<R>(c: RowCol<R>): string {

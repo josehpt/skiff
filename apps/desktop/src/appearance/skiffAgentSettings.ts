@@ -151,7 +151,7 @@ export function taskTypesSection(
         },
       ],
       preview: (d) => taskCommand(byId(d.agent), d.model),
-      blocked: () => (choices.length ? null : "Turn on an agent in Settings › Agents."),
+      blocked: () => (choices.length ? null : "Turn on an agent in Settings › Agents to add a task type."),
       add: (d) => save({ key: "add_task", value: { type: d.type, agent: d.agent, model: d.model || null } }),
       edit: (t, key, v) => {
         if (key === "type") return save({ key: "rename_task", value: { from: t.type, to: v } });

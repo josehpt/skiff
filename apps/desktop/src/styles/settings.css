@@ -35,7 +35,7 @@
 .set-agent.missing button.c-on { cursor: not-allowed; }
 :is(.set-agent, .set-table) .set-rm { height: calc(26 * var(--u)); margin-left: auto; padding: 0 calc(10 * var(--u)); border: 1px solid var(--rule); border-radius: 0; background: transparent; color: var(--text-3); font: calc(12px * var(--zoom, 1)) var(--font); }
 :is(.set-agent, .set-table) .set-rm:hover { border-color: var(--text-3); color: var(--text); }
-/* Remove and Add: one square size, so the column lines up. */
+/* Remove: a square icon button. */
 :is(.set-agent, .set-table) .set-rm.set-ico { width: calc(26 * var(--u)); padding: 0; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .set-agent input.c-name { width: 100%; min-width: 0; border: 0; border-left: 1px solid var(--rule); border-radius: 0; outline: 0; background: transparent; color: inherit; font: 500 calc(14px * var(--zoom, 1)) var(--font); }
 .set-agent input.c-name::placeholder { color: var(--text-dim); font-weight: 400; }
@@ -75,7 +75,7 @@
 /* Settings tables (appearance/rowTable.ts): Agents and Task types. Each cell is a span; a field fills its cell. */
 .set-table { flex-shrink: 0; display: flex; flex-direction: column; }
 .set-table.g-agents .set-row { grid-template-columns: calc(72 * var(--u)) calc(200 * var(--u)) minmax(0, 1fr) calc(220 * var(--u)); }
-.set-table.g-tasks .set-row { grid-template-columns: calc(200 * var(--u)) calc(160 * var(--u)) calc(160 * var(--u)) minmax(0, 1fr) calc(56 * var(--u)); }
+.set-table.g-tasks .set-row { grid-template-columns: calc(200 * var(--u)) calc(160 * var(--u)) calc(160 * var(--u)) minmax(0, 1fr) calc(160 * var(--u)); }
 .set-table .set-row > .c-field, .set-table .set-row > .c-lead { padding: 0; }
 .set-table .set-row > .c-lead { justify-content: center; }
 .set-table .set-row > .c-lead > button { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
@@ -95,3 +95,23 @@
 .set-agent.missing .c-state { color: var(--text-dim); }
 .set-agent.missing .c-state .sq { background: var(--rule-strong); }
 .set-table .set-cols > .c-field, .set-table .set-cols > .c-preview { padding: 0 calc(12 * var(--u)); }
+/* The draft row (rowTable.ts): unlike the rows above, so it does not read as saved. */
+.set-table .set-draft { background: var(--bg-panel); }
+.set-table .set-draft .c-field > input, .set-table .set-draft .c-field > input.c-name, .set-table .set-draft .c-field > select { background: var(--bg); }
+.set-table .set-draft > .c-lead { color: var(--text-dim); }
+.set-table .set-add { height: calc(26 * var(--u)); margin-left: auto; padding: 0 calc(10 * var(--u)); display: flex; align-items: center; gap: calc(6 * var(--u)); flex-shrink: 0; border: 1px solid var(--rule-strong); border-radius: 0; background: transparent; color: var(--text-2); font: 500 calc(12px * var(--zoom, 1)) var(--font); white-space: nowrap; transition: background-color 120ms, border-color 120ms, color 120ms; }
+.set-table .set-add:hover { border-color: var(--text-3); color: var(--text); }
+.set-table .set-add.ready { border-color: var(--state-working); background: var(--state-working); color: var(--on-working); }
+.set-table .set-add[aria-disabled="true"] { border-color: var(--rule-strong); background: transparent; color: var(--text-3); cursor: progress; }
+/* The line under the draft: as .set-error, and no height while it has nothing to say. */
+.set-hint { display: flex; align-items: center; gap: calc(8 * var(--u)); padding: calc(10 * var(--u)) calc(24 * var(--u)); color: var(--text-3); font-size: calc(12px * var(--zoom, 1)); border-bottom: 1px solid var(--rule); }
+.set-hint:empty { padding: 0; border-bottom: 0; }
+.set-hint.set-error { background: var(--error-bg); color: var(--error-text); }
+.set-hint:is([data-kind="ready"], [data-kind="adding"], [data-kind="added"])::before { content: ""; flex-shrink: 0; width: calc(8 * var(--u)); height: calc(8 * var(--u)); }
+.set-hint[data-kind="ready"] { color: var(--text-2); }
+.set-hint[data-kind="ready"]::before { background: var(--state-working); }
+.set-hint[data-kind="adding"]::before { background: var(--state-waiting); }
+.set-hint[data-kind="added"]::before { background: var(--ok); }
+/* Remove is destructive: red on hover and keyboard focus. */
+.set-table .c-remove { transition: border-color 120ms, color 120ms; }
+.set-table .c-remove:hover, body.kbd .set-table .c-remove:focus { border-color: var(--error); color: var(--error); }

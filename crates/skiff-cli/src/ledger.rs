@@ -22,8 +22,8 @@ const GONE: &str = "gone";
 
 /// Version 1: `tasks` with a reusable id and a pane on every row. Version 2
 /// adds the uid, plans, the pane generation and the ref, and never reuses an
-/// id.
-const VERSION: i64 = 2;
+/// id. Version 3 adds the task type.
+const VERSION: i64 = 3;
 
 const TASKS: &str = "
 CREATE TABLE tasks (
@@ -39,14 +39,15 @@ CREATE TABLE tasks (
   state       TEXT NOT NULL CHECK (state IN ('sent', 'pending', 'blocked', 'done')),
   result_path TEXT,
   ref         TEXT,
-  updated_at  TEXT NOT NULL
+  updated_at  TEXT NOT NULL,
+  type        TEXT
 );
 ";
 
 /// Every uid the ledger gave out, so a removed row's uid is not given again.
 const UIDS: &str = "CREATE TABLE IF NOT EXISTS uids (uid TEXT PRIMARY KEY);";
 
-const COLUMNS: &str = "id, uid, kind, parent, pane_id, pane_gen, project, task, sent_at, state, result_path, ref, updated_at";
+const COLUMNS: &str = "id, uid, kind, parent, pane_id, pane_gen, project, task, sent_at, state, result_path, ref, updated_at, type";
 
 /// UTC, to the second, set by SQLite.
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
@@ -73,6 +74,9 @@ pub struct Row {
     #[serde(rename = "ref")]
     pub reference: Option<String>,
     pub updated_at: String,
+    /// The task type from `[skiff_agent.tasks]`. Skiff stores it and never acts on it.
+    #[serde(rename = "type")]
+    pub task_type: Option<String>,
     /// The pane still exists. Absent when the daemon did not answer, and on a plan.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub live: Option<bool>,
@@ -151,6 +155,29 @@ fn open_at(file: &Path) -> Result<Connection> {
 /// transaction: every row keeps its id and gets a uid. The columns decide,
 /// not `user_version`, as an older `skiff` writes version 1 there on each open.
 fn migrate(db: &mut Connection) -> Result<()> {
+    migrate_v2(db)?;
+    add_type(db)
+}
+
+/// Version 3: the `type` column, empty on every old row. An older `skiff`
+/// names its columns, so it still reads and writes the file.
+fn add_type(db: &mut Connection) -> Result<()> {
+    let has = |db: &Connection| -> rusqlite::Result<bool> {
+        db.query_row("SELECT count(*) FROM pragma_table_info('tasks') WHERE name = 'type'", [], |r| r.get::<_, i64>(0)).map(|n| n > 0)
+    };
+    if has(db)? {
+        return Ok(());
+    }
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    if !has(&tx)? {
+        tx.execute_batch("ALTER TABLE tasks ADD COLUMN type TEXT;")?;
+        tx.pragma_update(None, "user_version", VERSION)?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+fn migrate_v2(db: &mut Connection) -> Result<()> {
     let has = |db: &Connection, sql: &str| -> rusqlite::Result<bool> { db.query_row(sql, [], |r| r.get::<_, i64>(0)).map(|n| n > 0) };
     let current = "SELECT count(*) FROM pragma_table_info('tasks') WHERE name = 'uid'";
     if has(db, current)? {
@@ -344,6 +371,7 @@ fn rows(db: &Connection, where_: &str, arg: Option<&dyn rusqlite::ToSql>) -> Res
             result_path: r.get(10)?,
             reference: r.get(11)?,
             updated_at: r.get(12)?,
+            task_type: r.get(13)?,
             live: None,
             interrupted: None,
         })
@@ -443,6 +471,7 @@ fn print_rows(rows: &[(Row, bool)]) {
         None => "?",
     };
     let refs = rows.iter().any(|(r, _)| r.reference.is_some());
+    let types = rows.iter().any(|(r, _)| r.task_type.is_some());
     let table: Vec<Vec<String>> = rows
         .iter()
         .map(|(r, child)| {
@@ -459,6 +488,9 @@ fn print_rows(rows: &[(Row, bool)]) {
             if refs {
                 row.push(r.reference.clone().unwrap_or_default());
             }
+            if types {
+                row.push(r.task_type.clone().unwrap_or_default());
+            }
             row.push(r.task.clone());
             row
         })
@@ -466,6 +498,9 @@ fn print_rows(rows: &[(Row, bool)]) {
     let mut header = vec!["ID", "UID", "STATE", "PANE", "LIVE", "PROJECT", "SENT", "RESULT"];
     if refs {
         header.push("REF");
+    }
+    if types {
+        header.push("TYPE");
     }
     header.push("TASK");
     print::table(&header, &table);
@@ -489,6 +524,9 @@ fn print_one(r: &Row) {
     if let Some(x) = &r.reference {
         f.push(("ref", x.clone()));
     }
+    if let Some(x) = &r.task_type {
+        f.push(("type", x.clone()));
+    }
     f.push(("task", r.task.clone()));
     print::table(&["", ""], &f.into_iter().map(|(k, v)| vec![k.to_string(), v]).collect::<Vec<_>>());
 }
@@ -505,6 +543,7 @@ struct New {
     state: String,
     result: Option<String>,
     reference: Option<String>,
+    task_type: Option<String>,
 }
 
 /// Adds a row with a new uid, and its default result path unless it names
@@ -522,10 +561,10 @@ fn insert(db: &mut Connection, file: &Path, n: New) -> Result<(i64, String, Stri
     };
     tx.execute(
         &format!(
-            "INSERT INTO tasks (uid, kind, parent, pane_id, pane_gen, project, task, sent_at, state, result_path, ref, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, {NOW}, ?8, ?9, ?10, {NOW})"
+            "INSERT INTO tasks (uid, kind, parent, pane_id, pane_gen, project, task, sent_at, state, result_path, ref, updated_at, type)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, {NOW}, ?8, ?9, ?10, {NOW}, ?11)"
         ),
-        params![uid, if n.plan { "plan" } else { "task" }, parent.map(|p| p.uid), n.pane_id, n.pane_gen, n.project, n.task, n.state, result, n.reference],
+        params![uid, if n.plan { "plan" } else { "task" }, parent.map(|p| p.uid), n.pane_id, n.pane_gen, n.project, n.task, n.state, result, n.reference, n.task_type],
     )?;
     let id = tx.last_insert_rowid();
     tx.commit()?;
@@ -603,7 +642,8 @@ async fn send_row(socket: &Path, db: &Connection, row: &Row, o: SendOpts) -> Res
 /// The exit code: `send`'s for `send` and `add --send`, else 0.
 pub async fn run(socket: &Path, cmd: LedgerCmd) -> Result<i32> {
     match cmd {
-        LedgerCmd::Add { pane: p, task, plan: is_plan, parent, project, state: st, result, reference, send, enter, shell } => {
+        LedgerCmd::Add { pane: p, task, plan: is_plan, parent, project, state: st, result, reference, task_type, send, enter, shell } => {
+            let task_type = task_type.as_deref().map(skiff_core::tasks::check_name).transpose()?.map(str::to_string);
             let st = if send { "pending".to_string() } else { state(&st)?.to_string() };
             let (pane_id, pane_gen, project) = match p {
                 Some(p) if !is_plan => {
@@ -614,7 +654,7 @@ pub async fn run(socket: &Path, cmd: LedgerCmd) -> Result<i32> {
                 _ => (None, None, project.unwrap_or_default()),
             };
             let file = path()?;
-            let new = New { plan: is_plan, parent, pane_id, pane_gen, project, task, state: st, result, reference };
+            let new = New { plan: is_plan, parent, pane_id, pane_gen, project, task, state: st, result, reference, task_type };
             let mut db = open_at(&file)?;
             let (id, uid, result) = insert(&mut db, &file, new)?;
             println!("id {id}\nuid {uid}\nresult {result}");
@@ -628,8 +668,9 @@ pub async fn run(socket: &Path, cmd: LedgerCmd) -> Result<i32> {
             let row = one(&db, &id)?;
             return send_row(socket, &db, &row, SendOpts { text, enter, shell }).await;
         }
-        LedgerCmd::Update { id, state: st, result, task, pane: p, project, parent, reference } => {
+        LedgerCmd::Update { id, state: st, result, task, pane: p, project, parent, reference, task_type } => {
             let st = st.as_deref().map(state).transpose()?;
+            let task_type = task_type.as_deref().map(skiff_core::tasks::check_name).transpose()?;
             let db = open()?;
             let row = one(&db, &id)?;
             if row.is_plan() && (p.is_some() || parent.is_some()) {
@@ -654,9 +695,9 @@ pub async fn run(socket: &Path, cmd: LedgerCmd) -> Result<i32> {
                 &format!(
                     "UPDATE tasks SET state = coalesce(?2, state), result_path = coalesce(?3, result_path), task = coalesce(?4, task),
                      pane_id = coalesce(?5, pane_id), project = coalesce(?6, project), parent = coalesce(?7, parent), ref = coalesce(?8, ref),
-                     pane_gen = CASE WHEN ?9 THEN ?10 ELSE pane_gen END, updated_at = {NOW} WHERE id = ?1"
+                     pane_gen = CASE WHEN ?9 THEN ?10 ELSE pane_gen END, type = coalesce(?11, type), updated_at = {NOW} WHERE id = ?1"
                 ),
-                params![row.id, st, result, task, pane_id, project, parent, reference, gen.is_some(), gen.flatten()],
+                params![row.id, st, result, task, pane_id, project, parent, reference, gen.is_some(), gen.flatten(), task_type],
             )?;
         }
         LedgerCmd::Ls { state: st, json } => {
@@ -751,7 +792,38 @@ mod tests {
             state: "sent".into(),
             result: None,
             reference: None,
+            task_type: None,
         }
+    }
+
+    #[test]
+    fn a_version_2_ledger_gets_the_type_column_and_add_stores_the_type() {
+        let dir = scratch("type");
+        let file = dir.join("ledger.db");
+        {
+            let db = Connection::open(&file).unwrap();
+            // The schema as version 2 made it: no type.
+            db.execute_batch(&TASKS.replace(",\n  type        TEXT", "")).unwrap();
+            db.execute_batch(UIDS).unwrap();
+            db.execute_batch(
+                "PRAGMA user_version = 2;
+                 INSERT INTO tasks (uid, pane_id, project, task, sent_at, state, updated_at) VALUES ('a1b2c3d4', 'aaa', 'app', 'old', 'x', 'sent', 'x');",
+            )
+            .unwrap();
+            assert!(rows(&db, "", None).is_err(), "the v2 file has no type column");
+        }
+        let mut db = open_at(&file).unwrap();
+        assert_eq!(rows(&db, "", None).unwrap()[0].task_type, None);
+        let v: i64 = db.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, VERSION);
+        let (id, _, _) = insert(&mut db, &file, New { task_type: Some("review".into()), ..task("review the parser") }).unwrap();
+        let r = one(&db, &id.to_string()).unwrap();
+        assert_eq!(r.task_type.as_deref(), Some("review"));
+        assert_eq!(serde_json::to_value(&r).unwrap()["type"], "review");
+        // A second open changes nothing.
+        drop(db);
+        assert_eq!(one(&open_at(&file).unwrap(), &id.to_string()).unwrap().task_type.as_deref(), Some("review"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

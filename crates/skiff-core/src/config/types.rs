@@ -65,6 +65,63 @@ pub struct SkiffAgent {
     /// A restored pane continues the last conversation in the folder.
     #[serde(default)]
     pub continue_on_restore: bool,
+    /// `[skiff_agent.tasks]`: the agent and model each task type starts.
+    #[serde(default, skip_serializing_if = "TaskTypes::is_empty")]
+    pub tasks: TaskTypes,
+}
+
+/// One `[skiff_agent.tasks]` row: `review = { agent = "claude", model = "opus" }`.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+pub struct TaskRow {
+    /// An agent id from `[agents]`.
+    pub agent: String,
+    /// Absent: the agent's default model.
+    pub model: Option<String>,
+}
+
+/// `[skiff_agent.tasks]` in file order, which is the order Settings shows.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TaskTypes(pub Vec<(String, TaskRow)>);
+
+impl TaskTypes {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn get(&self, name: &str) -> Option<&TaskRow> {
+        self.0.iter().find(|(k, _)| k == name).map(|(_, r)| r)
+    }
+}
+
+impl Serialize for TaskTypes {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut m = s.serialize_map(Some(self.0.len()))?;
+        for (k, v) in &self.0 {
+            m.serialize_entry(k, v)?;
+        }
+        m.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for TaskTypes {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct Rows;
+        impl<'de> serde::de::Visitor<'de> for Rows {
+            type Value = TaskTypes;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a table of task types")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, mut m: A) -> Result<TaskTypes, A::Error> {
+                let mut rows = Vec::new();
+                while let Some((k, v)) = m.next_entry::<String, TaskRow>()? {
+                    rows.push((k, v));
+                }
+                Ok(TaskTypes(rows))
+            }
+        }
+        d.deserialize_map(Rows)
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]

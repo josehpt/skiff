@@ -101,10 +101,13 @@ fn path_warning(exe: &Path, path: &std::ffi::OsStr) -> Option<String> {
     (!same(&first, exe)).then(|| format!("the first skiff on PATH is {}, not this one ({}). A shell runs that one", first.display(), exe.display()))
 }
 
+/// The agents, then the task types with the command each one starts. JSON:
+/// `{"agents": [...], "tasks": [...]}`, so Skipper and the skill read one source.
 pub async fn agents(c: &Client, json: bool) -> Result<()> {
     let agents = c.list_agents().await?;
+    let tasks = skiff_core::tasks::resolve(&skiff_core::config::load()?.skiff_agent.tasks, &agents);
     if json {
-        return print::json(&agents);
+        return print::json(&serde_json::json!({ "agents": agents, "tasks": tasks }));
     }
     let yes = |b: bool| if b { "yes" } else { "no" }.to_string();
     let rows: Vec<Vec<String>> = agents
@@ -112,7 +115,26 @@ pub async fn agents(c: &Client, json: bool) -> Result<()> {
         .map(|a| vec![a.id.clone(), yes(a.installed), yes(a.enabled), a.command.clone()])
         .collect();
     print::table(&["ID", "INSTALLED", "ENABLED", "COMMAND"], &rows);
+    if !tasks.is_empty() {
+        println!();
+        print::table(&["TYPE", "AGENT", "MODEL", "COMMAND"], &task_rows(&tasks));
+    }
     Ok(())
+}
+
+/// A task type per row. A row that starts nothing shows why in COMMAND.
+fn task_rows(tasks: &[skiff_core::tasks::TaskType]) -> Vec<Vec<String>> {
+    tasks
+        .iter()
+        .map(|t| {
+            let cmd = match (&t.command, &t.error) {
+                (Some(c), None) => c.clone(),
+                (Some(c), Some(e)) => format!("{c}  ({e})"),
+                (None, e) => format!("error: {}", e.as_deref().unwrap_or("none")),
+            };
+            vec![t.name.clone(), t.agent.clone(), t.model.clone().unwrap_or_else(|| "-".into()), cmd]
+        })
+        .collect()
 }
 
 /// From projects.toml, read here as the app reads it. Closed projects too.
@@ -142,7 +164,7 @@ pub fn projects(json: bool) -> Result<()> {
 mod tests {
     use std::{os::unix::fs::PermissionsExt, path::PathBuf};
 
-    use super::{path_warning, watcher_line};
+    use super::{path_warning, task_rows, watcher_line};
     use skiff_core::session::{SessionInfo, WatchFailure, WatchInfo};
 
     #[test]
@@ -167,6 +189,22 @@ mod tests {
         let line = watcher_line(Some(&s), || false, log);
         assert!(line.starts_with("2 run for Skipper (3a136a60), pids 41234 41300  last failure "), "{line}");
         assert!(line.ends_with(" ledger: busy"));
+    }
+
+    #[test]
+    fn task_rows_show_the_command_or_why_not() {
+        use skiff_core::tasks::TaskType;
+        let t = |name: &str, model: Option<&str>, command: Option<&str>, error: Option<&str>| TaskType {
+            name: name.into(),
+            agent: "claude".into(),
+            model: model.map(Into::into),
+            command: command.map(Into::into),
+            error: error.map(Into::into),
+        };
+        let rows = task_rows(&[t("review", Some("opus"), Some("claude --model opus"), None), t("test", None, Some("claude"), None), t("old", None, None, Some("no agent"))]);
+        assert_eq!(rows[0], ["review", "claude", "opus", "claude --model opus"]);
+        assert_eq!(rows[1][2], "-");
+        assert_eq!(rows[2][3], "error: no agent");
     }
 
     fn bin(dir: &PathBuf) -> PathBuf {

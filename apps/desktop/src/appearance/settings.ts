@@ -1,14 +1,15 @@
 import { DEFAULT_THEME } from "./colors";
 import { escapeButton } from "../ui/dialogParts";
 import { h } from "../ui/dom";
-import { rune } from "../ui/runes";
 import { invoke } from "@tauri-apps/api/core";
 import type { AgentInfo, TerminalTheme } from "../platform/types";
 import { agentNameList, setAgentNameList } from "./agentNames";
 import { nextCard, themeGrid, type ThemeFilters } from "./themeCards";
-import { type Action, actionFor } from "../app/keys";
+import { type Action, actionFor, isMac } from "../app/keys";
+import { editField, fieldEditKey, textField } from "../ui/fieldClipboard";
 import type { SkiffAgentSettings } from "../app/skiffAgent";
-import { type SkiffAgentEdit, skiffAgentSection } from "./skiffAgentSettings";
+import { type SkiffAgentEdit, skiffAgentSection, taskTypesSection } from "./skiffAgentSettings";
+import { rowTable, tableState } from "./rowTable";
 
 /**
  * Settings over the sidebar and terminal: agents, appearance, and Open with.
@@ -21,7 +22,7 @@ export interface AppearanceHooks {
   set: (id: string | null) => void;
 }
 
-export function createSettings(onAgents: (a: AgentInfo[]) => void, onClose: () => void, look: AppearanceHooks) {
+export function createSettings(onAgents: (a: AgentInfo[]) => void, onClose: () => void, look: AppearanceHooks, onShowChange: () => void = () => {}) {
   const root = h("div");
   root.id = "settings";
   root.hidden = true;
@@ -41,6 +42,9 @@ export function createSettings(onAgents: (a: AgentInfo[]) => void, onClose: () =
   let agentSet: SkiffAgentSettings | null = null;
   let error: string | null = null;
   let saving = false;
+  // The draft rows and their error lines survive every redraw.
+  const agentsTable = tableState();
+  const tasksTable = tableState();
 
   async function toggle(id: string) {
     if (saving) return;
@@ -74,14 +78,17 @@ export function createSettings(onAgents: (a: AgentInfo[]) => void, onClose: () =
     render();
   }
 
-  const setCommand = (agent: string, command: string) => editAgents("set_agent_command", { agent, command });
-
-  /** Removes the agent. The keys go to the row that takes its place. */
-  async function removeAgent(agent: string) {
-    const at = agents.findIndex((a) => a.id === agent);
-    await editAgents("remove_agent", { agent });
-    const rows = root.querySelectorAll<HTMLElement>(".set-agent:not(.set-add) .set-rm");
-    (rows[Math.min(at, rows.length - 1)] ?? root.querySelector<HTMLElement>(".set-add input"))?.focus();
+  /** An agent edit from its table. Answers with the error to show; the table redraws. */
+  async function agentEdit(cmd: string, args: Record<string, string>): Promise<string | null> {
+    try {
+      agents = await invoke<AgentInfo[]>(cmd, args);
+      onAgents(agents);
+    } catch (e) {
+      return String(e);
+    }
+    // A renamed agent takes its task types with it.
+    agentSet = await invoke<SkiffAgentSettings>("get_skiff_agent").catch(() => agentSet);
+    return null;
   }
 
   function render() {
@@ -131,7 +138,9 @@ export function createSettings(onAgents: (a: AgentInfo[]) => void, onClose: () =
 
     const main = h("div", "set-main");
     const intro = h("div", "set-head");
-    intro.append(h("div", "set-h", "Agents"));
+    const title = h("div", "set-h", "Agents");
+    title.id = "set-h-agents";
+    intro.append(title);
     // Only a removed default can come back.
     if (DEFAULT_AGENTS.some((d) => !agents.some((a) => a.id === d))) {
       intro.classList.add("set-head-row");
@@ -140,77 +149,7 @@ export function createSettings(onAgents: (a: AgentInfo[]) => void, onClose: () =
       back.addEventListener("click", () => void editAgents("restore_agents"));
       intro.appendChild(back);
     }
-    const cols = h("div", "set-row set-cols");
-    cols.append(h("span", "c-on", ""), h("span", "c-name", "AGENT"), h("span", "c-cmd", "COMMAND"), h("span", "c-status", "STATUS"));
-    main.append(intro, cols);
-    for (const a of agents) {
-      const row = h("div", "set-row set-agent" + (a.enabled ? " on" : "") + (a.installed ? "" : " missing"));
-      const sw = h("button", "c-on");
-      sw.type = "button";
-      sw.disabled = !a.installed;
-      sw.setAttribute("role", "switch");
-      sw.setAttribute("aria-checked", String(a.enabled));
-      sw.setAttribute("aria-label", `${a.id} ${a.enabled ? "on" : "off"}`);
-      sw.title = a.installed ? "" : `${a.command.split(/\s+/)[0]} is not on PATH`;
-      sw.appendChild(h("span", "switch"));
-      sw.addEventListener("click", () => void toggle(a.id));
-
-      const cmd = h("input", "c-cmd mono");
-      // A known agent shows its default as the placeholder. A custom one has no default.
-      const cur = a.custom || a.command !== a.default_command ? a.command : "";
-      cmd.value = cur;
-      cmd.placeholder = a.default_command;
-      cmd.spellcheck = false;
-      cmd.setAttribute("aria-label", `${a.id} command`);
-      const save = () => {
-        const v = cmd.value.trim();
-        // Remove takes a custom agent away. An empty field does not.
-        if (a.custom && !v) cmd.value = cur;
-        else if (v !== cur) void setCommand(a.id, v);
-      };
-      cmd.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") {
-          e.preventDefault();
-          cmd.blur();
-        } else if (e.key === "Escape") {
-          cmd.value = cur;
-          cmd.blur();
-        }
-      });
-      cmd.addEventListener("blur", save);
-
-      const name = h("input", "c-name");
-      name.value = a.id;
-      name.spellcheck = false;
-      name.setAttribute("aria-label", `${a.id} name`);
-      name.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") {
-          e.preventDefault();
-          name.blur();
-        } else if (e.key === "Escape") {
-          name.value = a.id;
-          name.blur();
-        }
-      });
-      name.addEventListener("blur", () => {
-        const v = name.value.trim();
-        if (!v) name.value = a.id;
-        else if (v !== a.id) void editAgents("rename_agent", { agent: a.id, name: v });
-      });
-
-      const status = h("span", "c-status");
-      status.append(h("span", "sq"), a.installed ? "installed" : "not on PATH");
-      const rm = h("button", "set-rm set-ico");
-      rm.type = "button";
-      rm.title = "Remove";
-      rm.setAttribute("aria-label", `Remove ${a.id}`);
-      rm.appendChild(rune("indicators-minus"));
-      rm.addEventListener("click", () => void removeAgent(a.id));
-      status.appendChild(rm);
-      row.append(sw, name, cmd, status);
-      main.appendChild(row);
-    }
-    main.appendChild(addRow());
+    main.append(intro, agentTable());
     if (error) {
       const err = h("div", "set-error", error);
       err.setAttribute("role", "alert");
@@ -223,52 +162,71 @@ export function createSettings(onAgents: (a: AgentInfo[]) => void, onClose: () =
   /** The agents Skiff ships with. Restore defaults brings back any the user removed. */
   const DEFAULT_AGENTS = ["claude", "codex", "gemini", "grok", "opencode"];
 
-  /** A blank row that adds a custom agent: a name and the command line it runs. */
-  function addRow(): HTMLElement {
-    const row = h("div", "set-row set-agent set-add");
-    const name = h("input", "c-name");
-    name.placeholder = "Add agent";
-    name.spellcheck = false;
-    name.setAttribute("aria-label", "New agent name");
-    const cmd = h("input", "c-cmd mono");
-    cmd.placeholder = "command, for example aider --model sonnet";
-    cmd.spellcheck = false;
-    cmd.setAttribute("aria-label", "New agent command");
-    const add = h("button", "set-rm set-ico");
-    add.type = "button";
-    add.title = "Add";
-    add.setAttribute("aria-label", "Add agent");
-    add.appendChild(rune("indicators-plus"));
-    const submit = () => {
-      const id = name.value.trim();
-      const command = cmd.value.trim();
-      if (!id || !command) return (id ? cmd : name).focus();
-      if (agents.some((a) => a.id === id)) {
-        error = `An agent named ${id} exists. Change its command in its row.`;
-        return render();
-      }
-      void setCommand(id, command).then(() => {
-        // A skiffd from before custom agents saves the line but does not list it.
-        if (error || agents.some((a) => a.id === id)) return;
-        error = `Saved ${id} to projects.toml. Restart skiffd to show it.`;
-        render();
-      });
-    };
-    for (const f of [name, cmd])
-      f.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") {
-          e.preventDefault();
-          submit();
-        } else if (e.key === "Escape" && f.value) {
-          e.stopPropagation();
-          name.value = cmd.value = "";
-        }
-      });
-    add.addEventListener("click", submit);
-    const end = h("span", "c-status");
-    end.appendChild(add);
-    row.append(h("span", "c-on"), name, cmd, end);
-    return row;
+  /** One row per agent: its switch, name, command and status. The draft row adds a custom agent. */
+  function agentTable(): HTMLElement {
+    return rowTable<AgentInfo>(
+      {
+        grid: "g-agents",
+        noun: "agent",
+        article: "An agent",
+        dupHint: "Change its command in its row.",
+        labelledBy: "set-h-agents",
+        endHead: "STATUS",
+        rows: agents,
+        id: (a) => a.id,
+        rowClass: (a) => "set-agent" + (a.enabled ? " on" : "") + (a.installed ? "" : " missing"),
+        cols: [
+          {
+            key: "on",
+            head: "",
+            name: "On",
+            kind: "lead",
+            draw: (a) => {
+              const sw = h("button", "c-on");
+              sw.type = "button";
+              sw.disabled = !a.installed;
+              sw.setAttribute("role", "switch");
+              sw.setAttribute("aria-checked", String(a.enabled));
+              sw.setAttribute("aria-label", `${a.id} ${a.enabled ? "on" : "off"}`);
+              sw.title = a.installed ? "" : `${a.command.split(/\s+/)[0]} is not on PATH`;
+              sw.appendChild(h("span", "switch"));
+              sw.addEventListener("click", () => void toggle(a.id));
+              return sw;
+            },
+          },
+          { key: "name", head: "AGENT", name: "name", kind: "key", required: true, get: (a) => a.id },
+          {
+            key: "command",
+            head: "COMMAND",
+            name: "command",
+            kind: "text",
+            mono: true,
+            required: true,
+            // A known agent shows its default as the placeholder. A custom one has no default.
+            placeholder: (a) => (a ? a.default_command : "command, for example aider --model sonnet"),
+            get: (a) => (a.custom || a.command !== a.default_command ? a.command : ""),
+          },
+        ],
+        status: (a) => {
+          const status = h("span", "c-state");
+          status.append(h("span", "sq"), a.installed ? "installed" : "not on PATH");
+          return status;
+        },
+        // Remove takes a custom agent away. An empty command does not. On a known agent it restores the default.
+        checkEdit: (a, key, v) => (key === "command" && a.custom && !v ? `A custom agent needs a command. Press − to remove ${a.id}.` : null),
+        add: async (d) => {
+          const err = await agentEdit("set_agent_command", { agent: d.name, command: d.command });
+          // A skiffd from before custom agents saves the line but does not list it.
+          if (err || agents.some((a) => a.id === d.name)) return err;
+          return `Saved ${d.name} to projects.toml. Restart skiffd to show it.`;
+        },
+        edit: (a, key, v) =>
+          key === "name" ? agentEdit("rename_agent", { agent: a.id, name: v }) : agentEdit("set_agent_command", { agent: a.id, command: v }),
+        remove: (a) => agentEdit("remove_agent", { agent: a.id }),
+      },
+      agentsTable,
+      render,
+    );
   }
 
   /** Esc, in the top right corner as in the theme picker. A click closes. */
@@ -384,6 +342,16 @@ export function createSettings(onAgents: (a: AgentInfo[]) => void, onClose: () =
     { key: "html", label: "HTML" },
   ];
 
+  /** A task type edit. Answers with the error to show; the table redraws. */
+  async function saveTask(edit: SkiffAgentEdit): Promise<string | null> {
+    try {
+      agentSet = await invoke<SkiffAgentSettings>("set_skiff_agent", { edit });
+      return null;
+    } catch (e) {
+      return String(e);
+    }
+  }
+
   async function setSkiffAgent(edit: SkiffAgentEdit) {
     error = null;
     try {
@@ -409,6 +377,7 @@ export function createSettings(onAgents: (a: AgentInfo[]) => void, onClose: () =
       err.setAttribute("role", "alert");
       main.appendChild(err);
     }
+    if (agentSet) main.append(...taskTypesSection(agentSet, agents, tasksTable, saveTask, render));
     return main;
   }
 
@@ -472,6 +441,7 @@ export function createSettings(onAgents: (a: AgentInfo[]) => void, onClose: () =
     if (document.activeElement instanceof HTMLTextAreaElement) document.activeElement.blur();
     root.hidden = true;
     onClose();
+    onShowChange();
   }
 
   /** Ctrl+Shift+Up/Down: the previous or next section, as in the tree. The keys go to its tab. */
@@ -527,9 +497,11 @@ export function createSettings(onAgents: (a: AgentInfo[]) => void, onClose: () =
     const at = stops.indexOf(el);
     if (at < 0) return;
     e.preventDefault();
-    let to = nextCard(stops, at, up ? "up" : e.key === "ArrowDown" ? "down" : e.key === "ArrowLeft" ? "left" : "right");
+    // A control's line is its row: a small button sits lower in its cell than a field.
+    const top = (c: HTMLElement) => (c.closest(".set-row") ?? c).getBoundingClientRect().top;
+    let to = nextCard(stops, at, up ? "up" : e.key === "ArrowDown" ? "down" : e.key === "ArrowLeft" ? "left" : "right", top);
     // Left and Right keep to the row.
-    if (!vertical && Math.abs(stops[to].getBoundingClientRect().top - el.getBoundingClientRect().top) > 1) to = at;
+    if (!vertical && Math.abs(top(stops[to]) - top(el)) > 1) to = at;
     // Left from the start of a row goes back to the tab.
     if (to === at && e.key === "ArrowLeft") return enterSection(false);
     const next = stops[to];
@@ -538,9 +510,17 @@ export function createSettings(onAgents: (a: AgentInfo[]) => void, onClose: () =
     if (next instanceof HTMLInputElement && next.type !== "range" && e.key === "ArrowLeft") next.setSelectionRange(next.value.length, next.value.length);
   });
 
-  /** The list keys, as Settings reads them. True when Settings used the key. */
+  /** The text field with the keys, if Settings has one. */
+  const field = () => {
+    const f = textField(document.activeElement);
+    return f && root.contains(f) ? f : null;
+  };
+
+  /** The list keys, and copy and paste in a text field, as Settings reads them. True when Settings used the key. */
   function runKey(a: Action | null): boolean {
-    if (a === "session-next" || a === "session-prev") stepTab(a === "session-next" ? 1 : -1);
+    const f = a === "copy" || a === "paste" ? field() : null;
+    if (f) void editField(f, a as "copy" | "paste");
+    else if (a === "session-next" || a === "session-prev") stepTab(a === "session-next" ? 1 : -1);
     else if (a === "list-project" || a === "list-back") enterSection(a === "list-back");
     else return false;
     return true;
@@ -551,6 +531,13 @@ export function createSettings(onAgents: (a: AgentInfo[]) => void, onClose: () =
   document.addEventListener("keydown", (e) => {
     if (root.hidden || e.defaultPrevented || document.querySelector("#ctx-menu:not([hidden]), #launch-menu:not([hidden]), .confirm-overlay")) return;
     if (runKey(actionFor(e))) return e.preventDefault();
+    // Cut and select all on macOS. The webview does them only through an Edit menu item.
+    const edit = fieldEditKey(e, isMac);
+    const f = edit && field();
+    if (edit && f) {
+      e.preventDefault();
+      return void editField(f, edit);
+    }
     if (e.key !== "Escape") return;
     e.preventDefault();
     close();
@@ -559,6 +546,7 @@ export function createSettings(onAgents: (a: AgentInfo[]) => void, onClose: () =
   return {
     async open() {
       root.hidden = false;
+      onShowChange();
       await look.load();
       openSet = await invoke<OpenSettings>("open_settings").catch(() => null);
       menuSet = await invoke<MenuLayout>("menu_layout").catch(() => null);

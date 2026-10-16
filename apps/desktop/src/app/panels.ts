@@ -9,7 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { loadProjects, newSession } from "./daemon";
 import { host } from "../terminal/terminalHost";
 import { showError } from "../ui/alerts";
-import { render } from "./render";
+import { render, scheduleRender } from "./render";
 import { collapsed, S, selectedWorktree } from "./state";
 import { launchChoices } from "./stateQueries";
 
@@ -32,6 +32,8 @@ export const settings = createSettings(
       invoke("set_appearance", { theme: id }).catch(showError);
     },
   },
+  // Edit › Copy and Paste work in its text fields while it shows.
+  scheduleRender,
 );
 
 export const launchMenu = createLaunchMenu({

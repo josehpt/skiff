@@ -86,6 +86,24 @@ attach.
   `gone` means that the pane no longer exists. A plan shows `done` when its
   tasks are done, else `sent`.
 - `skiff ledger rm` removes the row only. The result files stay.
+- `--type TYPE` on `ledger add` stores the task type the task went out as.
+  `ls` and `show` print it. Skiff does not act on it.
+
+### Task types
+
+`skiff agents --json` prints `{"agents": [...], "tasks": [...]}`. Each task type
+has its `type`, `agent`, `model` (null: the agent's default) and the `command`
+it starts. The person sets the table in Settings › Skiff agent › Task types
+(`[skiff_agent.tasks]` in `projects.toml`).
+
+When a task fits a type in `skiff agents --json` and the person names no model,
+start the session with `skiff new --type TYPE`. A model the person names wins:
+pass it with `--model`. With no matching type, start the project's agent as today.
+
+- You pick the type. Skiff reads no task text.
+- `--type` with no row exits 1 and starts nothing. `--type` with `--agent` is an error.
+- With no `--name`, the session takes the type's name: `review`, then `review 2`.
+- A custom agent takes its model in its command. It refuses `--model`.
 
 ### Send a task
 
@@ -147,6 +165,7 @@ the user's requested scope; a named existing pane can handle a single task.
 | List sessions | `skiff ls [--json]` |
 | Start a shell | `skiff new [--name N] [--cwd DIR]` |
 | Start an agent | `skiff new --agent claude [--name N]` (`skiff agents` lists ids) |
+| Start a task type's agent and model | `skiff new --type review [--model M] [--cwd DIR] [--name N]` (`skiff agents --json` lists `tasks`) |
 | Start a command | `skiff new -- npm run dev` |
 | Start next to me | `skiff new --agent codex --group . --split right` |
 | Type into an idle session | `skiff send S "text" --enter` |

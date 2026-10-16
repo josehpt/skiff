@@ -10,6 +10,7 @@ use skiff_client::skipper;
 use skiff_core::{
     config::{self, SkiffAgentKey},
     session::SessionInfo,
+    tasks::{self, TaskType},
 };
 use tauri::{AppHandle, Emitter, State};
 
@@ -94,6 +95,8 @@ pub struct SkiffAgent {
     /// Why the override in projects.toml is refused.
     folder_error: Option<String>,
     continue_on_restore: bool,
+    /// `[skiff_agent.tasks]` in file order, with the command each row starts.
+    tasks: Vec<TaskType>,
 }
 
 fn read() -> anyhow::Result<SkiffAgent> {
@@ -103,7 +106,9 @@ fn read() -> anyhow::Result<SkiffAgent> {
         Err(e) => (None, Some(format!("{e:#}"))),
     };
     let a = cfg.skiff_agent;
-    Ok(SkiffAgent { name: a.name, agent: a.agent, enabled: a.enabled, folder, folder_error, continue_on_restore: a.continue_on_restore })
+    // The command lines come from projects.toml, so the local list builds the same ones skiffd would.
+    let tasks = tasks::resolve(&a.tasks, &skiff_core::project::agents());
+    Ok(SkiffAgent { name: a.name, agent: a.agent, enabled: a.enabled, folder, folder_error, continue_on_restore: a.continue_on_restore, tasks })
 }
 
 /// One edit from Settings › Skiff agent. `null` or empty takes the default.
@@ -114,6 +119,21 @@ pub enum Edit {
     Agent(Option<String>),
     Enabled(bool),
     ContinueOnRestore(bool),
+    /// A new row at the end of Task types.
+    AddTask(TaskEdit),
+    /// A row's agent or model.
+    Task(TaskEdit),
+    RenameTask { from: String, to: String },
+    RemoveTask(String),
+}
+
+/// A task type row as Settings sends it. An empty model is the agent's default.
+#[derive(Deserialize)]
+pub struct TaskEdit {
+    #[serde(rename = "type")]
+    name: String,
+    agent: String,
+    model: Option<String>,
 }
 
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> anyhow::Result<T> + Send + 'static) -> Result<T, String> {
@@ -137,6 +157,10 @@ pub async fn set_skiff_agent(app: AppHandle, edit: Edit) -> Result<SkiffAgent, S
             Edit::Name(v) => config::set_skiff_agent(SkiffAgentKey::Name(v.as_deref()))?,
             Edit::Agent(v) => config::set_skiff_agent(SkiffAgentKey::Agent(v.as_deref()))?,
             Edit::ContinueOnRestore(on) => config::set_skiff_agent(SkiffAgentKey::ContinueOnRestore(on))?,
+            Edit::AddTask(t) => config::add_task_type(&t.name, &t.agent, t.model.as_deref())?,
+            Edit::Task(t) => config::set_task_type(&t.name, &t.agent, t.model.as_deref())?,
+            Edit::RenameTask { from, to } => config::rename_task_type(&from, &to)?,
+            Edit::RemoveTask(name) => config::remove_task_type(&name)?,
             Edit::Enabled(on) => {
                 // On makes the folder ready first: a refused folder stays off.
                 if on {
@@ -150,4 +174,23 @@ pub async fn set_skiff_agent(app: AppHandle, edit: Edit) -> Result<SkiffAgent, S
     .await?;
     let _ = app.emit(PROJECTS_CHANGED, ());
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Edit;
+
+    /// The shapes `SkiffAgentEdit` in apps/desktop/src/appearance/skiffAgentSettings.ts sends.
+    #[test]
+    fn reads_the_task_type_edits_the_page_sends() {
+        let edit = |v: serde_json::Value| serde_json::from_value::<Edit>(v).unwrap();
+        let add = edit(serde_json::json!({ "key": "add_task", "value": { "type": "review", "agent": "claude", "model": "opus" } }));
+        assert!(matches!(add, Edit::AddTask(t) if t.name == "review" && t.agent == "claude" && t.model.as_deref() == Some("opus")));
+        let set = edit(serde_json::json!({ "key": "task", "value": { "type": "review", "agent": "aider", "model": null } }));
+        assert!(matches!(set, Edit::Task(t) if t.model.is_none()));
+        let rename = edit(serde_json::json!({ "key": "rename_task", "value": { "from": "review", "to": "code-review" } }));
+        assert!(matches!(rename, Edit::RenameTask { from, to } if from == "review" && to == "code-review"));
+        assert!(matches!(edit(serde_json::json!({ "key": "remove_task", "value": "review" })), Edit::RemoveTask(t) if t == "review"));
+        assert!(matches!(edit(serde_json::json!({ "key": "name", "value": null })), Edit::Name(None)));
+    }
 }

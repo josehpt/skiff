@@ -923,6 +923,7 @@ mod tests {
             result_path: None,
             reference: None,
             updated_at: String::new(),
+            task_type: None,
             live: None,
             interrupted: None,
         }

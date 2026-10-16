@@ -1,4 +1,5 @@
 import { runAction, openProjectMenu } from "./actions";
+import { settings } from "./panels";
 import { showAbout } from "../ui/infoDialogs";
 import { isSkiffAgent, skiffAgentFolder, skiffAgentName, skiffAgentSession } from "./skiffAgent";
 
@@ -54,8 +55,9 @@ function commands(): Cmd[] {
     { section: "File", label: "Remove project…", key: "", run: () => withProject(removeProject), off: !currentProject() },
     { section: "File", label: "Settings", key: k("settings"), action: "settings", run: act("settings") },
     { section: "File", label: "Quit", key: k("quit"), action: "quit", run: act("quit") },
-    { section: "Edit", label: "Copy", key: k("copy"), action: "copy", run: act("copy"), off: !s },
-    { section: "Edit", label: "Paste", key: k("paste"), action: "paste", run: act("paste"), off: !s },
+    // In Settings, they act on the text field with the keys.
+    { section: "Edit", label: "Copy", key: k("copy"), action: "copy", run: act("copy"), off: !s && !settings.isOpen },
+    { section: "Edit", label: "Paste", key: k("paste"), action: "paste", run: act("paste"), off: !s && !settings.isOpen },
     { section: "Edit", label: "Find…", key: k("find"), action: "find", run: act("find"), off: !shown },
     { section: "Edit", label: "Rename session", key: k("rename"), action: "rename", run: act("rename"), off: !s || isSkiffAgent(s.id) },
     { section: "Edit", label: "Session theme…", key: k("theme"), run: () => s && void sessionThemeMenu(s), off: !s },

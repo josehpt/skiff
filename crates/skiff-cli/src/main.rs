@@ -56,6 +56,9 @@ enum Cmd {
         json: bool,
     },
     /// Start a session and print its id.
+    #[command(
+        after_help = "--type starts a task type from Settings › Skiff agent › Task types ([skiff_agent.tasks] in projects.toml): its agent, with its model flag. With no --name, the session takes the type's name, numbered when one runs (review, review 2).\nWith no row for the type, it exits 1 and starts nothing.\n--model replaces the row's model for this session. A custom agent takes its model in its command, so it refuses --model.\n`skiff agents` lists the types with the command each one starts."
+    )]
     New {
         /// The session's name.
         #[arg(long)]
@@ -66,7 +69,13 @@ enum Cmd {
         /// Start this agent, as the app's + menu does.
         #[arg(long, value_name = "ID", conflicts_with = "command")]
         agent: Option<String>,
-        /// Default: agent with --agent, else shell.
+        /// Start this task type's agent with its model. Not with --agent.
+        #[arg(long = "type", value_name = "TYPE", conflicts_with_all = ["agent", "command"])]
+        task_type: Option<String>,
+        /// With --type: this model in place of the type's model.
+        #[arg(long, value_name = "MODEL", requires = "task_type")]
+        model: Option<String>,
+        /// Default: agent with --agent or --type, else shell.
         #[arg(long, value_enum)]
         role: Option<RoleArg>,
         /// Put the new session into this group.
@@ -241,6 +250,10 @@ pub enum LedgerCmd {
         /// anything. Skiff stores it and never reads it.
         #[arg(long = "ref", value_name = "TEXT")]
         reference: Option<String>,
+        /// The task type the task went out as, from `skiff agents`. Skiff
+        /// stores it and never acts on it.
+        #[arg(long = "type", value_name = "TYPE")]
+        task_type: Option<String>,
         /// Add the task as pending and send it at once, as `ledger send` does.
         #[arg(long, conflicts_with_all = ["plan", "state"])]
         send: bool,
@@ -286,6 +299,8 @@ pub enum LedgerCmd {
         parent: Option<String>,
         #[arg(long = "ref", value_name = "TEXT")]
         reference: Option<String>,
+        #[arg(long = "type", value_name = "TYPE")]
+        task_type: Option<String>,
     },
     /// List tasks, oldest first, each plan's tasks under it. LIVE says if
     /// the pane still exists.
@@ -541,8 +556,8 @@ async fn run(cli: Cli) -> Result<i32> {
     }
     match cli.cmd {
         Cmd::Ls { json } => sessions::ls(&c, json).await,
-        Cmd::New { name, cwd, agent, role, group, split, json, command } => {
-            let opts = sessions::New { name, cwd, agent, role: role.map(Role::from), command };
+        Cmd::New { name, cwd, agent, task_type, model, role, group, split, json, command } => {
+            let opts = sessions::New { name, cwd, agent, task_type, model, role: role.map(Role::from), command };
             sessions::new(&c, opts, group.as_deref(), split, json).await
         }
         Cmd::Group(g) => group(&c, g).await,

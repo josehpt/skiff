@@ -1,13 +1,25 @@
 import { h } from "../ui/dom";
 import type { AgentInfo } from "../platform/types";
-import type { SkiffAgentSettings } from "../app/skiffAgent";
+import type { SkiffAgentSettings, TaskType } from "../app/skiffAgent";
 import { DEFAULT_NAME, skiffAgentChoice } from "../app/skiffAgent";
 import { continueLine } from "../terminal/resume";
+import { rowTable, type RowTableState } from "./rowTable";
+import { BAD_TASK_TYPE_NAME, modelError, modelFlag, taskCommand, TASK_TYPE_NAME } from "./taskTypes";
+
+/** A task type row as `set_skiff_agent` takes it. Null model: the agent's default. */
+export interface TaskEdit {
+  type: string;
+  agent: string;
+  model: string | null;
+}
 
 /** One edit, as `set_skiff_agent` takes it. */
 export type SkiffAgentEdit =
   | { key: "name" | "agent"; value: string | null }
-  | { key: "enabled" | "continue_on_restore"; value: boolean };
+  | { key: "enabled" | "continue_on_restore"; value: boolean }
+  | { key: "add_task" | "task"; value: TaskEdit }
+  | { key: "rename_task"; value: { from: string; to: string } }
+  | { key: "remove_task"; value: string };
 
 /**
  * Settings › Skiff agent: on or off, its name, the agent it starts, and
@@ -55,6 +67,103 @@ export function skiffAgentSection(set: SkiffAgentSettings, agents: AgentInfo[], 
     : h("span", "c-cmd", chosen ? `${chosen.id} has no continue command. The pane restores as a shell.` : "No agent is on.");
   cont.append(h("span", "c-name", "Continue on restore"), what, sw);
   return [onRow, name, agentRow, cont];
+}
+
+/**
+ * Settings › Skiff agent › Task types: the agent and model Skipper starts
+ * for each kind of task. `save` answers with the error to show, or null.
+ */
+export function taskTypesSection(
+  set: SkiffAgentSettings,
+  agents: AgentInfo[],
+  state: RowTableState,
+  save: (e: SkiffAgentEdit) => Promise<string | null>,
+  redraw: () => void,
+): HTMLElement[] {
+  // As the Agent row above: enabled agents and the user's own.
+  const choices = agents.filter((a) => a.enabled || a.custom);
+  const byId = (id: string) => agents.find((a) => a.id === id);
+  const label = (a: AgentInfo) => (a.custom ? `${a.id} (custom)` : a.id);
+  const head = h("div", "set-head");
+  const title = h("div", "set-h", "Task types");
+  title.id = "set-h-tasks";
+  head.append(
+    title,
+    h("div", "set-sub", "Skipper starts a task of this type with this agent and model. Empty model: the agent's default. A model named in the task wins."),
+  );
+  const row = (t: TaskType, change: Partial<TaskEdit>): TaskEdit => ({ type: t.type, agent: t.agent, model: t.model, ...change });
+  const table = rowTable<TaskType>(
+    {
+      grid: "g-tasks",
+      noun: "task type",
+      article: "A task type",
+      dupHint: "Change it in its row.",
+      labelledBy: title.id,
+      rows: set.tasks ?? [],
+      id: (t) => t.type,
+      cols: [
+        {
+          key: "type",
+          head: "TYPE",
+          name: "type",
+          kind: "key",
+          required: true,
+          get: (t) => t.type,
+          check: (v) => (TASK_TYPE_NAME.test(v) ? null : BAD_TASK_TYPE_NAME),
+        },
+        {
+          key: "agent",
+          head: "AGENT",
+          name: "agent",
+          kind: "select",
+          empty: "No agent is on",
+          options: (t) => {
+            const list: [string, string][] = choices.map((a) => [a.id, label(a)]);
+            // A row keeps an agent that is off or gone, so the select shows the truth.
+            if (t && !choices.some((a) => a.id === t.agent)) list.unshift([t.agent, `${t.agent} (${byId(t.agent) ? "off" : "gone"})`]);
+            return list;
+          },
+          initial: () => skiffAgentChoice(agents, set.agent)?.id ?? choices[0]?.id ?? "",
+          get: (t) => t.agent,
+        },
+        {
+          key: "model",
+          head: "MODEL",
+          name: "model",
+          kind: "text",
+          mono: true,
+          placeholder: () => "agent's default",
+          get: (t) => t.model ?? "",
+          // A custom agent has its model in its command. A gone agent has none.
+          note: (t, d) => {
+            const a = byId(t ? t.agent : (d.agent ?? ""));
+            return modelFlag(a) ? null : a ? "in the command" : "";
+          },
+          check: modelError,
+        },
+        {
+          key: "command",
+          head: "COMMAND",
+          name: "command",
+          kind: "preview",
+          get: (t) => t.command ?? t.error ?? "",
+          bad: (t) => !t.command,
+        },
+      ],
+      preview: (d) => taskCommand(byId(d.agent), d.model),
+      blocked: () => (choices.length ? null : "Turn on an agent in Settings › Agents."),
+      add: (d) => save({ key: "add_task", value: { type: d.type, agent: d.agent, model: d.model || null } }),
+      edit: (t, key, v) => {
+        if (key === "type") return save({ key: "rename_task", value: { from: t.type, to: v } });
+        // A new agent with no model flag drops the model: skiff-core saves none.
+        return save({ key: "task", value: row(t, key === "agent" ? { agent: v } : { model: v || null }) });
+      },
+      remove: (t) => save({ key: "remove_task", value: t.type }),
+    },
+    state,
+    redraw,
+  );
+  return [head, table];
 }
 
 /** A label, a cell for the caller, and a switch. */

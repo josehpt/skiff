@@ -1,5 +1,5 @@
 import { dialogFrame, dialogHeader } from "./dialogParts";
-import { DESCRIBE, describeText, keyLabel } from "../app/keys";
+import { DESCRIBE, describeText, isMac, keyLabel } from "../app/keys";
 
 import type { DaemonStatus } from "../platform/types";
 import { getVersion } from "@tauri-apps/api/app";
@@ -62,6 +62,7 @@ const FIXED_SHORTCUTS: Shortcut[] = [
   ["Settings", "Go into the section from its tab", "→"],
   ["Settings", "Move between controls in a section", "↑ / ↓ / ← / →"],
   ["Settings", "Back to the tab from the start of a row", "←"],
+  ["Settings", "Cut or select all in a text field", isMac ? "⌘+X / ⌘+A" : "Ctrl+X / Ctrl+A"],
   ["Panes", "Focus mode, or Maximize in a split, and back", "Pane header buttons"],
   ["Panes", "Maximize in a split, focus mode alone, and back", "Double-click the pane header"],
   ["Panes", "Focus mode, Maximize, Add pane, Rename", "Right-click the pane"],

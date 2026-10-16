@@ -26,6 +26,20 @@ export interface SkiffAgentSettings {
   /** Why the override is refused. */
   folder_error: string | null;
   continue_on_restore: boolean;
+  /** `[skiff_agent.tasks]` in file order. */
+  tasks: TaskType[];
+}
+
+/** One task type: Skipper starts a task of this type with this agent and model. */
+export interface TaskType {
+  type: string;
+  agent: string;
+  /** Null: the agent's default. Always null for an agent that takes its model in its command. */
+  model: string | null;
+  /** The command line skiffd builds. Null when the agent is gone. */
+  command: string | null;
+  /** Why the row does not start what it says. */
+  error: string | null;
 }
 
 /** The folder while the Skiff agent is on and its folder is good. */

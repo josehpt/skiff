@@ -196,19 +196,26 @@ const KEYS: Record<string, "left" | "right" | "up" | "down" | "first" | "last"> 
 };
 
 /** The card an arrow key lands on. Up and down keep to the nearest column; the ends stop. */
-export function nextCard(cards: HTMLElement[], at: number, key: "left" | "right" | "up" | "down" | "first" | "last"): number {
+export function nextCard(
+  cards: HTMLElement[],
+  at: number,
+  key: "left" | "right" | "up" | "down" | "first" | "last",
+  /** Where a card's line starts. Default: its own top. */
+  top: (c: HTMLElement) => number = (c) => c.getBoundingClientRect().top,
+): number {
   if (key === "first") return 0;
   if (key === "last") return cards.length - 1;
   if (key === "left") return Math.max(0, at - 1);
   if (key === "right") return Math.min(cards.length - 1, at + 1);
   const rect = cards[at].getBoundingClientRect();
+  const y = top(cards[at]);
   const dir = key === "down" ? 1 : -1;
   let best = at;
   let bestRow = Infinity;
   let bestDx = Infinity;
   for (const [i, c] of cards.entries()) {
     const r = c.getBoundingClientRect();
-    const dy = (r.top - rect.top) * dir;
+    const dy = (top(c) - y) * dir;
     if (dy <= 1) continue;
     const dx = Math.abs(r.left - rect.left);
     if (dy < bestRow - 1 || (Math.abs(dy - bestRow) <= 1 && dx < bestDx)) {

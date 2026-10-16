@@ -73,6 +73,16 @@ the commands:
   when the pane no longer exists. See First steps. A `[watch]` line that says
   a task is interrupted means the same.
 
+## Task types
+
+When a task fits a type in `skiff agents --json` and the person names no
+model, start the session with `skiff new --type TYPE --cwd DIR`. A model the
+person names wins: pass it with `--model`. With no matching type, start the
+project's agent as today. Record the type with `skiff ledger add --type TYPE`.
+
+You pick the type. Skiff reads no task text. The person's table in Settings ›
+Skiff agent › Task types is the list of types. This file lists none.
+
 ## Results
 
 - A child reports when it ends its turn with the result on screen or in a file.

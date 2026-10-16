@@ -70,7 +70,21 @@ pub fn rename_agent(id: &str, name: &str) -> Result<()> {
             enabled_list(t, |l| l.push(name));
         }
         Ok(())
-    })
+    })?;
+    // Task types that start the agent follow it to its new name.
+    if super::load()?.skiff_agent.tasks.0.iter().any(|(_, r)| r.agent == id) {
+        edit_table("skiff_agent", |t| {
+            for (_, row) in tasks(t)?.iter_mut() {
+                if let Some(r) = row.as_value_mut().and_then(|v| v.as_inline_table_mut()) {
+                    if r.get("agent").and_then(|v| v.as_str()) == Some(id) {
+                        r.insert("agent", name.into());
+                    }
+                }
+            }
+            Ok(())
+        })?;
+    }
+    Ok(())
 }
 
 /// Brings back every removed default.
@@ -247,6 +261,100 @@ pub fn set_skiff_agent(key: SkiffAgentKey) -> Result<()> {
         }
         Ok(())
     })
+}
+
+/// Adds `[skiff_agent.tasks] <name> = { agent, model }` at the end of the
+/// table. Refuses a name that is there.
+pub fn add_task_type(name: &str, agent: &str, model: Option<&str>) -> Result<()> {
+    let name = crate::tasks::check_name(name)?;
+    let row = task_row(agent, model)?;
+    edit_table("skiff_agent", |t| {
+        let tasks = tasks(t)?;
+        if tasks.contains_key(name) {
+            anyhow::bail!("A task type named {name} exists. Change it in its row.");
+        }
+        tasks.insert(name, toml_edit::value(row));
+        Ok(())
+    })
+}
+
+/// Changes the agent and model of a task type, in its place. An empty model
+/// takes the key out: the agent's default. An agent that takes its model in
+/// its command saves no model.
+pub fn set_task_type(name: &str, agent: &str, model: Option<&str>) -> Result<()> {
+    let row = task_row(agent, model)?;
+    edit_table("skiff_agent", |t| {
+        let tasks = tasks(t)?;
+        if !tasks.contains_key(name) {
+            anyhow::bail!("There is no task type {name}.");
+        }
+        tasks.insert(name, toml_edit::value(row));
+        Ok(())
+    })
+}
+
+/// Gives a task type a new name. It keeps its place, its agent and its model.
+pub fn rename_task_type(name: &str, to: &str) -> Result<()> {
+    let to = crate::tasks::check_name(to)?;
+    if to == name {
+        return Ok(());
+    }
+    edit_table("skiff_agent", |t| {
+        let tasks = tasks(t)?;
+        if !tasks.contains_key(name) {
+            anyhow::bail!("There is no task type {name}.");
+        }
+        if tasks.contains_key(to) {
+            anyhow::bail!("A task type named {to} exists. {name} keeps its name.");
+        }
+        // Take every row out and put them back in order, with the new name.
+        let keys: Vec<String> = tasks.iter().map(|(k, _)| k.to_string()).collect();
+        let rows: Vec<(String, toml_edit::Item)> = keys.into_iter().filter_map(|k| tasks.remove(&k).map(|v| (k, v))).collect();
+        for (k, v) in rows {
+            tasks.insert(if k == name { to } else { &k }, v);
+        }
+        Ok(())
+    })
+}
+
+/// Takes a task type out. The last one takes the table out too.
+pub fn remove_task_type(name: &str) -> Result<()> {
+    edit_table("skiff_agent", |t| {
+        tasks(t)?.remove(name);
+        if t.get("tasks").and_then(|v| v.as_table()).is_some_and(|v| v.is_empty()) {
+            t.remove("tasks");
+        }
+        Ok(())
+    })
+}
+
+/// `{ agent = "claude", model = "opus" }` for an agent Skiff lists.
+fn task_row(agent: &str, model: Option<&str>) -> Result<toml_edit::InlineTable> {
+    let agent = agent.trim();
+    let Some(a) = crate::project::agents().into_iter().find(|a| a.id == agent) else {
+        anyhow::bail!("There is no agent {agent}. Add it in Settings › Agents.");
+    };
+    // An agent that takes its model in its command saves none, whatever came with it.
+    let takes_model = !a.custom && crate::tasks::model_flag(&a.id).is_some();
+    let model = if takes_model { crate::tasks::check_model(model)? } else { None };
+    let mut row = toml_edit::InlineTable::new();
+    row.insert("agent", agent.into());
+    if let Some(m) = model {
+        row.insert("model", m.into());
+    }
+    Ok(row)
+}
+
+/// `[skiff_agent.tasks]`, made on first use.
+fn tasks(t: &mut toml_edit::Table) -> Result<&mut toml_edit::Table> {
+    t.entry("tasks")
+        .or_insert_with(|| {
+            let mut c = toml_edit::Table::new();
+            c.set_implicit(false);
+            toml_edit::Item::Table(c)
+        })
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("`skiff_agent.tasks` is not a table"))
 }
 
 fn edit_agents(f: impl FnOnce(&mut toml_edit::Table) -> Result<()>) -> Result<()> {

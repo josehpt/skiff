@@ -33,10 +33,10 @@
 .set-agent.missing .c-name, .set-agent.missing .c-status { color: var(--text-dim); }
 .set-agent.missing .c-status .sq { background: var(--rule-strong); }
 .set-agent.missing button.c-on { cursor: not-allowed; }
-.set-agent .set-rm { height: calc(26 * var(--u)); margin-left: auto; padding: 0 calc(10 * var(--u)); border: 1px solid var(--rule); border-radius: 0; background: transparent; color: var(--text-3); font: calc(12px * var(--zoom, 1)) var(--font); }
-.set-agent .set-rm:hover { border-color: var(--text-3); color: var(--text); }
+:is(.set-agent, .set-table) .set-rm { height: calc(26 * var(--u)); margin-left: auto; padding: 0 calc(10 * var(--u)); border: 1px solid var(--rule); border-radius: 0; background: transparent; color: var(--text-3); font: calc(12px * var(--zoom, 1)) var(--font); }
+:is(.set-agent, .set-table) .set-rm:hover { border-color: var(--text-3); color: var(--text); }
 /* Remove and Add: one square size, so the column lines up. */
-.set-agent .set-rm.set-ico { width: calc(26 * var(--u)); padding: 0; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+:is(.set-agent, .set-table) .set-rm.set-ico { width: calc(26 * var(--u)); padding: 0; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .set-agent input.c-name { width: 100%; min-width: 0; border: 0; border-left: 1px solid var(--rule); border-radius: 0; outline: 0; background: transparent; color: inherit; font: 500 calc(14px * var(--zoom, 1)) var(--font); }
 .set-agent input.c-name::placeholder { color: var(--text-dim); font-weight: 400; }
 .set-agent input.c-name:focus { box-shadow: inset 0 -2px 0 var(--state-working); }
@@ -72,3 +72,26 @@
 .set-agent button.set-switch:hover:not(:disabled) { background: var(--bg-panel); }
 .set-agent.missing button.set-switch { cursor: not-allowed; }
 .set-note { padding: calc(10 * var(--u)) calc(24 * var(--u)); border-bottom: 1px solid var(--rule); font-size: calc(12px * var(--zoom, 1)); color: var(--text-3); }
+/* Settings tables (appearance/rowTable.ts): Agents and Task types. Each cell is a span; a field fills its cell. */
+.set-table { flex-shrink: 0; display: flex; flex-direction: column; }
+.set-table.g-agents .set-row { grid-template-columns: calc(72 * var(--u)) calc(200 * var(--u)) minmax(0, 1fr) calc(220 * var(--u)); }
+.set-table.g-tasks .set-row { grid-template-columns: calc(200 * var(--u)) calc(160 * var(--u)) calc(160 * var(--u)) minmax(0, 1fr) calc(56 * var(--u)); }
+.set-table .set-row > .c-field, .set-table .set-row > .c-lead { padding: 0; }
+.set-table .set-row > .c-lead { justify-content: center; }
+.set-table .set-row > .c-lead > button { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+.set-table .set-row .c-field > input { width: 100%; height: 100%; min-width: 0; padding: 0 calc(12 * var(--u)); border: 0; border-radius: 0; outline: 0; background: var(--bg-deep); color: var(--text); font-size: calc(13px * var(--zoom, 1)); }
+.set-table .set-row .c-field > input.c-name { background: transparent; color: inherit; font: 500 calc(14px * var(--zoom, 1)) var(--font); }
+.set-table .set-row .c-field > input::placeholder { color: var(--text-dim); font-weight: 400; }
+.set-table .set-row .c-field > input:focus { box-shadow: inset 0 -2px 0 var(--state-working); }
+.set-table .set-row .c-field > select { width: 100%; height: 100%; font-size: calc(13px * var(--zoom, 1)); }
+.set-table .set-row .c-field > [aria-invalid="true"], .set-table .set-row .c-field > [aria-invalid="true"]:focus { box-shadow: inset 0 -2px 0 var(--error); }
+.set-table .set-row > .c-note { padding: 0 calc(12 * var(--u)); font-size: calc(12px * var(--zoom, 1)); color: var(--text-dim); }
+.set-table .set-row > .c-preview { min-width: 0; }
+.set-table .c-preview > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(12px * var(--zoom, 1)); color: var(--text-3); user-select: text; -webkit-user-select: text; }
+.set-table .c-preview > span.bad { font-family: var(--font); color: var(--error-text); }
+.set-table .set-row > .c-end { gap: calc(8 * var(--u)); font-size: calc(12px * var(--zoom, 1)); }
+.set-table .c-state { display: flex; align-items: center; gap: calc(8 * var(--u)); }
+.set-agent .c-state .sq { width: calc(8 * var(--u)); height: calc(8 * var(--u)); background: var(--ok); }
+.set-agent.missing .c-state { color: var(--text-dim); }
+.set-agent.missing .c-state .sq { background: var(--rule-strong); }
+.set-table .set-cols > .c-field, .set-table .set-cols > .c-preview { padding: 0 calc(12 * var(--u)); }

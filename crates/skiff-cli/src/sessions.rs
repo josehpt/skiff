@@ -69,6 +69,10 @@ pub struct New {
     pub name: Option<String>,
     pub cwd: Option<PathBuf>,
     pub agent: Option<String>,
+    /// A `[skiff_agent.tasks]` row: its agent with its model.
+    pub task_type: Option<String>,
+    /// With `task_type`: this model in place of the row's.
+    pub model: Option<String>,
     pub role: Option<Role>,
     pub command: Vec<String>,
 }
@@ -92,7 +96,15 @@ pub async fn spec(c: &Client, o: New) -> Result<SessionSpec> {
         rows: 40,
         ..SessionSpec::default()
     };
-    let words: Vec<String> = if let Some(id) = &o.agent {
+    let words: Vec<String> = if let Some(t) = &o.task_type {
+        let rows = skiff_core::config::load()?.skiff_agent.tasks;
+        let agents = c.list_agents().await?;
+        let (a, line) = skiff_core::tasks::start(&rows, &agents, t, o.model.as_deref())?;
+        if !a.installed {
+            bail!("agent {:?} of task type {t} is not installed: {} is not on skiffd's PATH", a.id, a.command);
+        }
+        line.split_whitespace().map(String::from).collect()
+    } else if let Some(id) = &o.agent {
         let agents = c.list_agents().await?;
         let Some(a) = agents.iter().find(|a| &a.id == id) else {
             let ids: Vec<&str> = agents.iter().map(|a| a.id.as_str()).collect();
@@ -105,16 +117,22 @@ pub async fn spec(c: &Client, o: New) -> Result<SessionSpec> {
     } else {
         o.command
     };
-    spec.role = o.role.unwrap_or(if o.agent.is_some() { Role::Agent } else { Role::Shell });
+    let agent = o.agent.is_some() || o.task_type.is_some();
+    spec.role = o.role.unwrap_or(if agent { Role::Agent } else { Role::Shell });
     if let Some((first, rest)) = words.split_first() {
         spec.command = Some(first.clone());
         spec.args = rest.to_vec();
     }
     if spec.role == Role::Agent {
         // The app gives an agent a call sign as both label and name.
-        let label = match o.name {
-            Some(n) => n,
-            None => {
+        let label = match (o.name, &o.task_type) {
+            (Some(n), _) => n,
+            // A task type names its session after the type.
+            (None, Some(t)) => {
+                let live = c.list_sessions().await?;
+                numbered(t, live.iter().filter(|s| s.state != SessionState::Done).flat_map(|s| [s.label.as_str()].into_iter().chain(s.name.as_deref())))
+            }
+            (None, None) => {
                 let live = c.list_sessions().await?;
                 callsign(live.iter().map(|s| s.label.as_str()))
             }
@@ -127,6 +145,15 @@ pub async fn spec(c: &Client, o: New) -> Result<SessionSpec> {
         spec.name = o.name;
     }
     Ok(spec)
+}
+
+/// `name`, else `name 2`, `name 3` and on: the first one no live session uses.
+pub fn numbered<'a>(name: &str, used: impl IntoIterator<Item = &'a str>) -> String {
+    let used: std::collections::HashSet<&str> = used.into_iter().collect();
+    (1..)
+        .map(|n| if n == 1 { name.to_string() } else { format!("{name} {n}") })
+        .find(|n| !used.contains(n.as_str()))
+        .expect("a free name")
 }
 
 /// Starts a session. With `group`, the group is found first, so a typo
@@ -415,7 +442,14 @@ pub async fn kill(c: &Client, args: &[String]) -> Result<()> {
 mod tests {
     use skiff_core::session::{SessionInfo, SessionState};
 
-    use super::{front_refusal, refusal};
+    use super::{front_refusal, numbered, refusal};
+
+    #[test]
+    fn a_task_type_session_takes_the_first_free_number() {
+        assert_eq!(numbered("review", ["spec", "Captain Kraken"]), "review");
+        assert_eq!(numbered("review", ["review", "review 3"]), "review 2");
+        assert_eq!(numbered("review", ["review", "review 2"]), "review 3");
+    }
 
     #[test]
     fn newlines_become_enter() {

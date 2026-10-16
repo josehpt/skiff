@@ -523,10 +523,13 @@ export function createSettings(onAgents: (a: AgentInfo[]) => void, onClose: () =
     if (next instanceof HTMLInputElement && next.type !== "range" && e.key === "ArrowLeft") next.setSelectionRange(next.value.length, next.value.length);
   });
 
-  /** The text field with the keys, if Settings has one. */
+  /**
+   * The text field with the keys, in Settings or in a dialog over it, such as
+   * Folder › Change…. The native menu sends copy and paste here while a dialog is open.
+   */
   const field = () => {
     const f = textField(document.activeElement);
-    return f && root.contains(f) ? f : null;
+    return f && (root.contains(f) || f.closest(".confirm-overlay")) ? f : null;
   };
 
   /** The list keys, and copy and paste in a text field, as Settings reads them. True when Settings used the key. */

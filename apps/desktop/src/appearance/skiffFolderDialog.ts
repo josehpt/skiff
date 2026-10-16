@@ -5,6 +5,7 @@ import { reveal } from "../platform/fileActions";
 import { confirmAction } from "../ui/confirm";
 import { dialogFrame } from "../ui/dialogParts";
 import { h } from "../ui/dom";
+import { editField, fieldEditKey, textField } from "../ui/fieldClipboard";
 
 /** A folder's contents, as `agent_folder::Counts` sends them. */
 export interface FolderCounts {
@@ -171,6 +172,14 @@ export function changeSkiffFolder(o: { current: string; changed: () => void }) {
     pick("~/.skiff-agent", "~/.skiff-agent", "Hidden agent workspace in your home folder."),
     chooser,
   );
+  // A typed, pasted or cut path is a new choice: the preview and its actions go
+  // until Enter reads the folder there. An action never runs on a path the field no longer shows.
+  typed.addEventListener("input", () => {
+    if (!preview || busy) return;
+    preview = null;
+    error.textContent = "";
+    draw();
+  });
   typed.addEventListener("keydown", (e) => {
     if (e.key !== "Enter") return;
     e.preventDefault();
@@ -302,6 +311,13 @@ export function changeSkiffFolder(o: { current: string; changed: () => void }) {
   });
   overlay.addEventListener("keydown", (e) => {
     e.stopPropagation();
+    // ⌘X and ⌘A in the path field on macOS, as Settings does them. Copy and paste come through the menu.
+    const edit = fieldEditKey(e, isMac);
+    const field = edit && textField(e.target as Element);
+    if (edit && field) {
+      e.preventDefault();
+      return void editField(field, edit);
+    }
     if (e.key === "Escape") close();
     else if (e.key === "Enter") {
       // Enter runs the lit action, never Cancel and never a disabled one.

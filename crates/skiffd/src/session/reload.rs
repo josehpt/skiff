@@ -51,9 +51,8 @@ use crate::{
 /// state shows in [`fingerprint`] on its own.
 pub const HANDOVER: u32 = 2;
 
-/// Handover versions this binary reads. Version 1 has no workspace file;
-/// the new image falls back to its own computed path.
-const READS: [u32; 2] = [1, HANDOVER];
+/// Handover versions this binary reads.
+const READS: [u32; 1] = [HANDOVER];
 
 const MAGIC: &[u8; 8] = b"SKIFFHO\n";
 const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(5);

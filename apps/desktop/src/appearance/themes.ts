@@ -14,17 +14,11 @@ import { currentProject, place } from "../app/stateQueries";
 import { panes } from "../terminal/terminalState";
 import { skiffAgentSession } from "../app/skiffAgent";
 
-/** Foot themes became built-ins; old `foot:x` choices mean `builtin:x`. */
-const canonTheme = (id: string | null) => (id ? id.replace(/^foot:/, "builtin:") : id);
-const knownTheme = (id: string | null) => {
-  const canonical = canonTheme(id);
-  return S.themes.some((t) => t.id === canonical) ? canonical! : DEFAULT_THEME;
-};
+const knownTheme = (id: string | null) => (S.themes.some((t) => t.id === id) ? id! : DEFAULT_THEME);
 
 export async function loadThemes() {
   const list = await invoke<TerminalTheme[]>("list_themes").catch(() => S.themes);
-  // An older daemon still lists the Foot themes as foot:<slug>.
-  S.themes = list.map((t) => ({ ...t, id: canonTheme(t.id)!, source: t.source === "file" ? "file" : "built-in" }));
+  S.themes = list.map((t) => ({ ...t, source: t.source === "file" ? "file" : "built-in" }));
 }
 
 /** Projects with a `theme` in projects.toml: name to theme id. */
@@ -34,7 +28,7 @@ const projectThemes = new Map<string, string>();
 export async function loadProjectThemes() {
   const list = await invoke<[string, string][]>("project_themes").catch(() => []);
   projectThemes.clear();
-  for (const [name, id] of list) projectThemes.set(name, canonTheme(id)!);
+  for (const [name, id] of list) projectThemes.set(name, id);
 }
 
 /** The project's own theme id, or null when it follows the app. */
@@ -109,7 +103,7 @@ export async function sessionThemeMenu(s: SessionInfo) {
   await loadThemes();
   const app = S.themes.find((t) => t.id === themeFor(place(s)?.project));
   pickTheme(`Session theme: ${taskTitle(s)}`, "This session only. It replaces the project theme.", S.themes, {
-    active: canonTheme(s.theme),
+    active: s.theme,
     reload: async () => { await loadThemes(); return S.themes; },
     none: { label: "Same as project", theme: app },
     pick: (id) => {
@@ -129,8 +123,8 @@ export async function groupThemeMenu(g: Group) {
   await loadThemes();
   const ids = sessionsOf(g.layout);
   const members = ids.map((id) => sessions.get(id)).filter((s): s is SessionInfo => !!s);
-  const first = canonTheme(members[0]?.theme ?? null);
-  const shared = members.every((s) => canonTheme(s.theme) === first) ? first : null;
+  const first = members[0]?.theme ?? null;
+  const shared = members.every((s) => s.theme === first) ? first : null;
   const app = S.themes.find((t) => t.id === themeFor(members[0] && place(members[0])?.project));
   pickTheme(`Group theme: ${g.name}`, "Every session in this group. It replaces the project theme.", S.themes, {
     active: shared,
@@ -158,7 +152,7 @@ export function signatureColor(t: TerminalTheme): string {
 
 /** The theme this terminal was given by hand, or null when it follows the app. */
 export function ownTheme(s: SessionInfo): TerminalTheme | null {
-  const id = canonTheme(s.theme);
+  const id = s.theme;
   return id ? S.themes.find((t) => t.id === id) ?? null : null;
 }
 
@@ -171,7 +165,7 @@ export async function projectThemeMenu(p: Project) {
     reload: async () => { await loadThemes(); return S.themes; },
     none: { label: "Same as app", theme: app },
     pick: (id) => {
-      if (id) projectThemes.set(p.name, canonTheme(id)!);
+      if (id) projectThemes.set(p.name, id);
       else projectThemes.delete(p.name);
       applyThemes();
       applyApp();

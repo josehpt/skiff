@@ -12,7 +12,7 @@ pub enum ColorFamily {
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct TerminalTheme {
-    /// `builtin:<slug>` or `file:<file name>`. Old `foot:<slug>` ids mean `builtin:<slug>`.
+    /// `builtin:<slug>` or `file:<file name>`.
     pub id: String,
     pub name: String,
     /// "built-in" or "file".

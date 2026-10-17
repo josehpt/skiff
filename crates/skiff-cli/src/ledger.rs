@@ -12,9 +12,6 @@ use skiff_core::session::SessionInfo;
 
 use crate::{print, resolve, sessions, LedgerCmd};
 
-/// A version 1 task row: id, pane id, project, task, sent at, state, result path, updated at.
-type V1Row = (i64, String, String, String, String, String, Option<String>, String);
-
 const STATES: [&str; 4] = ["sent", "pending", "blocked", "done"];
 /// Shown in place of `sent` or `blocked` when the pane restarted since the
 /// send. Never stored: the pane generation tells it.
@@ -23,13 +20,11 @@ const INTERRUPTED: &str = "interrupted";
 /// stored: the session list tells it.
 const GONE: &str = "gone";
 
-/// Version 1: `tasks` with a reusable id and a pane on every row. Version 2
-/// adds the uid, plans, the pane generation and the ref, and never reuses an
-/// id. Version 3 adds the task type.
+/// The schema version, in `user_version`.
 const VERSION: i64 = 3;
 
 const TASKS: &str = "
-CREATE TABLE tasks (
+CREATE TABLE IF NOT EXISTS tasks (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   uid         TEXT NOT NULL UNIQUE,
   kind        TEXT NOT NULL DEFAULT 'task' CHECK (kind IN ('task', 'plan')),
@@ -128,92 +123,46 @@ pub fn path() -> Result<PathBuf> {
     Ok(folder.join("ledger.db"))
 }
 
-/// Opens the ledger, making it on first use. A first use next to an old
-/// `ledger.md` imports its rows and keeps the file as `ledger.md.bak`.
+/// Opens the ledger, making it on first use.
 fn open() -> Result<Connection> {
     open_at(&path()?)
 }
 
 fn open_at(file: &Path) -> Result<Connection> {
-    let fresh = !file.exists();
     if let Some(dir) = file.parent() {
         if !dir.is_dir() {
             bail!("{} does not exist. Turn on the Skiff agent in Settings first", dir.display());
         }
     }
-    let mut db = Connection::open(file).with_context(|| format!("open {}", file.display()))?;
-    db.busy_timeout(std::time::Duration::from_secs(5))?;
-    db.pragma_update(None, "journal_mode", "WAL")?;
-    migrate(&mut db).with_context(|| format!("update {} to ledger version {VERSION}", file.display()))?;
-    let md = file.with_file_name("ledger.md");
-    if fresh && md.is_file() {
-        let n = import(&mut db, &md)?;
-        std::fs::rename(&md, md.with_file_name("ledger.md.bak")).context("keep ledger.md as ledger.md.bak")?;
-        eprintln!("skiff: imported {n} rows from ledger.md; the old file is ledger.md.bak");
+    let mut db = connect(file)?;
+    if outdated(&db)? {
+        drop(db);
+        let old = file.with_extension("db.old");
+        std::fs::rename(file, &old).with_context(|| format!("move {} aside", file.display()))?;
+        for ext in ["db-wal", "db-shm"] {
+            let _ = std::fs::remove_file(file.with_extension(ext));
+        }
+        eprintln!("skiff: the ledger had an old format; it is now {}, and a new ledger starts empty", old.display());
+        db = connect(file)?;
     }
+    db.execute_batch(TASKS)?;
+    db.execute_batch(UIDS)?;
+    db.pragma_update(None, "user_version", VERSION)?;
     Ok(db)
 }
 
-/// Makes the tables, or brings a version 1 ledger up to this version in one
-/// transaction: every row keeps its id and gets a uid. The columns decide,
-/// not `user_version`, as an older `skiff` writes version 1 there on each open.
-fn migrate(db: &mut Connection) -> Result<()> {
-    migrate_v2(db)?;
-    add_type(db)
+fn connect(file: &Path) -> Result<Connection> {
+    let db = Connection::open(file).with_context(|| format!("open {}", file.display()))?;
+    db.busy_timeout(std::time::Duration::from_secs(5))?;
+    db.pragma_update(None, "journal_mode", "WAL")?;
+    Ok(db)
 }
 
-/// Version 3: the `type` column, empty on every old row. An older `skiff`
-/// names its columns, so it still reads and writes the file.
-fn add_type(db: &mut Connection) -> Result<()> {
-    let has = |db: &Connection| -> rusqlite::Result<bool> {
-        db.query_row("SELECT count(*) FROM pragma_table_info('tasks') WHERE name = 'type'", [], |r| r.get::<_, i64>(0)).map(|n| n > 0)
-    };
-    if has(db)? {
-        return Ok(());
-    }
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    if !has(&tx)? {
-        tx.execute_batch("ALTER TABLE tasks ADD COLUMN type TEXT;")?;
-        tx.pragma_update(None, "user_version", VERSION)?;
-    }
-    tx.commit()?;
-    Ok(())
-}
-
-fn migrate_v2(db: &mut Connection) -> Result<()> {
-    let has = |db: &Connection, sql: &str| -> rusqlite::Result<bool> { db.query_row(sql, [], |r| r.get::<_, i64>(0)).map(|n| n > 0) };
-    let current = "SELECT count(*) FROM pragma_table_info('tasks') WHERE name = 'uid'";
-    if has(db, current)? {
-        return Ok(());
-    }
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    // Another process can have migrated while this one waited for the lock.
-    if has(&tx, current)? {
-        return Ok(());
-    }
-    let old = has(&tx, "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'tasks'")?;
-    if old {
-        tx.execute_batch("ALTER TABLE tasks RENAME TO tasks_v1;")?;
-    }
-    tx.execute_batch(TASKS)?;
-    tx.execute_batch(UIDS)?;
-    if old {
-        let rows: Vec<V1Row> = tx
-            .prepare("SELECT id, pane_id, project, task, sent_at, state, result_path, updated_at FROM tasks_v1 ORDER BY id")?
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)))?
-            .collect::<rusqlite::Result<_>>()?;
-        for (id, pane, project, task, sent_at, state, result, updated_at) in rows {
-            let uid = new_uid(&tx)?;
-            tx.execute(
-                "INSERT INTO tasks (id, uid, pane_id, project, task, sent_at, state, result_path, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![id, uid, pane, project, task, sent_at, state, result, updated_at],
-            )?;
-        }
-        tx.execute_batch("DROP TABLE tasks_v1;")?;
-    }
-    tx.pragma_update(None, "user_version", VERSION)?;
-    tx.commit()?;
-    Ok(())
+/// A `tasks` table from before version 3, which this build does not read.
+fn outdated(db: &Connection) -> Result<bool> {
+    let cols: i64 = db.query_row("SELECT count(*) FROM pragma_table_info('tasks') WHERE name IN ('uid', 'type')", [], |r| r.get(0))?;
+    let table: i64 = db.query_row("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'tasks'", [], |r| r.get(0))?;
+    Ok(table > 0 && cols < 2)
 }
 
 /// A uid no row ever had: 8 hex characters with at least one letter.
@@ -227,32 +176,6 @@ fn new_uid(db: &Connection) -> Result<String> {
             return Ok(uid);
         }
     }
-}
-
-/// The rows of the Markdown table: pane id, project, task, sent at, state,
-/// result. The header and the rule under it are skipped. An unknown state
-/// comes in as pending.
-fn import(db: &mut Connection, md: &Path) -> Result<usize> {
-    let text = std::fs::read_to_string(md).with_context(|| format!("read {}", md.display()))?;
-    let tx = db.transaction()?;
-    let mut n = 0;
-    for line in text.lines().map(str::trim).filter(|l| l.starts_with('|')) {
-        let cells: Vec<&str> = line.trim_matches('|').split('|').map(|c| c.trim().trim_matches('`')).collect();
-        if cells.len() < 6 || cells[0].eq_ignore_ascii_case("pane id") || cells[0].starts_with("---") || cells[0].is_empty() {
-            continue;
-        }
-        let state = cells[4].to_lowercase();
-        let state = if STATES.contains(&state.as_str()) { state } else { "pending".into() };
-        let result = Some(cells[5]).filter(|r| !r.is_empty());
-        let uid = new_uid(&tx)?;
-        tx.execute(
-            &format!("INSERT INTO tasks (uid, pane_id, project, task, sent_at, state, result_path, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, {NOW})"),
-            params![uid, cells[0], cells[1], cells[2], cells[3], state, result],
-        )?;
-        n += 1;
-    }
-    tx.commit()?;
-    Ok(n)
 }
 
 /// Lowercase ASCII words joined by `-`, at most 40 characters. Other
@@ -311,14 +234,13 @@ fn plan_folder(results: &Path, p: &Row) -> PathBuf {
 
 /// The open tasks (state sent, pending or blocked), oldest first. Plans are
 /// left out. This is the read path for other commands, such as `skiff
-/// watch`. No ledger yet (no `ledger.db` and no `ledger.md` to import) gives
-/// an empty list, and makes no file.
+/// watch`. No `ledger.db` yet gives an empty list, and makes no file.
 pub fn open_tasks() -> Result<Vec<Row>> {
     open_tasks_at(&path()?)
 }
 
 fn open_tasks_at(file: &Path) -> Result<Vec<Row>> {
-    if !file.exists() && !file.with_file_name("ledger.md").is_file() {
+    if !file.exists() {
         return Ok(Vec::new());
     }
     let db = open_at(file)?;
@@ -414,7 +336,6 @@ fn gen(s: &SessionInfo) -> Option<i64> {
 async fn mark_live(socket: &Path, rows: &mut [Row]) {
     if let Some(all) = live(socket).await {
         for r in rows.iter_mut().filter(|r| !r.is_plan()) {
-            // Rows imported from ledger.md can hold a short id or a name.
             let s = r.pane_id.as_deref().and_then(|p| resolve::session(&all, p).ok());
             r.live = Some(s.is_some());
             r.interrupted = Some(r.interrupted_in(s));
@@ -769,26 +690,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn imports_ledger_md_and_reads_only_open_rows() {
-        let dir = std::env::temp_dir().join(format!("skiff-ledger-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let db = dir.join("ledger.db");
-        assert!(open_tasks_at(&db).unwrap().is_empty() && !db.exists());
-        std::fs::write(
-            dir.join("ledger.md"),
-            "# Ledger\n\n| Pane id | Project | Task | Sent at | State | Result |\n|---|---|---|---|---|---|\n| abc12345 | app | fix bug | 10:00 | sent | |\n| def67890 | web | seo | 10:01 | done | r.md |\n| 1111aaaa | api | docs | 10:02 | waiting | |\n",
-        )
-        .unwrap();
-        let t = open_tasks_at(&db).unwrap();
-        assert_eq!(t.iter().map(|r| (r.pane_id.as_deref().unwrap(), r.state.as_str())).collect::<Vec<_>>(), [("abc12345", "sent"), ("1111aaaa", "pending")]);
-        assert!(dir.join("ledger.md.bak").is_file() && !dir.join("ledger.md").exists());
-        // A second read does not import again.
-        assert_eq!(open_tasks_at(&db).unwrap().len(), 2);
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
     fn add_defaults_a_task_to_pending_and_a_plan_to_sent() {
         assert_eq!(add_state(None, false, false).unwrap(), "pending");
         assert_eq!(add_state(None, true, false).unwrap(), "sent");
@@ -819,82 +720,29 @@ mod tests {
     }
 
     #[test]
-    fn a_version_2_ledger_gets_the_type_column_and_add_stores_the_type() {
-        let dir = scratch("type");
+    fn reads_only_open_rows_and_stores_the_type() {
+        let dir = scratch("open");
         let file = dir.join("ledger.db");
-        {
-            let db = Connection::open(&file).unwrap();
-            // The schema as version 2 made it: no type.
-            db.execute_batch(&TASKS.replace(",\n  type        TEXT", "")).unwrap();
-            db.execute_batch(UIDS).unwrap();
-            db.execute_batch(
-                "PRAGMA user_version = 2;
-                 INSERT INTO tasks (uid, pane_id, project, task, sent_at, state, updated_at) VALUES ('a1b2c3d4', 'aaa', 'app', 'old', 'x', 'sent', 'x');",
-            )
-            .unwrap();
-            assert!(rows(&db, "", None).is_err(), "the v2 file has no type column");
-        }
+        assert!(open_tasks_at(&file).unwrap().is_empty() && !file.exists());
         let mut db = open_at(&file).unwrap();
-        assert_eq!(rows(&db, "", None).unwrap()[0].task_type, None);
-        let v: i64 = db.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, VERSION);
-        let (id, _, _) = insert(&mut db, &file, New { task_type: Some("review".into()), ..task("review the parser") }).unwrap();
+        insert(&mut db, &file, task("fix bug")).unwrap();
+        insert(&mut db, &file, New { state: "done".into(), ..task("seo") }).unwrap();
+        let (id, _, _) = insert(&mut db, &file, New { state: "pending".into(), task_type: Some("review".into()), ..task("docs") }).unwrap();
+        let t = open_tasks_at(&file).unwrap();
+        assert_eq!(t.iter().map(|r| (r.task.as_str(), r.state.as_str())).collect::<Vec<_>>(), [("fix bug", "sent"), ("docs", "pending")]);
         let r = one(&db, &id.to_string()).unwrap();
-        assert_eq!(r.task_type.as_deref(), Some("review"));
         assert_eq!(serde_json::to_value(&r).unwrap()["type"], "review");
-        // A second open changes nothing.
-        drop(db);
-        assert_eq!(one(&open_at(&file).unwrap(), &id.to_string()).unwrap().task_type.as_deref(), Some("review"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn a_version_1_ledger_migrates_in_place() {
-        let dir = scratch("migrate");
+    fn an_old_ledger_moves_aside_and_a_new_one_starts_empty() {
+        let dir = scratch("old");
         let file = dir.join("ledger.db");
-        {
-            let db = Connection::open(&file).unwrap();
-            // The schema as version 1 made it.
-            db.execute_batch(
-                "CREATE TABLE IF NOT EXISTS tasks (
-                  id INTEGER PRIMARY KEY, pane_id TEXT NOT NULL, project TEXT NOT NULL DEFAULT '', task TEXT NOT NULL,
-                  sent_at TEXT NOT NULL, state TEXT NOT NULL CHECK (state IN ('sent', 'pending', 'blocked', 'done')),
-                  result_path TEXT, updated_at TEXT NOT NULL);
-                 PRAGMA user_version = 1;
-                 INSERT INTO tasks VALUES (1, 'aaa', 'app', 'one', '2026-10-01T10:00:00Z', 'sent', NULL, '2026-10-01T10:00:00Z');
-                 INSERT INTO tasks VALUES (2, 'bbb', 'web', 'two', '2026-10-01T11:00:00Z', 'done', 'results/two.md', '2026-10-01T12:00:00Z');
-                 INSERT INTO tasks VALUES (4, 'ccc', 'api', 'four', '2026-10-01T13:00:00Z', 'blocked', NULL, '2026-10-01T13:00:00Z');",
-            )
-            .unwrap();
-        }
+        Connection::open(&file).unwrap().execute_batch("CREATE TABLE tasks (id INTEGER PRIMARY KEY, pane_id TEXT, task TEXT);").unwrap();
         let db = open_at(&file).unwrap();
-        let all = rows(&db, "", None).unwrap();
-        let kept: Vec<_> = all.iter().map(|r| (r.id, r.pane_id.as_deref().unwrap(), r.task.as_str(), r.state.as_str(), r.result_path.as_deref(), r.sent_at.as_str())).collect();
-        assert_eq!(
-            kept,
-            [
-                (1, "aaa", "one", "sent", None, "2026-10-01T10:00:00Z"),
-                (2, "bbb", "two", "done", Some("results/two.md"), "2026-10-01T11:00:00Z"),
-                (4, "ccc", "four", "blocked", None, "2026-10-01T13:00:00Z"),
-            ]
-        );
-        assert_eq!(all[1].project, "web");
-        assert!(all.iter().all(|r| r.uid.len() == 8 && r.kind == "task" && r.pane_gen.is_none()));
-        let uids: std::collections::HashSet<_> = all.iter().map(|r| &r.uid).collect();
-        assert_eq!(uids.len(), 3);
-        let v: i64 = db.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, VERSION);
-        // An old row has no generation, so it is never interrupted.
-        assert!(!all[0].interrupted_in(None));
-        // A second open, and an older skiff resetting user_version, change nothing.
-        db.pragma_update(None, "user_version", 1).unwrap();
-        drop(db);
-        let db = open_at(&file).unwrap();
-        assert_eq!(rows(&db, "", None).unwrap().iter().map(|r| r.uid.clone()).collect::<Vec<_>>(), all.iter().map(|r| r.uid.clone()).collect::<Vec<_>>());
-        // The next id follows the highest migrated one.
-        drop(db);
-        let (id, _, _) = insert(&mut open_at(&file).unwrap(), &file, task("five")).unwrap();
-        assert_eq!(id, 5);
+        assert!(rows(&db, "", None).unwrap().is_empty());
+        assert!(dir.join("ledger.db.old").is_file());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

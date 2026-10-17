@@ -57,10 +57,7 @@ pub async fn session(c: &Client, cmd: SessionThemeCmd) -> Result<()> {
 /// A theme must exist in the same config folder the command uses. This keeps
 /// a misspelled ID from silently becoming the default in the desktop app.
 fn known(id: &str) -> Result<String> {
-    let id = id.trim();
-    let id = id
-        .strip_prefix("foot:")
-        .map_or_else(|| id.to_string(), |name| format!("builtin:{name}"));
+    let id = id.trim().to_string();
     if skiff_core::theme::list().iter().any(|t| t.id == id) {
         Ok(id)
     } else {
@@ -73,9 +70,8 @@ mod tests {
     use super::known;
 
     #[test]
-    fn accepts_current_and_legacy_builtin_ids() {
-        assert_eq!(known("builtin:foot").unwrap(), "builtin:foot");
-        assert_eq!(known("foot:foot").unwrap(), "builtin:foot");
+    fn accepts_a_builtin_id() {
+        assert_eq!(known(" builtin:foot ").unwrap(), "builtin:foot");
     }
 
     #[test]

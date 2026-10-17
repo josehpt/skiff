@@ -267,7 +267,7 @@ export function createSettings(onAgents: (a: AgentInfo[]) => void, onClose: () =
       h("div", "set-h", "Appearance"),
       h("div", "set-sub", "App theme. Colors the app and every project and session without a theme of its own."),
     );
-    const cur = look.current()?.replace(/^foot:/, "builtin:") ?? null;
+    const cur = look.current() ?? null;
     const cards = h("div", "set-cards");
     cards.appendChild(
       themeGrid(look.themes(), {

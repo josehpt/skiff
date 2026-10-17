@@ -211,6 +211,12 @@ pub(crate) async fn set_font_size(size: Option<u8>) -> Result<Appearance, String
     .await
 }
 
+/// Sets Mission control's filter: only the running sessions, or all.
+#[tauri::command]
+pub(crate) async fn set_mission_filter(running: bool) -> Result<(), String> {
+    blocking(move || config::set_mission_filter(running)).await
+}
+
 /// Runs an agent config edit, then answers with the agent list. The list
 /// comes from skiffd: whether an agent is installed depends on the sessions'
 /// PATH and aliases, which the app does not have.

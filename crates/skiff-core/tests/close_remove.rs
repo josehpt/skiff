@@ -13,7 +13,7 @@ fn close_reopen_and_remove_keep_the_rest_of_the_file() {
     let file = dir.join("projects.toml");
     std::fs::write(
         &file,
-        "# my projects\n\n[[project]]\nname = \"keep\" # the one that stays\npath = \"/tmp/keep\"\ncolor = \"#f28fd0\"\n",
+        "# my projects\n\n[theme]\nfile = \"old.css\"\n\n[[project]]\nname = \"keep\" # the one that stays\npath = \"/tmp/keep\"\ncolor = \"#f28fd0\"\neditor = \"zed\"\nlayout = \"side-by-side\"\nserver = { cmd = \"npm run dev\", port_env = \"PORT\" }\n",
     )
     .unwrap();
     std::env::set_var("SKIFF_CONFIG", &file);
@@ -46,6 +46,9 @@ fn close_reopen_and_remove_keep_the_rest_of_the_file() {
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(!text.contains("\"repo\""), "{text}");
     assert!(text.contains("# my projects") && text.contains("# the one that stays"), "{text}");
+    for legacy in ["[theme]", "file = \"old.css\"", "editor = \"zed\"", "layout = \"side-by-side\"", "server = { cmd = \"npm run dev\", port_env = \"PORT\" }"] {
+        assert!(text.contains(legacy), "{legacy}: {text}");
+    }
     let names: Vec<_> = config::load().unwrap().projects.into_iter().map(|p| p.name).collect();
     assert_eq!(names, ["keep"]);
     assert!(config::remove_project("repo").is_err());

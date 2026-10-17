@@ -41,18 +41,17 @@ server = { cmd = "npm run dev", port_env = "PORT" }
 "##;
 
     #[test]
-    fn parses_sample() {
+    fn parses_legacy_sample_with_current_defaults() {
         let cfg = parse(SAMPLE).unwrap();
         assert_eq!(cfg.projects.len(), 2);
         assert_eq!(cfg.projects[0].short(), "skf");
         assert_eq!(cfg.projects[1].short(), "sto");
-        assert_eq!(cfg.projects[1].layout, Layout::SideBySide);
         assert_eq!(cfg.keys.get("palette").map(String::as_str), Some("ctrl+shift+p"));
         assert!(!cfg.projects[0].path.to_string_lossy().starts_with('~'));
-        assert_eq!(
-            cfg.projects[1].server.as_ref().unwrap().port_env.as_deref(),
-            Some("PORT")
-        );
+        // Obsolete keys in an older file do not block the current settings.
+        assert_eq!(cfg.appearance, Appearance::default());
+        assert_eq!(cfg.projects[0].agents, ["claude", "codex"]);
+        assert_eq!(cfg.projects[1].agents, ["gemini"]);
     }
 
     #[test]

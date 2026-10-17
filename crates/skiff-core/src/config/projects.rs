@@ -1,6 +1,6 @@
 use std::path::Path;
 use anyhow::{Context, Result};
-use super::types::{FolderInfo, ProjectConfig, Layout, short_name};
+use super::types::{FolderInfo, ProjectConfig, short_name};
 use super::persistence::{load, config_path, edit_lock, home_relative, expand_home, write_atomic};
 
 /// Accent colors for new projects. Kept clear of the state colors.
@@ -160,10 +160,7 @@ pub fn add_project(
         icon,
         background: None,
         background_opacity: None,
-        editor: None,
         agents,
-        layout: Layout::default(),
-        server: None,
         files: false,
         changes: None,
         theme: Some(theme),

@@ -4,8 +4,6 @@ use serde::{Serialize, Deserialize};
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
 pub struct Config {
     #[serde(default)]
-    pub theme: Theme,
-    #[serde(default)]
     pub keys: Keys,
     #[serde(default)]
     pub agents: Agents,
@@ -139,29 +137,9 @@ pub struct Agents {
     pub removed: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
-pub struct Theme {
-    /// A CSS file with custom properties. Relative to the config directory.
-    pub file: Option<String>,
-}
-
 /// Key overrides by action: `palette = "ctrl+shift+p"`. The app holds the
 /// defaults and the action names; unknown actions are ignored.
 pub type Keys = std::collections::BTreeMap<String, String>;
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[serde(rename_all = "kebab-case")]
-pub enum Layout {
-    #[default]
-    Stacked,
-    SideBySide,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-pub struct ServerConfig {
-    pub cmd: String,
-    pub port_env: Option<String>,
-}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct ProjectConfig {
@@ -177,12 +155,8 @@ pub struct ProjectConfig {
     pub background: Option<String>,
     /// How opaque the panes are over the background image, in percent. Absent: 85.
     pub background_opacity: Option<u8>,
-    pub editor: Option<String>,
     #[serde(default)]
     pub agents: Vec<String>,
-    #[serde(default)]
-    pub layout: Layout,
-    pub server: Option<ServerConfig>,
     /// Shows a Files tree under each worktree. The app reads and writes it;
     /// the daemon passes it by.
     #[serde(default)]

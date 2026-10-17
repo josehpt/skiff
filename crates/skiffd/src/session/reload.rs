@@ -509,25 +509,17 @@ fn preflight(binary: &Path, handover: Option<&Path>) -> Result<()> {
         .stderr(Stdio::null())
         .spawn()
         .with_context(|| format!("run {}", binary.display()))?;
-    let mut stdout = child.stdout.take().unwrap();
-    let reader = std::thread::spawn(move || {
-        let mut out = Vec::new();
-        let _ = stdout.read_to_end(&mut out);
-        out
-    });
-    let start = Instant::now();
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-        if start.elapsed() > PREFLIGHT_TIMEOUT {
+    let (status, out) = match crate::command::output(&mut child, PREFLIGHT_TIMEOUT) {
+        Ok(output) => output,
+        Err(e) => {
             let _ = child.kill();
             let _ = child.wait();
-            bail!("{} did not answer --reload-info within {}s", binary.display(), PREFLIGHT_TIMEOUT.as_secs());
+            if e.kind() == std::io::ErrorKind::TimedOut {
+                bail!("{} did not answer --reload-info within {}s", binary.display(), PREFLIGHT_TIMEOUT.as_secs());
+            }
+            return Err(e.into());
         }
-        std::thread::sleep(Duration::from_millis(10));
     };
-    let out = reader.join().unwrap_or_default();
     let info: ReloadInfo = match serde_json::from_slice(&out) {
         Ok(info) if status.success() => info,
         Ok(info) if handover.is_some() => bail!("skiffd {} cannot read this daemon's handover", info.version),

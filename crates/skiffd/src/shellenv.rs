@@ -7,10 +7,9 @@
 //! Started from a terminal, the environment is already complete.
 
 use std::{
-    io::Read,
     process::{Command, Stdio},
     sync::OnceLock,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 const MARK: &str = "__SKIFF_ENV__";
@@ -82,25 +81,14 @@ fn probe(shell: &str) -> Option<(Vec<(String, String)>, String)> {
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
-    let mut out = child.stdout.take()?;
-    let reader = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = out.read_to_end(&mut buf);
-        buf
-    });
-    let start = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if start.elapsed() < TIMEOUT => std::thread::sleep(Duration::from_millis(10)),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
+    let (_, buf) = match crate::command::output(&mut child, TIMEOUT) {
+        Ok(output) => output,
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
         }
-    }
-    let buf = reader.join().ok()?;
+    };
     let text = String::from_utf8_lossy(&buf);
     let body = &text[text.find(MARK)? + MARK.len()..];
     let (body, aliases) = body.split_once(MARK).unwrap_or((body, ""));

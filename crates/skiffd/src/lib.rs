@@ -1,6 +1,7 @@
 //! `skiffd` keeps sessions alive across client restarts. Clients (the desktop
 //! app, later a TUI or a remote client) speak the protocol in `skiff_core`.
 
+mod command;
 pub mod paths;
 pub mod pty;
 pub mod screen;

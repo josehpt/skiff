@@ -63,28 +63,21 @@ fn agent_sessions(command: &[String], cwd: &Path) -> Result<String> {
         .stderr(std::process::Stdio::null())
         .spawn()
         .map_err(|e| anyhow!("{}: {e}", words[0]))?;
-    let mut stdout = child.stdout.take().unwrap();
-    let reader = std::thread::spawn(move || {
-        let mut out = String::new();
-        let _ = std::io::Read::read_to_string(&mut stdout, &mut out);
-        out
-    });
-    let start = std::time::Instant::now();
-    loop {
-        if let Some(status) = child.try_wait()? {
-            let out = reader.join().unwrap_or_default();
-            if !status.success() {
-                bail!("{} exited with {status}", words[0]);
-            }
-            return Ok(out);
-        }
-        if start.elapsed() > LIST_TIMEOUT {
+    let (status, out) = match crate::command::output(&mut child, LIST_TIMEOUT) {
+        Ok(output) => output,
+        Err(e) => {
             let _ = child.kill();
             let _ = child.wait();
-            bail!("{} took longer than {}s", words[0], LIST_TIMEOUT.as_secs());
+            if e.kind() == std::io::ErrorKind::TimedOut {
+                bail!("{} took longer than {}s", words[0], LIST_TIMEOUT.as_secs());
+            }
+            return Err(e.into());
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    if !status.success() {
+        bail!("{} exited with {status}", words[0]);
     }
+    Ok(String::from_utf8(out).unwrap_or_default())
 }
 
 async fn blocking<T: Send + 'static>(

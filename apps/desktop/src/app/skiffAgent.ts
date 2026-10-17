@@ -178,39 +178,6 @@ export function startSkiffWatch() {
   if (s) watch(s.id, true);
 }
 
-/** Mission control's Restart watcher: when the last one started, and why it failed. */
-export const watchRestart = { at: 0, error: null as string | null };
-
-/** A restarted watcher has this long to register before the tile says it did not. */
-const RESTART_SHOW = 10_000;
-
-/** True while a restart waits for its watcher to register. */
-export function restarting(now = Date.now()): boolean {
-  return watchRestart.at > 0 && now - watchRestart.at < RESTART_SHOW;
-}
-
-/**
- * Stops the watcher that holds its lock and starts a new one. The backend
- * signals only a live `skiff watch` for this daemon, with SIGTERM, and never
- * touches a session. Resolves when the backend answers; the tile shows the rest.
- */
-export async function restartSkiffWatch() {
-  const s = skiffAgentSession();
-  if (!s) return;
-  watchRestart.at = Date.now();
-  watchRestart.error = null;
-  noteAsk(s.id, null);
-  window.setTimeout(render, RESTART_SHOW + 100);
-  render();
-  try {
-    await invoke<boolean>("restart_skiff_watch", { session: s.id });
-  } catch (e) {
-    watchRestart.at = 0;
-    watchRestart.error = String(e);
-  }
-  render();
-}
-
 /** The row menu's Open watch log, as Settings › Open with says. */
 export function openWatchLog() {
   invoke<string>("skiff_watch_log").then(openPath).catch(showError);

@@ -8,8 +8,6 @@
  * sessions and shells at their prompt. Each part counts what the search
  * leaves. The choice is stored in `[appearance] mission_filter`, so the board
  * opens with the last one, also after a restart. With none stored: Running.
- * The Skipper lane (missionSkipper.ts) comes first whenever Skipper has a
- * folder: its open tasks, then its own screen.
  * This file is the board. missionMotion.ts opens and closes it.
  */
 
@@ -31,21 +29,6 @@ import { bareWorktree, projectBadge, rollup, treeSections } from "./tree";
 import { closeMission, goToSession, maximizeLit } from "./missionMotion";
 import { nextWaiting } from "./view";
 import { settings } from "../app/panels";
-import {
-  type SkipperView,
-  freshSkipper,
-  isSkipperKey,
-  openUid,
-  skipper,
-  skipperEnter,
-  skipperKeys,
-  skipperLane,
-  skipperMatch,
-  skipperSession,
-  skipperSignature,
-  skipperView,
-  taskMenu,
-} from "./missionSkipper";
 
 /** Rows of text per screen. */
 const ROWS = 12;
@@ -67,8 +50,6 @@ document.body.appendChild(root);
 
 let lit: string | null = null;
 let order: string[][] = [];
-/** The Skipper lane as the last build or update saw it. Null: no lane. */
-let sk: SkipperView | null = null;
 let shape = "";
 let timer: number | undefined;
 let reading = false;
@@ -163,13 +144,12 @@ function matchText(s: SessionInfo, p: Project): string {
 
 /**
  * Hides the screens the search and Running leave out, and the projects and
- * lanes left with none. Running leaves the Skipper lane as it is. The light
- * moves to the first match when its screen hides.
+ * lanes left with none. The light moves to the first match when its screen hides.
  */
 function filter(all: Lane[], scroll = false) {
   const q = search.value.trim();
   found = q || running ? new Set() : null;
-  // Each part of Running / All counts what the search leaves. Skipper's rows count in neither.
+  // Each part of Running / All counts what the search leaves.
   let nAll = 0;
   let nRunning = 0;
   for (const l of all)
@@ -181,7 +161,6 @@ function filter(all: Lane[], scroll = false) {
         if (on) nRunning++;
         if (found && (on || !running)) found.add(s.id);
       }
-  if (found && sk) for (const k of skipperKeys(sk)) if (!q || fuzzy(q, skipperMatch(sk, k)) >= 0) found.add(k);
   allCount.textContent = String(nAll);
   runningCount.textContent = String(nRunning);
   for (const t of root.querySelectorAll<HTMLElement>(".mission-tile")) t.hidden = !!found && !found.has(t.dataset.session ?? "");
@@ -212,18 +191,11 @@ function lanes(): Lane[] {
     .filter((l) => l.projects.length);
 }
 
-/** The head's parts: state, agent, title, and the branch when it is not the main one. `p`: null for Skipper's own screen. */
-function headParts(s: SessionInfo, p: Project | null): HTMLElement[] {
+/** The head's parts: state, agent, title, and the branch when it is not the main one. */
+function headParts(s: SessionInfo, p: Project): HTMLElement[] {
   const out = [stateIcon(s), agentIcon(s), h("span", "title", taskTitle(s))];
   const w = place(s)?.worktree;
-  if (p && w && !bareWorktree(p) && !w.is_main) out.push(h("span", "where mono", branchName(w)));
-  // A pane with an open Skipper task names the task.
-  const uid = openUid(sk, s.id);
-  if (uid) {
-    const t = h("span", "where mono mission-task-uid", uid);
-    t.title = `Open task ${uid}`;
-    out.push(t);
-  }
+  if (w && !bareWorktree(p) && !w.is_main) out.push(h("span", "where mono", branchName(w)));
   return out;
 }
 
@@ -242,8 +214,8 @@ function paint(pre: HTMLElement, s: SessionInfo) {
 }
 
 /** Brings a tile up to date in place. The tile stays, so its light does not flicker. */
-function fresh(b: HTMLElement, s: SessionInfo, p: Project | null) {
-  b.style.setProperty("--pc", p ? accent(p) : "var(--accent)");
+function fresh(b: HTMLElement, s: SessionInfo, p: Project) {
+  b.style.setProperty("--pc", accent(p));
   const label = `${taskTitle(s)}, ${s.state}`;
   if (b.getAttribute("aria-label") !== label) b.setAttribute("aria-label", label);
   const head = b.querySelector<HTMLElement>(".mission-head");
@@ -256,7 +228,7 @@ function fresh(b: HTMLElement, s: SessionInfo, p: Project | null) {
   if (pre) paint(pre, s);
 }
 
-function tile(s: SessionInfo, p: Project | null): HTMLElement {
+function tile(s: SessionInfo, p: Project): HTMLElement {
   const b = h("button", "mission-tile" + (s.id === lit ? " lit" : ""));
   b.type = "button";
   b.tabIndex = -1;
@@ -268,7 +240,6 @@ function tile(s: SessionInfo, p: Project | null): HTMLElement {
   return b;
 }
 
-/** The search's count: the sessions on the board, or those it shows. The top bar counts the waiting ones. */
 /**
  * The app colors of a theme on one element and what is in it. The board
  * takes the app theme, not the selected project's; each project's part of a
@@ -358,8 +329,7 @@ export function relight(was: string[], now: string[], lit: string | null): strin
 
 function build(all = lanes()) {
   const was = order.flat();
-  sk = skipperView();
-  order = [...(sk ? [skipperKeys(sk)] : []), ...all.map((l) => l.projects.flatMap((x) => x.list.map((s) => s.id)))];
+  order = all.map((l) => l.projects.flatMap((x) => x.list.map((s) => s.id)));
   const ids = new Set(order.flat());
   for (const id of screens.keys()) if (!ids.has(id)) screens.delete(id);
   lit = relight(was, order.flat(), lit);
@@ -374,7 +344,6 @@ function build(all = lanes()) {
   scope.title = `Only the running sessions, or all: ${keyLabel("focus-mode")}`;
 
   const board = h("div", "mission-lanes");
-  if (sk) board.appendChild(skipperLane(sk, lit, sk.self ? tile(sk.self, null) : null));
   for (const l of all) {
     const lane = h("section", "mission-lane");
     lane.setAttribute("aria-label", l.name);
@@ -395,7 +364,7 @@ function build(all = lanes()) {
     }
     board.appendChild(lane);
   }
-  if (!all.length && !sk) board.appendChild(h("div", "mission-empty", "No sessions"));
+  if (!all.length) board.appendChild(h("div", "mission-empty", "No sessions"));
   themed(root, null);
   root.replaceChildren(board, scrollbar(board));
   filter(all);
@@ -412,12 +381,7 @@ function update(all: Lane[]) {
     const p = S.projects.find((x) => x.name === g.dataset.project);
     if (p) themed(g, p);
   }
-  if (sk) {
-    freshSkipper(root, sk);
-    const b = sk.self && tileOf(sk.self.id);
-    if (b && sk.self) fresh(b, sk.self, null);
-  }
-  const heads = root.querySelectorAll(".mission-lane:not(.skipper) > .mission-lane-head");
+  const heads = root.querySelectorAll(".mission-lane > .mission-lane-head");
   for (const [i, l] of all.entries()) {
     if (heads[i]) roll(heads[i], l);
     for (const { p, list } of l.projects) {
@@ -431,8 +395,8 @@ function update(all: Lane[]) {
 }
 
 /** The board's structure: lanes, their projects, and the sessions in each. A change rebuilds it. */
-function signature(all: Lane[], v: SkipperView | null): string {
-  return skipperSignature(v) + "|" + all.map((l) => l.name + ":" + l.projects.map((x) => x.p.name + "=" + x.list.map((s) => s.id).join(",")).join(";")).join("|");
+function signature(all: Lane[]): string {
+  return all.map((l) => l.name + ":" + l.projects.map((x) => x.p.name + "=" + x.list.map((s) => s.id).join(",")).join(";")).join("|");
 }
 
 async function read() {
@@ -460,21 +424,13 @@ async function read() {
 function tick() {
   if (paused) return;
   const all = lanes();
-  const v = skipperView();
-  const sig = signature(all, v);
+  const sig = signature(all);
   if (sig !== shape) {
     shape = sig;
     build(all);
-  } else {
-    sk = v;
-    update(all);
-  }
-  skipper.poll();
+  } else update(all);
   void read();
 }
-skipper.onChange(() => {
-  if (!root.hidden && !paused) tick();
-});
 
 /** `scroll`: bring the screen into view, for keys. The pointer is already on it. */
 function light(id: string, scroll = true) {
@@ -523,16 +479,13 @@ function tileOf(id: string | null): HTMLElement | null {
 export const board = {
   root,
   lit: () => lit,
-  /** The session the lit tile stands for: its own, or a Skipper task's pane. */
-  litSession: () => (isSkipperKey(lit) ? skipperSession(sk, lit!) : lit),
   tile: tileOf,
   /** Builds the board lit on `focus` and reads every screen once. Shows nothing. */
   async prepare(focus: string | null) {
     paused = false;
     lit = focus;
-    await skipper.read();
     const all = lanes();
-    shape = signature(all, skipperView());
+    shape = signature(all);
     build(all);
     await read();
   },
@@ -556,8 +509,6 @@ export const board = {
     topbar()?.toggleAttribute("inert", document.body.classList.contains("focus-mode"));
     root.hidden = true;
     screens.clear();
-    skipper.clear();
-    sk = null;
     order = [];
     root.replaceChildren();
   },
@@ -565,21 +516,8 @@ export const board = {
 
 root.addEventListener("click", (e) => {
   const t = (e.target as Element).closest<HTMLElement>(".mission-tile");
-  if (t?.dataset.session) enter(t.dataset.session);
+  if (t?.dataset.session) closeMission(t.dataset.session);
 });
-
-/** Enter or a click: to the session, or a Skipper tile's own action. */
-function enter(key: string) {
-  if (isSkipperKey(key)) skipperEnter(key);
-  else closeMission(key);
-}
-
-/** The menu key, Shift+F10 or the project menu's key: the lit Skipper tile's menu. True when one opened. */
-export function missionMenu(): boolean {
-  if (!missionOpen() || !isSkipperKey(lit)) return false;
-  taskMenu(lit!);
-  return true;
-}
 // Only a pointer that moves lights a screen. A key scrolls the board under a
 // still pointer, and the screen that lands under it must not take the light back.
 let pointer = "";
@@ -652,9 +590,7 @@ function onKey(e: KeyboardEvent) {
     void settings.open();
   } else if (missionKey(a)) {
     // Stepped. The list keys work in the search too.
-  } else if (a === "project-menu" || e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) {
-    if (!missionMenu()) return;
-  } else if (e.key === "Enter" && lit) enter(lit);
+  } else if (e.key === "Enter" && lit) closeMission(lit);
   // Plain arrows step too. In the search, Left and Right move the caret.
   else if (e.ctrlKey || e.shiftKey || e.altKey || e.metaKey) return;
   else if ((e.target === search && (e.key === "ArrowLeft" || e.key === "ArrowRight")) || !step(e.key)) return;

@@ -66,13 +66,28 @@ body:has(.mission-search:focus) .mission-tile.lit::after { visibility: hidden; }
 .mission-count { flex-shrink: 0; font-size: calc(12px * var(--zoom, 1)); color: var(--text-3); }
 .mission-find:focus-within .mission-find-key { visibility: hidden; }
 .mission-tile[hidden], .mission-group[hidden], .mission-lane[hidden] { display: none; }
+/* All / Running, beside the search. The lit one has the raised ground. */
+#topbar .tb-cell.mission-scope { display: none; padding: 0; }
+body:has(#mission-control:not([hidden])) #topbar .tb-cell.mission-scope { display: flex; }
+.mission-scope-btn { height: 100%; padding: 0 calc(12 * var(--u)); border: 0; border-radius: 0; background: transparent; color: var(--text-3); font: inherit; font-size: calc(12px * var(--zoom, 1)); cursor: pointer; transition: background 120ms; }
+.mission-scope-btn + .mission-scope-btn { border-left: 1px solid var(--rule); }
+.mission-scope-btn:hover { color: var(--text); }
+.mission-scope-btn[aria-pressed="true"] { background: var(--bg-raised); color: var(--text); font-weight: 600; }
 
-/* The Skipper lane: first, and only while the watcher or an open task needs a look. */
-.mission-watch-state { flex-shrink: 0; font-size: calc(11px * var(--zoom, 1)); color: var(--text-3); }
-.mission-watch-state.bad { color: var(--error); }
-.mission-watch-state.waiting { color: var(--state-waiting-text); }
+/* The Skipper lane: first, whenever Skipper has a folder. 20px rows, then Skipper's own screen. */
 .mission-open-count { flex-shrink: 0; font-size: calc(11px * var(--zoom, 1)); color: var(--text-3); }
-.mission-section { height: calc(20 * var(--u)); flex-shrink: 0; display: flex; align-items: center; padding: 0 calc(12 * var(--u)); border-bottom: 1px solid var(--rule); font-size: calc(11px * var(--zoom, 1)); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); }
+.mission-tile.mission-skipper { height: calc(20 * var(--u)); flex-direction: row; align-items: center; gap: calc(6 * var(--u)); padding: 0 calc(10 * var(--u)); background: var(--bg); border-bottom: 0; scroll-margin-top: calc(40 * var(--u)); }
+.mission-tile.mission-skipper.last { border-bottom: 1px solid var(--rule); }
+.mission-skipper .title { flex-grow: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(12px * var(--zoom, 1)); color: var(--text-2); }
+.mission-skipper .mission-state { flex-shrink: 0; font-size: calc(11px * var(--zoom, 1)); color: var(--text-dim); }
+.mission-skipper:hover, .mission-tile.mission-skipper.lit { background: color-mix(in srgb, var(--pc) 12%, var(--bg-panel)); }
+.mission-tile.mission-skipper.lit .title { color: var(--text); }
+/* The watcher line: red while the watcher needs a look. Quiet while it restarts, and for the line that starts Skipper. */
+.mission-tile.mission-alert { border-bottom: 1px solid var(--rule); background: var(--error-bg); }
+.mission-alert .title { color: var(--error-text); }
+.mission-tile.mission-alert:hover, .mission-tile.mission-alert.lit { background: var(--error-bg-hover); }
+.mission-tile.mission-alert.quiet { background: var(--bg); }
+.mission-alert.quiet .title { color: var(--text-3); }
 /* State shows as a word and a square: filled when it needs the user, hollow for the rest. */
 .mission-mark { flex-shrink: 0; width: calc(8 * var(--u)); height: calc(8 * var(--u)); box-sizing: border-box; border: 1px solid currentColor; }
 .mission-mark.filled { background: currentColor; }
@@ -80,20 +95,10 @@ body:has(.mission-search:focus) .mission-tile.lit::after { visibility: hidden; }
 .mission-mark.waiting { color: var(--state-waiting); }
 .mission-mark.working { color: var(--state-working); }
 .mission-mark.idle { color: var(--state-idle); }
-.mission-head .mission-state { flex-shrink: 0; font-size: calc(11px * var(--zoom, 1)); font-weight: 600; color: var(--text-2); }
-.mission-meta { height: calc(20 * var(--u)); flex-shrink: 0; display: flex; align-items: center; padding: 0 calc(10 * var(--u)); border-bottom: 1px solid var(--rule); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(11px * var(--zoom, 1)); color: var(--text-dim); }
-.mission-screen.task { height: calc(4 * 14 * var(--u) + 16 * var(--u)); }
+/* Skipper's screen fills the rest of the lane and shows its last rows. */
+.mission-tile.mission-self { flex: 1 0 0; min-height: calc(20 * var(--u) + 12 * 14 * var(--u) + 16 * var(--u)); }
+.mission-self .mission-screen { flex: 1 1 0; min-height: 0; height: auto; display: flex; flex-direction: column; justify-content: flex-end; }
 .mission-note { padding: calc(8 * var(--u)) calc(10 * var(--u)); font-size: calc(12px * var(--zoom, 1)); line-height: 1.4; color: var(--text-2); white-space: normal; }
-.mission-foot { height: calc(28 * var(--u)); flex-shrink: 0; display: flex; align-items: center; gap: calc(8 * var(--u)); padding: 0 calc(10 * var(--u)); border-top: 1px solid var(--rule); background: var(--bg-panel); }
-.mission-uid { flex-shrink: 0; font-size: calc(11px * var(--zoom, 1)); color: var(--text-3); }
-.mission-hint { flex-grow: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(11px * var(--zoom, 1)); color: var(--text-3); }
-.mission-hint.error { color: var(--error); }
-/* Foot buttons are for the mouse; the keys reach the same actions through Enter and the menu. */
-.mission-act { flex-shrink: 0; height: calc(20 * var(--u)); padding: 0 calc(8 * var(--u)); border: 1px solid var(--rule-strong); border-radius: 0; background: var(--bg-raised); color: var(--text-2); font: inherit; font-size: calc(11px * var(--zoom, 1)); cursor: pointer; transition: background 120ms; }
-.mission-act:hover:not(:disabled) { background: var(--bg-panel); color: var(--text); }
-.mission-act:disabled { opacity: 0.5; cursor: default; }
-.mission-act.more { padding: 0 calc(6 * var(--u)); }
-.mission-tile.mission-skipper { background: var(--bg-deep); }
 .mission-head .mission-task-uid { color: var(--text-3); }
 
 /* Reassign…: the live panes, the task's project first. */

@@ -119,11 +119,6 @@ export function previewToken(): number {
   return active && !active.closed ? active.gen : 0;
 }
 
-/** The open peek's session, if a command runs in it. */
-export function peekSession(): string | null {
-  return open?.session ?? null;
-}
-
 /** A peek session that is not the open peek's: left behind, or an app let go. */
 export function strayPeek(s: SessionInfo) {
   if (s.id === open?.session || [...parked.values()].some((p) => p.session === s.id)) return;

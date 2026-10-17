@@ -47,8 +47,6 @@ import {
 
 /** Rows of text per screen. */
 const ROWS = 12;
-/** Rows of Skipper's screen. It fills the rest of its lane, so it reads more and shows the last that fit. */
-const SELF_ROWS = 60;
 /** How often the open board reads the screens again. */
 const TICK = 1000;
 
@@ -423,12 +421,10 @@ function signature(all: Lane[], v: SkipperView | null): string {
 async function read() {
   if (reading) return;
   reading = true;
-  const self = sk?.self?.id;
-  const jobs = [...screens].map(([id, pre]): [string, HTMLElement, number] => [id, pre, id === self ? SELF_ROWS : ROWS]);
   await Promise.all(
-    jobs.map(async ([id, pre, rows]) => {
+    [...screens].map(async ([id, pre]) => {
       try {
-        const lines = await invoke<string[]>("session_screen", { session: id, rows });
+        const lines = await invoke<string[]>("session_screen", { session: id, rows: ROWS });
         if (paused) return;
         const text = lines.join("\n");
         if (pre.textContent !== text) pre.textContent = text;

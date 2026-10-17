@@ -350,10 +350,7 @@ export function skipperLane(v: SkipperView, lit: string | null, self: HTMLElemen
   if (v.watch) lane.appendChild(watchRow(v.watch, lit === "watch"));
   for (const t of v.tasks) lane.appendChild(taskRow(t, lit === t.key));
   if (v.tasks.length) lane.lastElementChild!.classList.add("last");
-  if (self) {
-    self.classList.add("mission-self");
-    lane.appendChild(self);
-  } else lane.appendChild(startRow(lit === "start"));
+  lane.appendChild(self ?? startRow(lit === "start"));
   return lane;
 }
 

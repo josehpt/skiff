@@ -74,7 +74,7 @@ body:has(#mission-control:not([hidden])) #topbar .tb-cell.mission-scope { displa
 .mission-scope-btn:hover { color: var(--text); }
 .mission-scope-btn[aria-pressed="true"] { background: var(--bg-raised); color: var(--text); font-weight: 600; }
 
-/* The Skipper lane: first, whenever Skipper has a folder. 20px rows, then Skipper's own screen. */
+/* The Skipper lane: first, whenever Skipper has a folder. 20px rows, then Skipper's own screen at the size of every other screen. */
 .mission-open-count { flex-shrink: 0; font-size: calc(11px * var(--zoom, 1)); color: var(--text-3); }
 .mission-tile.mission-skipper { height: calc(20 * var(--u)); flex-direction: row; align-items: center; gap: calc(6 * var(--u)); padding: 0 calc(10 * var(--u)); background: var(--bg); border-bottom: 0; scroll-margin-top: calc(40 * var(--u)); }
 .mission-tile.mission-skipper.last { border-bottom: 1px solid var(--rule); }
@@ -95,9 +95,6 @@ body:has(#mission-control:not([hidden])) #topbar .tb-cell.mission-scope { displa
 .mission-mark.waiting { color: var(--state-waiting); }
 .mission-mark.working { color: var(--state-working); }
 .mission-mark.idle { color: var(--state-idle); }
-/* Skipper's screen fills the rest of the lane and shows its last rows. */
-.mission-tile.mission-self { flex: 1 0 0; min-height: calc(20 * var(--u) + 12 * 14 * var(--u) + 16 * var(--u)); }
-.mission-self .mission-screen { flex: 1 1 0; min-height: 0; height: auto; display: flex; flex-direction: column; justify-content: flex-end; }
 .mission-note { padding: calc(8 * var(--u)) calc(10 * var(--u)); font-size: calc(12px * var(--zoom, 1)); line-height: 1.4; color: var(--text-2); white-space: normal; }
 .mission-head .mission-task-uid { color: var(--text-3); }
 

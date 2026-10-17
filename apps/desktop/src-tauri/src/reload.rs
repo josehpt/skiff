@@ -43,12 +43,31 @@ pub(crate) struct Plan {
     pid: u32,
 }
 
+/// Why there is no reload.
+pub(crate) enum NoPlan {
+    /// The bundled skiffd reports this version, no newer than the daemon. A
+    /// restart starts it again, so the restart does not finish the update.
+    /// Only a dev build gets here: `tauri dev` rebuilds the app, not skiffd.
+    Stale(String),
+    Other(String),
+}
+
+impl From<String> for NoPlan {
+    fn from(why: String) -> Self {
+        NoPlan::Other(why)
+    }
+}
+
 /// A reload onto the bundled skiffd, or why there is none.
-pub(crate) async fn plan(info: &DaemonInfo) -> Result<Plan, String> {
+pub(crate) async fn plan(info: &DaemonInfo) -> Result<Plan, NoPlan> {
+    plan_with(info, &daemon_binary()).await
+}
+
+async fn plan_with(info: &DaemonInfo, binary: &Path) -> Result<Plan, NoPlan> {
     let (Some(state), Some(pid)) = (info.reload_state, info.pid) else {
-        return Err("it predates reload".into());
+        return Err(NoPlan::Other("it predates reload".into()));
     };
-    let binary = resolve(&daemon_binary()).ok_or("the bundled skiffd is missing")?;
+    let binary = resolve(binary).ok_or_else(|| NoPlan::Other("the bundled skiffd is missing".into()))?;
     let mut cmd = tokio::process::Command::new(&binary);
     cmd.arg("--reload-info").stdin(Stdio::null()).stderr(Stdio::null()).kill_on_drop(true);
     let out = tokio::time::timeout(INFO_TIMEOUT, cmd.output())
@@ -60,12 +79,12 @@ pub(crate) async fn plan(info: &DaemonInfo) -> Result<Plan, String> {
         .filter(|_| out.status.success())
         .ok_or_else(|| format!("{} does not support reload", binary.display()))?;
     let version = target["version"].as_str().unwrap_or_default().to_string();
+    if !compare_versions(&version, &info.version).is_gt() {
+        return Err(NoPlan::Stale(version));
+    }
     let reads = target["handover"].as_array().is_some_and(|v| v.iter().any(|h| h.as_u64() == Some(state as u64)));
     if !reads {
-        return Err(format!("skiffd {version} cannot adopt its sessions (handover {state})"));
-    }
-    if !compare_versions(&version, &info.version).is_gt() {
-        return Err(format!("the bundled skiffd {version} is not newer"));
+        return Err(format!("skiffd {version} cannot adopt its sessions (handover {state})").into());
     }
     Ok(Plan { binary, version, from: info.version.clone(), protocol: info.protocol, pid })
 }
@@ -307,6 +326,29 @@ mod tests {
     use super::*;
     use crate::connection::ensure_client;
     use skiff_core::session::SessionSpec;
+
+    /// A bundled skiffd no newer than the daemon is stale, before the
+    /// handover check: a restart onto it would ask again.
+    #[test]
+    fn an_older_bundled_skiffd_is_stale() {
+        let dir = std::env::temp_dir().join(format!("skiff-app-stale-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("skiffd");
+        std::fs::write(&bin, "#!/bin/sh\necho '{\"version\":\"0.6.19\",\"handover\":[]}'\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let info = |version: &str| DaemonInfo { version: version.into(), protocol: skiff_core::PROTOCOL, reload_state: Some(2), pid: Some(1), debug: Some(true) };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        for running in ["0.6.19", "0.6.20"] {
+            match rt.block_on(plan_with(&info(running), &bin)) {
+                Err(NoPlan::Stale(v)) => assert_eq!(v, "0.6.19"),
+                _ => panic!("skiffd {running}: not stale"),
+            }
+        }
+        // Newer, but it cannot read handover 2.
+        assert!(matches!(rt.block_on(plan_with(&info("0.6.18"), &bin)), Err(NoPlan::Other(_))));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// A private daemon reloads onto its own binary while input arrives.
     /// Each line reaches the shell once, in order, and the pid stays.

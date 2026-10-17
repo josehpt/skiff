@@ -48,8 +48,9 @@ Keep task handoffs and result collection in this skill. No separate orchestratio
 skill is needed. The calling agent can run in Termius or any shell that can reach
 the same `skiffd`.
 
-The Skiff agent is the normal coordinator. It is one agent session in its own folder,
-`~/skiff-agent`, turned on in Skiff under Settings › Skiff agent. Its
+The Skiff agent is the normal coordinator. It is one agent session in its own folder
+(`~/skiff-agent` by default, set in Settings › Skiff agent › Folder), turned on in Skiff
+under Settings › Skiff agent. Its
 `AGENTS.md` is the user's standing authorization to send tasks to sessions in Skiff
 projects. Its ledger lists the open and pending tasks, with pane ids and result
 paths. It is `ledger.db` in its folder. Read and change it only with

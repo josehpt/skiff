@@ -163,6 +163,12 @@ the restart.
 A dev build has the same version as the daemon it replaces, so the app does not reload
 it. Run `skiff daemon reload` after `cargo build -p skiffd`, as above.
 
+`pnpm tauri dev` builds `skiffd` once, when it starts. When the app rebuilds after that,
+`target/debug/skiffd` stays as it was. If that skiffd is no newer than the daemon that
+runs, the app keeps the daemon and offers no restart: a restart would start the same old
+build. It logs a line that names the binary and says to rebuild it with
+`cargo build -p skiffd`. A protocol mismatch still shows the warning.
+
 Debug builds use `skiffd-dev.sock` and `workspace-dev.json`, so `pnpm tauri dev` runs
 its own daemon beside the installed app. The daemon writes its log next to the socket
 (`skiffd.log` or `skiffd-dev.log`), which is `$XDG_RUNTIME_DIR/skiff/` on Linux.

@@ -12,6 +12,9 @@ use skiff_core::session::SessionInfo;
 
 use crate::{print, resolve, sessions, LedgerCmd};
 
+/// A version 1 task row: id, pane id, project, task, sent at, state, result path, updated at.
+type V1Row = (i64, String, String, String, String, String, Option<String>, String);
+
 const STATES: [&str; 4] = ["sent", "pending", "blocked", "done"];
 /// Shown in place of `sent` or `blocked` when the pane restarted since the
 /// send. Never stored: the pane generation tells it.
@@ -195,7 +198,7 @@ fn migrate_v2(db: &mut Connection) -> Result<()> {
     tx.execute_batch(TASKS)?;
     tx.execute_batch(UIDS)?;
     if old {
-        let rows: Vec<(i64, String, String, String, String, String, Option<String>, String)> = tx
+        let rows: Vec<V1Row> = tx
             .prepare("SELECT id, pane_id, project, task, sent_at, state, result_path, updated_at FROM tasks_v1 ORDER BY id")?
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)))?
             .collect::<rusqlite::Result<_>>()?;

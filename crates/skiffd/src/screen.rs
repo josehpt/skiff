@@ -415,7 +415,7 @@ fn input_box_top(rows: &[String], agent: &str, cols: usize) -> Option<usize> {
     let from = rows.len().saturating_sub(12);
     let near = rows.iter().enumerate().skip(from);
     if agent == "codex" {
-        return near.filter(|(_, r)| r.trim_start().starts_with('›')).map(|(i, _)| i).last();
+        return near.filter(|(_, r)| r.trim_start().starts_with('›')).map(|(i, _)| i).next_back();
     }
     let rule = |r: &str| {
         let t = r.trim();

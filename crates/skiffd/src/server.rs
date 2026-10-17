@@ -34,7 +34,7 @@ const SLOW: Duration = Duration::from_millis(50);
 /// The ms since `since`, when that is longer than [`SLOW`].
 fn slow_ms(since: Instant) -> Option<u128> {
     let took = since.elapsed();
-    (took > SLOW).then(|| took.as_millis())
+    (took > SLOW).then_some(took.as_millis())
 }
 
 /// Numbers each client connection, for the watcher registry.

@@ -49,7 +49,7 @@ impl SessionPool {
                 loop {
                     wait_tick();
                     tick = tick.wrapping_add(1);
-                    pool.scan_foreground(tick % RECHECK_TICKS == 0);
+                    pool.scan_foreground(tick.is_multiple_of(RECHECK_TICKS));
                 }
             });
     }

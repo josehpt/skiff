@@ -97,7 +97,7 @@ pub fn list() -> Vec<TerminalTheme> {
         .and_then(|d| std::fs::read_dir(d).ok())
         .map(|rd| rd.flatten().filter_map(|e| from_file(&e.path())).collect())
         .unwrap_or_default();
-    files.sort_by(|a, b| a.0.name.to_lowercase().cmp(&b.0.name.to_lowercase()));
+    files.sort_by_key(|a| a.0.name.to_lowercase());
     for (mut f, author) in files {
         if out.iter().any(|t| t.name.eq_ignore_ascii_case(&f.name)) {
             f.name = format!("{} ({})", f.name, author.unwrap_or_else(|| "file".into()));
@@ -175,6 +175,7 @@ fn pairs(text: &str) -> Vec<(String, String, String)> {
     out
 }
 
+#[allow(clippy::too_many_arguments, reason = "one field per parsed theme key")]
 fn finish(
     id: String,
     name: String,
@@ -205,8 +206,7 @@ fn finish(
 
 fn parse_foot(text: &str, id: String, name: String, source: &str) -> Option<TerminalTheme> {
     let all = pairs(text);
-    let kv: Vec<(String, String)> = all.iter().cloned()
-        .filter(|(s, _, _)| s == "colors" || s == "colors-dark")
+    let kv: Vec<(String, String)> = all.iter().filter(|&(s, _, _)| s == "colors" || s == "colors-dark").cloned()
         .map(|(_, k, v)| (k, v))
         .collect();
     let get = |k: &str| kv.iter().find(|(kk, _)| kk == k).and_then(|(_, v)| hex(v));
@@ -290,7 +290,7 @@ fn parse_file(path: &Path, text: &str) -> Option<TerminalTheme> {
     }
     // foot .ini
     if kv.iter().any(|(s, _, _)| s == "colors" || s == "colors-dark") && ext != "toml" {
-        return parse_foot(&text, id, name, "file");
+        return parse_foot(text, id, name, "file");
     }
     // Skiff TOML: [terminal] foreground/background/regular/bright arrays.
     if ext == "toml" {

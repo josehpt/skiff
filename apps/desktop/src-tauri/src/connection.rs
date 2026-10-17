@@ -381,6 +381,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::zombie_processes, reason = "stop_daemon reaps the pid with waitpid")]
     fn kills_a_process_that_ignores_sigterm() {
         let child = std::process::Command::new("sh")
             // exec keeps the ignored TERM disposition and leaves no child

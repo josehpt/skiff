@@ -463,6 +463,7 @@ struct Watcher {
     pid: Option<u32>,
     since: u64,
     failure: Option<WatchFailure>,
+    follows: Option<Vec<SessionId>>,
 }
 
 impl Default for SessionPool {
@@ -532,14 +533,21 @@ impl SessionPool {
 
     /// Registers connection `conn` as a watcher of `session`, or replaces its
     /// registration. A replacement keeps `since`.
-    pub fn watching(&self, conn: u64, pid: Option<u32>, session: &str, failure: Option<WatchFailure>) -> Result<()> {
+    pub fn watching(
+        &self,
+        conn: u64,
+        pid: Option<u32>,
+        session: &str,
+        failure: Option<WatchFailure>,
+        follows: Option<Vec<SessionId>>,
+    ) -> Result<()> {
         if self.get(session).is_none() {
             bail!("no such session: {session}");
         }
         let old = {
             let mut w = self.watchers.lock().unwrap();
             let since = w.get(&conn).filter(|o| o.session == session).map_or_else(now_ms, |o| o.since);
-            w.insert(conn, Watcher { session: session.to_string(), pid, since, failure })
+            w.insert(conn, Watcher { session: session.to_string(), pid, since, failure, follows })
         };
         if let Some(old) = old.filter(|o| o.session != session) {
             self.publish_watch(&old.session);
@@ -571,6 +579,13 @@ impl SessionPool {
                     p
                 },
                 failure: mine.iter().filter_map(|x| x.failure.clone()).max_by_key(|f| f.at),
+                // The union of what the watchers report. Unknown when none does.
+                follows: mine.iter().any(|x| x.follows.is_some()).then(|| {
+                    let mut f: Vec<SessionId> = mine.iter().filter_map(|x| x.follows.as_ref()).flatten().cloned().collect();
+                    f.sort_unstable();
+                    f.dedup();
+                    f
+                }),
             })
         };
         let changed = {

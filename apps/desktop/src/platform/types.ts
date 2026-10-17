@@ -56,6 +56,8 @@ export interface WatchInfo {
   pids: number[];
   /** The newest failure a watcher reports. */
   failure?: WatchFailure | null;
+  /** The live panes with an open ledger task that the watchers follow. Absent: unknown (an older watcher or daemon, or no ledger read yet). */
+  follows?: string[] | null;
 }
 
 export interface WatchFailure {

@@ -63,6 +63,8 @@ async fn watching_lasts_until_the_connection_closes() {
     let w = updated(&mut events, &s.id).await.watch.expect("watch set");
     assert_eq!(w.pids, vec![me]);
     assert!(w.failure.is_none());
+    // A watcher that does not report what it follows: unknown.
+    assert!(w.follows.is_none());
     assert_eq!(pool.get(&s.id).unwrap().info().watch, Some(w.clone()));
 
     // A failure, then a clear, on the same connection. `since` holds.
@@ -78,9 +80,14 @@ async fn watching_lasts_until_the_connection_closes() {
     let mut b = connect(&pool);
     assert!(matches!(b.ask(&watching("")).await, Response::Ok));
     assert_eq!(updated(&mut events, &s.id).await.watch.unwrap().pids, vec![me, me]);
+    // One reports what it follows: the union, sorted, though the other does not.
+    assert!(matches!(b.ask(&watching(r#","follows":["p2","p1","p2"]"#)).await, Response::Ok));
+    assert_eq!(updated(&mut events, &s.id).await.watch.unwrap().follows, Some(vec!["p1".into(), "p2".into()]));
 
     drop(b);
-    assert_eq!(updated(&mut events, &s.id).await.watch.unwrap().pids, vec![me]);
+    let w = updated(&mut events, &s.id).await.watch.unwrap();
+    assert_eq!(w.pids, vec![me]);
+    assert!(w.follows.is_none());
     drop(a);
     assert!(updated(&mut events, &s.id).await.watch.is_none());
     assert!(pool.get(&s.id).unwrap().info().watch.is_none());

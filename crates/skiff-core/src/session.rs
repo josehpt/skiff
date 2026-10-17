@@ -162,6 +162,11 @@ pub struct WatchInfo {
     /// The newest failure any registered watcher reports.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<WatchFailure>,
+    /// The live panes the watchers follow: those with an open ledger task,
+    /// sorted. `None` when no watcher reports it (one older than this field,
+    /// or one that has not read the ledger yet): unknown, not nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follows: Option<Vec<SessionId>>,
 }
 
 /// A watcher's last line did not reach the agent, or it cannot read the ledger.

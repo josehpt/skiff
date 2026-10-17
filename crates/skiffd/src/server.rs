@@ -274,7 +274,7 @@ pub async fn handle(stream: UnixStream, pool: Arc<SessionPool>) -> Result<()> {
                 }
                 Response::Ok
             }
-            Request::Watching { session, failure } => match pool.watching(conn, peer, &session, failure) {
+            Request::Watching { session, failure, follows } => match pool.watching(conn, peer, &session, failure, follows) {
                 Ok(()) => Response::Ok,
                 Err(e) => error(e),
             },

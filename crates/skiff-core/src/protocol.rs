@@ -158,12 +158,16 @@ pub enum Request {
     /// This connection watches `session` for the Skiff agent. The
     /// registration lasts until the connection closes. A second call on the
     /// same connection replaces it: the watcher sends it again to report or
-    /// clear a failure. Answers `Ok`, or `Error` when the session does not
-    /// exist.
+    /// clear a failure, or when the panes it follows change. Answers `Ok`, or
+    /// `Error` when the session does not exist.
     Watching {
         session: SessionId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         failure: Option<WatchFailure>,
+        /// The live panes with an open ledger task that the watcher follows.
+        /// `None` before its first ledger read, and from an older watcher.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        follows: Option<Vec<SessionId>>,
     },
 }
 
@@ -362,12 +366,13 @@ mod tests {
     fn watching_round_trips() {
         let failure = WatchFailure { kind: "undelivered".into(), message: "undelivered: x".into(), at: 5 };
         for f in [None, Some(failure)] {
-            let req = Request::Watching { session: "s1".into(), failure: f.clone() };
+            let req = Request::Watching { session: "s1".into(), failure: f.clone(), follows: None };
             let json = serde_json::to_string(&Envelope { id: 3, request: req }).unwrap();
             assert!(json.contains("\"cmd\":\"watching\""));
             assert_eq!(json.contains("failure"), f.is_some());
             match serde_json::from_str::<Envelope>(&json).unwrap().request {
-                Request::Watching { session, failure } => {
+                Request::Watching { session, failure, follows } => {
+                    assert_eq!(follows, None);
                     assert_eq!(session, "s1");
                     assert_eq!(failure, f);
                 }

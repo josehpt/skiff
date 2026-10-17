@@ -165,7 +165,7 @@ function sidebarSig(): string {
   // The agent icons are inked against the applied app theme: a new theme re-inks them.
   // The watcher state changes with no session event when the grace ends.
   const sa = skiffAgentSession();
-  const agent = skiffAgentFolder() ? [skiffAgentName(), sa?.id ?? null, skiffAgentChoice()?.id ?? null, sa ? skiffWatch(sa) : null] : null;
+  const agent = skiffAgentFolder() ? [skiffAgentName(), sa?.id ?? null, skiffAgentChoice()?.id ?? null, sa ? skiffWatch(sa) : null, sa?.watch?.follows ?? null] : null;
   return JSON.stringify([
     listGen, appliedTheme(), S.selectedProject, [...folded],
     S.selection, S.renamingSession, S.renaming?.id ?? null, rows, groups, projects, agent,
@@ -248,12 +248,12 @@ function skiffAgentRow(): HTMLElement {
   }
   row.dataset.session = s.id;
   // The agent icon shows the watcher: teal while it runs, and slowly turning
-  // while the agent is idle and another session works or waits, so the turn
-  // means "watching work". Red while none runs or the last line failed.
+  // while the agent is idle and the watcher follows a pane with an open ledger
+  // task, so the turn means "watching work". An older watcher does not say
+  // what it follows: still. Red while none runs or the last line failed.
   const watch = skiffWatch(s);
   if (watch.state === "runs") row.classList.add("watch-on");
-  const work = [...sessions.values()].some((o) => o.id !== s.id && (o.state === "working" || o.state === "waiting"));
-  if (watch.state === "runs" && s.state === "idle" && work) {
+  if (watch.state === "runs" && s.state === "idle" && (s.watch?.follows?.length ?? 0) > 0) {
     row.classList.add("watch-turn");
     // The row is rebuilt often. Start the turn at the elapsed phase, not at its first frame.
     row.style.setProperty("--turn-delay", `${-(performance.now() % 8000)}ms`);

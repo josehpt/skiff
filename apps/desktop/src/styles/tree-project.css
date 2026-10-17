@@ -135,9 +135,10 @@ body.dragging-tree, body.dragging-tree * { cursor: grabbing !important; user-sel
 .skiff-agent-row .skiff-agent-name { flex-shrink: 0; font-size: calc(12px * var(--zoom, 1)); font-weight: 600; color: var(--text); }
 .skiff-agent-row:not([data-session]) .title { color: var(--text-dim); }
 /* The Skiff agent's watcher, on its agent icon. Runs: teal. The icon turns
-   once every 8 s only while the agent is idle and another session works or
-   waits, in place, like a ship's wheel at rest: the turn means "watching
-   work". Nothing to watch: teal, still. The box keeps its size, so the row
+   once every 8 s only while the agent is idle and the watcher follows a pane
+   with an open ledger task, in place, like a ship's wheel at rest: the turn
+   means "watching work". Nothing to follow, or an older watcher that does
+   not say: teal, still. The box keeps its size, so the row
    does not move. None runs, or a line failed: red, still. */
 .skiff-agent-row .agent-icon { position: relative; }
 .skiff-agent-row.watch-on .agent-icon svg [stroke]:not([stroke="none"]) { stroke: var(--watch); }

@@ -233,8 +233,11 @@ struct Watcher {
     failure: Option<WatchFailure>,
     /// Failed ledger reads in a row.
     bad_reads: u32,
+    /// The live panes with an open task, from the last good ledger read.
+    /// `None` before the first one.
+    follows: Option<Vec<String>>,
     /// What this connection registered last. `None`: nothing yet.
-    sent: Option<Option<WatchFailure>>,
+    sent: Option<(Option<WatchFailure>, Option<Vec<String>>)>,
     /// skiffd refused `Watching` on this connection: it is older than 27.
     unregistered: bool,
 }
@@ -291,6 +294,14 @@ fn group<'a>(tasks: &'a [ledger::Row], all: &'a [SessionInfo], skipper: &str) ->
         groups[i].open.push(t.uid.clone());
     }
     (groups, interrupted)
+}
+
+/// The live panes the groups follow, sorted: what the app shows as work to
+/// watch. A gone pane and an interrupted task are told once, not followed.
+fn follows(groups: &[Group]) -> Vec<String> {
+    let mut ids: Vec<String> = groups.iter().filter_map(|g| g.s.map(|s| s.id.clone())).collect();
+    ids.sort_unstable();
+    ids
 }
 
 impl Watcher {
@@ -473,15 +484,17 @@ impl Watcher {
         }
     }
 
-    /// Tells skiffd this connection watches `skipper`, with the failure, when
-    /// that changed since the last report on this connection.
+    /// Tells skiffd this connection watches `skipper`, with the failure and
+    /// the panes it follows, when that changed since the last report on this
+    /// connection.
     async fn register(&mut self, c: &Client, skipper: &str) -> Result<()> {
-        if self.unregistered || self.sent.as_ref() == Some(&self.failure) {
+        let now = (self.failure.clone(), self.follows.clone());
+        if self.unregistered || self.sent.as_ref() == Some(&now) {
             return Ok(());
         }
-        let req = Request::Watching { session: skipper.to_string(), failure: self.failure.clone() };
+        let req = Request::Watching { session: skipper.to_string(), failure: now.0.clone(), follows: now.1.clone() };
         match c.request(req).await? {
-            Response::Ok => self.sent = Some(self.failure.clone()),
+            Response::Ok => self.sent = Some(now),
             Response::Error { message } if message.starts_with("bad request") => {
                 log("skiffd is too old to show this watcher in the app");
                 self.unregistered = true;
@@ -632,9 +645,10 @@ async fn step(c: &Client, o: &Options, w: &mut Watcher) -> Result<Option<i32>> {
         }
     };
     w.after_ledger(Ok(()));
+    let (groups, interrupted) = group(&tasks, &all, &skipper.id);
+    w.follows = Some(follows(&groups));
     w.register(c, &skipper.id).await?;
 
-    let (groups, interrupted) = group(&tasks, &all, &skipper.id);
     for wake in w.take(&groups, &interrupted) {
         log(format!("{} {} {}{}", wake.fact.phrase(), print::short_id(&wake.id), wake.name, wake.tail()));
         if wake.fact == Fact::Waiting && o.notify {
@@ -1201,6 +1215,21 @@ mod tests {
         // The agent's own pane is skipped.
         let all = [info("skipper", "idle", false)];
         assert!(group(&[row(1, "u1", "skipper", "pending", None)], &all, "skipper").0.is_empty());
+    }
+
+    #[test]
+    fn follows_names_live_panes_with_an_open_task() {
+        let all = [info("b", "working", false), info("a", "idle", false), info("skipper", "idle", false)];
+        // A gone pane and the agent's own pane are not followed. Each pane once.
+        let rows = [
+            row(1, "u1", "b", "sent", None),
+            row(2, "u2", "a", "pending", None),
+            row(3, "u3", "b", "blocked", None),
+            row(4, "u4", "gone", "sent", None),
+            row(5, "u5", "skipper", "pending", None),
+        ];
+        assert_eq!(follows(&group(&rows, &all, "skipper").0), ["a", "b"]);
+        assert!(follows(&group(&[], &all, "skipper").0).is_empty());
     }
 
     #[test]

@@ -178,13 +178,14 @@ mod tests {
         .unwrap();
         assert_eq!(watcher_line(Some(&s), || false, log), "none for Skipper (3a136a60)");
         assert!(watcher_line(Some(&s), || true, log).ends_with("an older skiff watch runs. See /s.watch.log"));
-        s.watch = Some(WatchInfo { since: 0, pids: vec![41234], failure: None });
+        s.watch = Some(WatchInfo { since: 0, pids: vec![41234], failure: None, follows: None });
         assert!(watcher_line(Some(&s), || unreachable!(), log).starts_with("runs for Skipper (3a136a60) since "));
         assert!(watcher_line(Some(&s), || false, log).ends_with(", pid 41234"));
         s.watch = Some(WatchInfo {
             since: 0,
             pids: vec![41234, 41300],
             failure: Some(WatchFailure { kind: "ledger".into(), message: "busy".into(), at: 0 }),
+            follows: None,
         });
         let line = watcher_line(Some(&s), || false, log);
         assert!(line.starts_with("2 run for Skipper (3a136a60), pids 41234 41300  last failure "), "{line}");

@@ -28,6 +28,18 @@ pub use requests::{Coordinated, Coordinator, DaemonInfo, Refused};
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Response>>>>;
 type Outputs = Arc<Mutex<HashMap<SessionId, OutputTx>>>;
 
+/// Removes the reply slot when a caller drops a request before it completes.
+struct PendingRequest<'a> {
+    pending: &'a Pending,
+    id: u64,
+}
+
+impl Drop for PendingRequest<'_> {
+    fn drop(&mut self) {
+        self.pending.lock().unwrap().remove(&self.id);
+    }
+}
+
 /// Output chunks a session's receiver may hold before it counts as lagged.
 const OUTPUT_QUEUE: usize = 4096;
 
@@ -188,16 +200,15 @@ impl Client {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (s, r) = oneshot::channel();
         self.pending.lock().unwrap().insert(id, s);
+        let _pending = PendingRequest { pending: &self.pending, id };
         // After the reader cleared `pending`, nothing would answer. Checked
         // after the insert: the reader sets `closed` before it clears.
         if self.closed.load(Ordering::Relaxed) {
-            self.pending.lock().unwrap().remove(&id);
             bail!("skiffd connection closed");
         }
         let mut line = serde_json::to_vec(&Envelope { id, request })?;
         line.push(b'\n');
         if self.tx.send(line).is_err() {
-            self.pending.lock().unwrap().remove(&id);
             bail!("skiffd connection closed");
         }
         let Some(limit) = timeout else {
@@ -206,7 +217,6 @@ impl Client {
         match tokio::time::timeout(limit, r).await {
             Ok(reply) => reply.map_err(|_| anyhow!("skiffd connection closed")),
             Err(_) => {
-                self.pending.lock().unwrap().remove(&id);
                 bail!("skiffd did not answer within {}s", limit.as_secs())
             }
         }
@@ -230,4 +240,62 @@ impl Client {
         Output { rx, lagged }
     }
 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn client() -> (Client, mpsc::UnboundedReceiver<Vec<u8>>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let (events, _) = broadcast::channel(1);
+        (Client {
+            daemon_pid: None,
+            tx,
+            next_id: AtomicU64::new(1),
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            events,
+            outputs: Arc::new(Mutex::new(HashMap::new())),
+            closed: Arc::new(AtomicBool::new(false)),
+        }, rx)
+    }
+
+    #[tokio::test]
+    async fn cancelled_requests_release_their_reply_slots() {
+        let (client, mut sent) = client();
+        for timeout in [Some(REPLY_TIMEOUT), None] {
+            let mut request = Box::pin(client.request_within(Request::Ping, timeout));
+            tokio::select! {
+                result = &mut request => panic!("request finished before its reply: {result:?}"),
+                line = sent.recv() => assert!(line.is_some()),
+            }
+            assert_eq!(client.pending.lock().unwrap().len(), 1);
+            drop(request);
+            assert!(client.pending.lock().unwrap().is_empty());
+        }
+        // A late reply has no waiter; another request still gets its own reply.
+        let mut request = Box::pin(client.request(Request::Ping));
+        let line = tokio::select! {
+            result = &mut request => panic!("request finished before its reply: {result:?}"),
+            line = sent.recv() => line.unwrap(),
+        };
+        let envelope: Envelope = serde_json::from_slice(&line).unwrap();
+        assert!(client.pending.lock().unwrap().remove(&(envelope.id - 1)).is_none());
+        client.pending.lock().unwrap().remove(&envelope.id).unwrap().send(Response::Ok).unwrap();
+        assert!(matches!(request.await.unwrap(), Response::Ok));
+        assert!(client.pending.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn timed_out_and_closed_requests_release_their_reply_slots() {
+        let (client, sent) = client();
+        assert!(client.request_within(Request::Ping, Some(std::time::Duration::ZERO)).await.is_err());
+        assert!(client.pending.lock().unwrap().is_empty());
+        drop(sent);
+        assert!(client.request(Request::Ping).await.is_err());
+        assert!(client.pending.lock().unwrap().is_empty());
+        client.closed.store(true, Ordering::Relaxed);
+        assert!(client.request(Request::Ping).await.is_err());
+        assert!(client.pending.lock().unwrap().is_empty());
+    }
 }

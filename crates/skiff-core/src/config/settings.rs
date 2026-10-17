@@ -179,14 +179,11 @@ pub fn set_font_size(size: Option<u8>) -> Result<()> {
     })
 }
 
-/// Sets `[appearance] mission_filter` to `running`, or removes it for all sessions.
+/// Sets `[appearance] mission_filter` to `running` or `all`. `all` is
+/// written out: an absent key means `running`.
 pub fn set_mission_filter(running: bool) -> Result<()> {
     edit_table("appearance", |t| {
-        if running {
-            t["mission_filter"] = toml_edit::value("running");
-        } else {
-            t.remove("mission_filter");
-        }
+        t["mission_filter"] = toml_edit::value(if running { "running" } else { "all" });
         Ok(())
     })
 }

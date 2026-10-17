@@ -247,10 +247,13 @@ function skiffAgentRow(): HTMLElement {
     return row;
   }
   row.dataset.session = s.id;
-  // The agent icon shows the watcher: teal and slowly turning while it runs and
-  // the agent is idle, red while none runs or the last line failed.
+  // The agent icon shows the watcher: teal while it runs, and slowly turning
+  // while the agent is idle and another session works or waits, so the turn
+  // means "watching work". Red while none runs or the last line failed.
   const watch = skiffWatch(s);
-  if (watch.state === "runs" && s.state === "idle") {
+  if (watch.state === "runs") row.classList.add("watch-on");
+  const work = [...sessions.values()].some((o) => o.id !== s.id && (o.state === "working" || o.state === "waiting"));
+  if (watch.state === "runs" && s.state === "idle" && work) {
     row.classList.add("watch-turn");
     // The row is rebuilt often. Start the turn at the elapsed phase, not at its first frame.
     row.style.setProperty("--turn-delay", `${-(performance.now() % 8000)}ms`);

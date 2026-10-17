@@ -383,7 +383,9 @@ mod tests {
     #[test]
     fn kills_a_process_that_ignores_sigterm() {
         let child = std::process::Command::new("sh")
-            .args(["-c", "trap '' TERM; sleep 30"])
+            // exec keeps the ignored TERM disposition and leaves no child
+            // sleep behind when the SIGKILL fallback stops this process.
+            .args(["-c", "trap '' TERM; exec sleep 30"])
             .spawn()
             .unwrap();
         // Let the shell set its trap first.

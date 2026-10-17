@@ -354,18 +354,23 @@ mod tests {
     /// Each line reaches the shell once, in order, and the pid stays.
     #[test]
     fn held_input_survives_a_reload() {
-        let bin = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../target/debug/skiffd");
-        if !bin.is_file() {
-            eprintln!("skipped: build skiffd first");
-            return;
-        }
+        let bin = std::env::var_os("SKIFF_TEST_DAEMON")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../target/debug/skiffd"));
+        assert!(bin.is_file(), "build skiffd first with cargo build -p skiffd; set SKIFF_TEST_DAEMON for a custom target directory: {}", bin.display());
         let dir = std::env::temp_dir().join(format!("skiff-app-reload-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("SKIFF_SOCKET", dir.join("skiffd.sock"));
+        let socket = dir.join("skiffd.sock");
+        let old_socket = std::env::var_os("SKIFF_SOCKET");
+        let old_daemon = std::env::var_os("SKIFF_DAEMON");
+        std::env::set_var("SKIFF_SOCKET", &socket);
+        std::env::set_var("SKIFF_DAEMON", &bin);
         let mut daemon = std::process::Command::new(&bin)
+            .env("SKIFF_SOCKET", &socket)
             .env("SKIFF_STATE", dir.join("workspace.json"))
             .env("SKIFF_CONFIG", dir.join("projects.toml"))
+            .env("SKIFF_LEDGER", dir.join("ledger.db"))
             .env("SKIFF_SHELL_ENV", "0")
             .env("SHELL", "/bin/sh")
             .stdin(Stdio::null())
@@ -375,7 +380,6 @@ mod tests {
             .unwrap();
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rt.block_on(async {
-            std::env::set_var("SKIFF_DAEMON", &bin);
             let app = App::default();
             let (c, _) = ensure_client(&app).await.unwrap();
             let pid = c.daemon_info().await.unwrap().pid.unwrap();
@@ -436,12 +440,36 @@ mod tests {
             let want: String = (0..40).map(|i| format!("L{i:02}\n")).chain(["DONE\n".to_string()]).collect();
             assert_eq!(text, want);
         })));
-        let _ = daemon.kill();
-        let _ = daemon.wait();
-        if result.is_err() {
+        // Shutdown uses only this test's socket, including after an assertion
+        // fails. Never signal a daemon or fall back to the user's socket.
+        let shutdown = rt.block_on(async {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let c = Client::connect(&socket).await?;
+                c.shutdown().await
+            }).await
+        });
+        let until = Instant::now() + Duration::from_secs(5);
+        let stopped = loop {
+            match daemon.try_wait() {
+                Ok(Some(_)) => break true,
+                Err(_) => break false,
+                Ok(None) if Instant::now() >= until => break false,
+                Ok(None) => std::thread::sleep(Duration::from_millis(25)),
+            }
+        };
+        for (key, old) in [("SKIFF_SOCKET", old_socket), ("SKIFF_DAEMON", old_daemon)] {
+            match old {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+        if result.is_err() || !stopped {
             eprintln!("{}", std::fs::read_to_string(dir.join("daemon.log")).unwrap_or_default());
         }
-        let _ = std::fs::remove_dir_all(&dir);
+        if stopped {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
         result.unwrap();
+        assert!(stopped, "private test daemon did not stop; shutdown: {shutdown:?}; files: {}", dir.display());
     }
 }

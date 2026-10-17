@@ -12,6 +12,8 @@ use std::{
 use skiff_client::Client;
 use skiff_core::{protocol::Event, session::SessionSpec};
 
+mod common;
+
 struct Daemon {
     child: Child,
     dir: PathBuf,
@@ -19,12 +21,13 @@ struct Daemon {
 
 impl Drop for Daemon {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let stopped = common::stop(&mut self.child, &self.dir);
         if std::thread::panicking() {
             eprintln!("{}", std::fs::read_to_string(self.dir.join("daemon.log")).unwrap_or_default());
         }
-        let _ = std::fs::remove_dir_all(&self.dir);
+        if stopped {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
     }
 }
 
@@ -38,6 +41,7 @@ async fn start(name: &str) -> (Daemon, PathBuf) {
         .env("SKIFF_SOCKET", &socket)
         .env("SKIFF_STATE", dir.join("workspace.json"))
         .env("SKIFF_CONFIG", dir.join("projects.toml"))
+        .env("SKIFF_LEDGER", dir.join("ledger.db"))
         .env("SKIFF_SHELL_ENV", "0")
         .env("SHELL", "/bin/sh")
         .stdin(Stdio::null())

@@ -12,6 +12,8 @@ use std::{
 use skiff_client::Client;
 use skiff_core::{protocol::Event, session::SessionSpec};
 
+mod common;
+
 struct Daemon {
     child: Child,
     dir: PathBuf,
@@ -37,12 +39,13 @@ impl Daemon {
 
 impl Drop for Daemon {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let stopped = common::stop(&mut self.child, &self.dir);
         if std::thread::panicking() {
             eprintln!("{}", self.log());
         }
-        let _ = std::fs::remove_dir_all(&self.dir);
+        if stopped {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
     }
 }
 

@@ -29,6 +29,9 @@ pub struct Appearance {
     /// Linux: `header-bar` or `menu-bar`. Absent: the header bar on GNOME,
     /// else the menu bar. The app reads it when the window opens.
     pub menu_layout: Option<String>,
+    /// Mission control's filter: `running` shows only the sessions that work
+    /// or wait. Absent: all sessions.
+    pub mission_filter: Option<String>,
 }
 
 /// Which apps Skiff hands things to.

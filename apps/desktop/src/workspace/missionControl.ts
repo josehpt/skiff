@@ -4,8 +4,10 @@
  * Ctrl+Shift+A or Esc closes it. A click or Enter goes to the session.
  * Ctrl+Shift+P searches the sessions on the board, and hides the rest. The
  * search stays until Esc clears it, so a close and an open keep it.
- * All / Running beside the search (#133) hides idle sessions and shells at
- * their prompt. It is All each time the board opens.
+ * All / Running at the right of the search (#133) hides idle sessions and
+ * shells at their prompt. Each part counts what the search leaves. The
+ * choice is stored in `[appearance] mission_filter`, so the board opens with
+ * the last one, also after a restart.
  * The Skipper lane (missionSkipper.ts) comes first whenever Skipper has a
  * folder: its open tasks, then its own screen.
  * This file is the board. missionMotion.ts opens and closes it.
@@ -84,35 +86,43 @@ search.autocomplete = "off";
 search.spellcheck = false;
 search.placeholder = "Search sessions";
 search.setAttribute("aria-label", "Search sessions");
-const findKey = h("kbd", "mission-find-key");
-const count = h("span", "mission-count");
 const find = h("label", "tb-cell mission-find");
-find.append(search, count, findKey);
+find.appendChild(search);
 document.getElementById("open-switcher")?.after(find);
 const noMatch = h("div", "mission-empty", "No match");
 let found: Set<string> | null = null;
 
-/** All / Running, beside the search. `running`: only sessions that work or wait. */
+/** All / Running, at the right of the search. `running`: only sessions that work or wait. */
 let running = false;
-const scope = h("div", "tb-cell mission-scope");
+const scope = h("div", "mission-scope");
 scope.setAttribute("role", "group");
 scope.setAttribute("aria-label", "Sessions to show");
-const scopeAll = h("button", "mission-scope-btn", "All");
-const scopeRunning = h("button", "mission-scope-btn", "Running");
+const allCount = h("span", "mission-scope-n");
+const runningCount = h("span", "mission-scope-n");
+const scopeAll = h("button", "mission-scope-btn");
+scopeAll.append("All", allCount);
+const scopeRunning = h("button", "mission-scope-btn");
+scopeRunning.append(h("span", "mission-scope-dot"), "Running", runningCount);
 for (const [b, on] of [[scopeAll, false], [scopeRunning, true]] as const) {
   b.type = "button";
   b.tabIndex = -1;
   // The keys stay where they are: on the board or in the search.
   b.addEventListener("mousedown", (e) => e.preventDefault());
-  b.addEventListener("click", () => setRunning(on));
+  b.addEventListener("click", (e) => {
+    // Inside the search's label: the click must not go on to the search.
+    e.preventDefault();
+    setRunning(on, true);
+  });
   scope.appendChild(b);
 }
-find.after(scope);
+find.appendChild(scope);
 
 /** A session that works or waits. An idle session and a shell at its prompt are not. */
 const isRunning = (s: SessionInfo) => (s.state === "working" || s.state === "waiting") && agentKind(s) !== "shell";
 
-function setRunning(on: boolean) {
+/** Shows All or Running. `store`: a change by the user, kept in the config. */
+function setRunning(on: boolean, store = false) {
+  if (store && on !== running) invoke("set_mission_filter", { running: on }).catch(console.error);
   running = on;
   scopeAll.setAttribute("aria-pressed", String(!on));
   scopeRunning.setAttribute("aria-pressed", String(on));
@@ -120,9 +130,14 @@ function setRunning(on: boolean) {
 }
 setRunning(false);
 
+/** The stored filter, from `[appearance] mission_filter` when the app starts. */
+export function restoreRunning(filter: string | null | undefined) {
+  setRunning(filter === "running");
+}
+
 /** The Running key here: All, or only the running sessions. */
 export function toggleRunning() {
-  setRunning(!running);
+  setRunning(!running, true);
 }
 
 /** A project's sessions in tree order: each worktree's groups and their members, then the rest. */
@@ -153,20 +168,27 @@ function matchText(s: SessionInfo, p: Project): string {
  */
 function filter(all: Lane[], scroll = false) {
   const q = search.value.trim();
-  found = null;
-  if (q || running) {
-    found = new Set();
-    for (const l of all)
-      for (const { p, list } of l.projects)
-        for (const s of list) if ((!running || isRunning(s)) && (!q || fuzzy(q, matchText(s, p)) >= 0)) found.add(s.id);
-    if (sk) for (const k of skipperKeys(sk)) if (!q || fuzzy(q, skipperMatch(sk, k)) >= 0) found.add(k);
-  }
+  found = q || running ? new Set() : null;
+  // Each part of All / Running counts what the search leaves. Skipper's rows count in neither.
+  let nAll = 0;
+  let nRunning = 0;
+  for (const l of all)
+    for (const { p, list } of l.projects)
+      for (const s of list) {
+        if (q && fuzzy(q, matchText(s, p)) < 0) continue;
+        const on = isRunning(s);
+        nAll++;
+        if (on) nRunning++;
+        if (found && (on || !running)) found.add(s.id);
+      }
+  if (found && sk) for (const k of skipperKeys(sk)) if (!q || fuzzy(q, skipperMatch(sk, k)) >= 0) found.add(k);
+  allCount.textContent = String(nAll);
+  runningCount.textContent = String(nRunning);
   for (const t of root.querySelectorAll<HTMLElement>(".mission-tile")) t.hidden = !!found && !found.has(t.dataset.session ?? "");
   for (const el of root.querySelectorAll<HTMLElement>(".mission-group, .mission-lane")) el.hidden = !!found && !el.querySelector(".mission-tile:not([hidden])");
   const board = root.querySelector(".mission-lanes");
   if (found && !found.size) board?.appendChild(noMatch);
   else noMatch.remove();
-  counts(new Set(order.flat()));
   const first = shown().flat()[0];
   if (first && (scroll || !lit || (found && !found.has(lit)))) light(first, true);
   else if (scroll) root.querySelector<HTMLElement>(".mission-lanes")?.scrollTo({ left: 0 });
@@ -247,11 +269,6 @@ function tile(s: SessionInfo, p: Project | null): HTMLElement {
 }
 
 /** The search's count: the sessions on the board, or those it shows. The top bar counts the waiting ones. */
-function counts(ids: Set<string>) {
-  const n = (set: Set<string>) => [...set].filter((k) => !isSkipperKey(k)).length;
-  count.textContent = found ? `${n(found)} of ${n(ids)}` : `${n(ids)} sessions`;
-}
-
 /**
  * The app colors of a theme on one element and what is in it. The board
  * takes the app theme, not the selected project's; each project's part of a
@@ -353,7 +370,7 @@ function build(all = lanes()) {
   const tops = new Map<string, number>();
   for (const el of old?.querySelectorAll<HTMLElement>(".mission-lane") ?? []) tops.set(el.getAttribute("aria-label") ?? "", el.scrollTop);
 
-  findKey.textContent = keyLabel("palette");
+  search.title = `Search sessions: ${keyLabel("palette")}`;
   scope.title = `All sessions, or only the running ones: ${keyLabel("focus-mode")}`;
 
   const board = h("div", "mission-lanes");
@@ -512,7 +529,6 @@ export const board = {
   /** Builds the board lit on `focus` and reads every screen once. Shows nothing. */
   async prepare(focus: string | null) {
     paused = false;
-    setRunning(false);
     lit = focus;
     await skipper.read();
     const all = lanes();
@@ -647,4 +663,3 @@ function onKey(e: KeyboardEvent) {
 }
 root.addEventListener("keydown", onKey);
 find.addEventListener("keydown", onKey);
-scope.addEventListener("keydown", onKey);

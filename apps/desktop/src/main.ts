@@ -32,7 +32,7 @@ import { watchStatusbar } from "./workspace/status";
 import { toggleFocusMode, toggleMaximize } from "./app/modes";
 import { nextUnread, nextWaiting, selectProject, showGroup, showSingle } from "./workspace/view";
 import { closeMission, goToSession } from "./workspace/missionMotion";
-import { missionOpen } from "./workspace/missionControl";
+import { missionOpen, restoreRunning } from "./workspace/missionControl";
 
 configureRender(render);
 configurePaneActions({ focusPane, closePane, dragSessions });
@@ -96,6 +96,7 @@ async function boot() {
     invoke<Appearance>("get_appearance")
       .then((a) => {
         S.appTheme = a.theme;
+        restoreRunning(a.mission_filter);
         // No size in the daemon yet: keep this machine's and hand it over.
         if (a.font_size) setFontSize(a.font_size, false);
         else if (S.fontSize !== FONT_DEFAULT) setFontSize(S.fontSize);

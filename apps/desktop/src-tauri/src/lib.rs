@@ -144,6 +144,7 @@ pub fn run() {
             commands::open_config,
             config::set_appearance,
             config::set_font_size,
+            config::set_mission_filter,
             commands::list_agents,
             commands::list_agent_sessions,
             config::set_agents,

@@ -179,6 +179,18 @@ pub fn set_font_size(size: Option<u8>) -> Result<()> {
     })
 }
 
+/// Sets `[appearance] mission_filter` to `running`, or removes it for all sessions.
+pub fn set_mission_filter(running: bool) -> Result<()> {
+    edit_table("appearance", |t| {
+        if running {
+            t["mission_filter"] = toml_edit::value("running");
+        } else {
+            t.remove("mission_filter");
+        }
+        Ok(())
+    })
+}
+
 /// The values `[appearance] menu_layout` takes.
 pub const MENU_LAYOUTS: [&str; 2] = ["header-bar", "menu-bar"];
 

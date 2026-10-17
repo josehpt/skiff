@@ -143,6 +143,8 @@ export interface AgentInfo {
 export interface Appearance {
   theme: string | null;
   font_size?: number | null;
+  /** `running`: Mission control shows only the running sessions. */
+  mission_filter?: string | null;
 }
 
 export interface DaemonStatus {

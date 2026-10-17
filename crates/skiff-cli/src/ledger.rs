@@ -639,12 +639,23 @@ async fn send_row(socket: &Path, db: &Connection, row: &Row, o: SendOpts) -> Res
     Ok(code)
 }
 
+/// The state `ledger add` stores. `--send` adds the task as pending and
+/// sends it. Else a task waits for `ledger send`, and a plan is sent.
+fn add_state(st: Option<&str>, plan: bool, send: bool) -> Result<&str> {
+    match st {
+        _ if send => Ok("pending"),
+        Some(s) => state(s),
+        None if plan => Ok("sent"),
+        None => Ok("pending"),
+    }
+}
+
 /// The exit code: `send`'s for `send` and `add --send`, else 0.
 pub async fn run(socket: &Path, cmd: LedgerCmd) -> Result<i32> {
     match cmd {
         LedgerCmd::Add { pane: p, task, plan: is_plan, parent, project, state: st, result, reference, task_type, send, enter, shell } => {
             let task_type = task_type.as_deref().map(skiff_core::tasks::check_name).transpose()?.map(str::to_string);
-            let st = if send { "pending".to_string() } else { state(&st)?.to_string() };
+            let st = add_state(st.as_deref(), is_plan, send)?.to_string();
             let (pane_id, pane_gen, project) = match p {
                 Some(p) if !is_plan => {
                     let s = pane(socket, &p).await?;
@@ -772,6 +783,14 @@ mod tests {
         // A second read does not import again.
         assert_eq!(open_tasks_at(&db).unwrap().len(), 2);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn add_defaults_a_task_to_pending_and_a_plan_to_sent() {
+        assert_eq!(add_state(None, false, false).unwrap(), "pending");
+        assert_eq!(add_state(None, true, false).unwrap(), "sent");
+        assert_eq!(add_state(Some("done"), false, false).unwrap(), "done");
+        assert_eq!(add_state(None, false, true).unwrap(), "pending");
     }
 
     fn scratch(name: &str) -> PathBuf {

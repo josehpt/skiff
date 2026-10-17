@@ -252,8 +252,9 @@ pub enum LedgerCmd {
         /// Default: the project that holds the pane's folder.
         #[arg(long)]
         project: Option<String>,
-        #[arg(long, default_value = "sent")]
-        state: String,
+        /// Default: pending for a task, sent for a plan.
+        #[arg(long)]
+        state: Option<String>,
         /// Where the child writes its result. Default: a path in results/.
         #[arg(long, value_name = "PATH")]
         result: Option<String>,

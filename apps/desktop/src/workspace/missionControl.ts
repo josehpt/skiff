@@ -4,10 +4,10 @@
  * Ctrl+Shift+A or Esc closes it. A click or Enter goes to the session.
  * Ctrl+Shift+P searches the sessions on the board, and hides the rest. The
  * search stays until Esc clears it, so a close and an open keep it.
- * All / Running at the right of the search (#133) hides idle sessions and
- * shells at their prompt. Each part counts what the search leaves. The
- * choice is stored in `[appearance] mission_filter`, so the board opens with
- * the last one, also after a restart.
+ * Running / All at the right of the search (#133): Running hides idle
+ * sessions and shells at their prompt. Each part counts what the search
+ * leaves. The choice is stored in `[appearance] mission_filter`, so the board
+ * opens with the last one, also after a restart. With none stored: Running.
  * The Skipper lane (missionSkipper.ts) comes first whenever Skipper has a
  * folder: its open tasks, then its own screen.
  * This file is the board. missionMotion.ts opens and closes it.
@@ -92,8 +92,8 @@ document.getElementById("open-switcher")?.after(find);
 const noMatch = h("div", "mission-empty", "No match");
 let found: Set<string> | null = null;
 
-/** All / Running, at the right of the search. `running`: only sessions that work or wait. */
-let running = false;
+/** Running / All, at the right of the search. `running`: only sessions that work or wait. */
+let running = true;
 const scope = h("div", "mission-scope");
 scope.setAttribute("role", "group");
 scope.setAttribute("aria-label", "Sessions to show");
@@ -103,7 +103,7 @@ const scopeAll = h("button", "mission-scope-btn");
 scopeAll.append("All", allCount);
 const scopeRunning = h("button", "mission-scope-btn");
 scopeRunning.append(h("span", "mission-scope-dot"), "Running", runningCount);
-for (const [b, on] of [[scopeAll, false], [scopeRunning, true]] as const) {
+for (const [b, on] of [[scopeRunning, true], [scopeAll, false]] as const) {
   b.type = "button";
   b.tabIndex = -1;
   // The keys stay where they are: on the board or in the search.
@@ -120,7 +120,7 @@ find.appendChild(scope);
 /** A session that works or waits. An idle session and a shell at its prompt are not. */
 const isRunning = (s: SessionInfo) => (s.state === "working" || s.state === "waiting") && agentKind(s) !== "shell";
 
-/** Shows All or Running. `store`: a change by the user, kept in the config. */
+/** Shows Running or All. `store`: a change by the user, kept in the config. */
 function setRunning(on: boolean, store = false) {
   if (store && on !== running) invoke("set_mission_filter", { running: on }).catch(console.error);
   running = on;
@@ -128,14 +128,14 @@ function setRunning(on: boolean, store = false) {
   scopeRunning.setAttribute("aria-pressed", String(on));
   if (!root.hidden) filter(lanes());
 }
-setRunning(false);
+setRunning(true);
 
-/** The stored filter, from `[appearance] mission_filter` when the app starts. */
+/** The stored filter, from `[appearance] mission_filter` when the app starts. Only `all` shows all. */
 export function restoreRunning(filter: string | null | undefined) {
-  setRunning(filter === "running");
+  setRunning(filter !== "all");
 }
 
-/** The Running key here: All, or only the running sessions. */
+/** The Running key here: only the running sessions, or all. */
 export function toggleRunning() {
   setRunning(!running, true);
 }
@@ -169,7 +169,7 @@ function matchText(s: SessionInfo, p: Project): string {
 function filter(all: Lane[], scroll = false) {
   const q = search.value.trim();
   found = q || running ? new Set() : null;
-  // Each part of All / Running counts what the search leaves. Skipper's rows count in neither.
+  // Each part of Running / All counts what the search leaves. Skipper's rows count in neither.
   let nAll = 0;
   let nRunning = 0;
   for (const l of all)
@@ -371,7 +371,7 @@ function build(all = lanes()) {
   for (const el of old?.querySelectorAll<HTMLElement>(".mission-lane") ?? []) tops.set(el.getAttribute("aria-label") ?? "", el.scrollTop);
 
   search.title = `Search sessions: ${keyLabel("palette")}`;
-  scope.title = `All sessions, or only the running ones: ${keyLabel("focus-mode")}`;
+  scope.title = `Only the running sessions, or all: ${keyLabel("focus-mode")}`;
 
   const board = h("div", "mission-lanes");
   if (sk) board.appendChild(skipperLane(sk, lit, sk.self ? tile(sk.self, null) : null));

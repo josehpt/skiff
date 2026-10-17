@@ -50,7 +50,7 @@ export function runAction(a: Action) {
   // the palette key searches its sessions; the list keys step its screens.
   if (missionOpen() && a === "maximize") return maximizeLit();
   if (missionOpen() && a === "palette") return toggleSearch();
-  // The focus mode key toggles All / Running. The menu bar sends it here.
+  // The focus mode key toggles Running / All. The menu bar sends it here.
   if (missionOpen() && a === "focus-mode") return toggleRunning();
   // The menu key opens the lit Skipper tile's menu. On a session's screen it does nothing.
   if (missionOpen() && a === "project-menu") return void missionMenu();

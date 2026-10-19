@@ -2,15 +2,16 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use super::types::Config;
 
-/// `SKIFF_CONFIG` overrides. Otherwise `<config dir>/skiff/projects.toml`.
+/// `SKIFF_CONFIG` overrides. Otherwise `<config dir>/skiff/projects.toml`,
+/// or the socket's private copy (see [`crate::state`]).
 pub fn config_path() -> PathBuf {
     if let Ok(p) = std::env::var("SKIFF_CONFIG") {
         return PathBuf::from(p);
     }
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("skiff")
-        .join("projects.toml")
+    match crate::state::private_dir() {
+        Some(d) => d.join("config").join("projects.toml"),
+        None => crate::state::real_config_path(),
+    }
 }
 
 /// Held across each read-modify-write of the file, so two edits at once do

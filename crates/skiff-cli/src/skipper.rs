@@ -29,6 +29,10 @@ pub async fn run(socket: &Path, no_attach: bool) -> Result<()> {
     };
     let s = found.session;
     let name = s.name.clone().unwrap_or_else(|| s.label.clone());
+    // This session alone changes the ledger from now on.
+    if let Err(e) = crate::ledger::claim(socket, &s.id) {
+        eprintln!("skiff: {e:#}");
+    }
     let exe = std::env::current_exe().context("find this skiff binary")?;
     if let Err(e) = skipper::start_watch(socket, &exe, &s.id) {
         eprintln!("skiff: {name} runs, but its watcher did not start: {e:#}");

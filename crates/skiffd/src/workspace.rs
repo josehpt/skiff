@@ -70,8 +70,10 @@ impl From<&SessionInfo> for SavedSession {
     }
 }
 
-/// `SKIFF_STATE` overrides. Otherwise `<state dir>/skiff/workspace.json`,
-/// or `workspace-dev.json` for a debug build, which runs its own daemon.
+/// `SKIFF_STATE` overrides. A socket with private state (see
+/// [`skiff_core::state`]) keeps it there. Otherwise
+/// `<state dir>/skiff/workspace.json`, or `workspace-dev.json` for a debug
+/// build with real state.
 pub fn path() -> PathBuf {
     path_for(cfg!(debug_assertions))
 }
@@ -81,6 +83,9 @@ pub fn path() -> PathBuf {
 pub fn path_for(dev: bool) -> PathBuf {
     if let Ok(p) = std::env::var("SKIFF_STATE") {
         return PathBuf::from(p);
+    }
+    if let Some(d) = skiff_core::state::private_dir() {
+        return d.join("workspace.json");
     }
     dirs::state_dir()
         .or_else(dirs::data_local_dir)

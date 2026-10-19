@@ -1,6 +1,7 @@
 /**
  * Mission control (#88): every session's screen over the whole window, one
- * lane per fleet. Read-only text from skiffd; no pane, no PTY resize.
+ * lane per fleet, and Other for the sessions in no project. Read-only text
+ * from skiffd; no pane, no PTY resize.
  * Ctrl+Shift+A or Esc closes it. A click or Enter goes to the session.
  * Ctrl+Shift+P searches the sessions on the board, and hides the rest. The
  * search stays until Esc clears it, so a close and an open keep it.
@@ -37,7 +38,8 @@ const TICK = 1000;
 
 interface Lane {
   name: string;
-  projects: { p: Project; list: SessionInfo[] }[];
+  /** `p` null: the sessions in no project, as the tree's Other. */
+  projects: { p: Project | null; list: SessionInfo[] }[];
 }
 
 const root = h("div", "mission");
@@ -121,11 +123,14 @@ export function toggleRunning() {
   setRunning(!running, true);
 }
 
-/** A project's sessions in tree order: each worktree's groups and their members, then the rest. */
-function projectSessions(p: Project): SessionInfo[] {
+/**
+ * A project's sessions in tree order: each worktree's groups and their
+ * members, then the rest. `null`: the sessions in no project, as Other lists them.
+ */
+function projectSessions(p: Project | null): SessionInfo[] {
   const seen = new Set<string>();
   const out: SessionInfo[] = [];
-  for (const w of p.worktrees) {
+  for (const w of p ? p.worktrees : [null]) {
     for (const l of worktreeLines(w)) {
       if (!l.pointer && !l.group && !seen.has(l.session.id)) {
         seen.add(l.session.id);
@@ -136,10 +141,11 @@ function projectSessions(p: Project): SessionInfo[] {
   return out;
 }
 
-/** What the search matches: project, branch, agent, title and state, as the palette does. */
-function matchText(s: SessionInfo, p: Project): string {
+/** What the search matches: project, branch, agent, title and state, as the palette does. Other: its folder. */
+function matchText(s: SessionInfo, p: Project | null): string {
   const w = place(s)?.worktree;
-  return `${p.name} ${w ? branchName(w) : ""} ${agentName(s)} ${taskTitle(s)} ${s.state}`;
+  const where = p ? `${p.name} ${w ? branchName(w) : ""}` : `other ${s.cwd}`;
+  return `${where} ${agentName(s)} ${taskTitle(s)} ${s.state}`;
 }
 
 /**
@@ -181,21 +187,26 @@ function shown(): string[][] {
 /**
  * Each fleet is a lane, as in the tree, but only a fleet with sessions (#107).
  * Projects with no sessions are left out too. The tree still shows both.
+ * The sessions in no project are the last lane, Other (#147). The Skiff
+ * agent's own session stays out, as in the tree.
  */
 function lanes(): Lane[] {
-  return treeSections()
+  const out: Lane[] = treeSections()
     .map((sec) => ({
       name: sec.fleet ?? "Projects",
-      projects: sec.projects.map((p) => ({ p, list: projectSessions(p) })).filter((x) => x.list.length),
+      projects: sec.projects.map((p) => ({ p: p as Project | null, list: projectSessions(p) })).filter((x) => x.list.length),
     }))
     .filter((l) => l.projects.length);
+  const other = projectSessions(null);
+  if (other.length) out.push({ name: "Other", projects: [{ p: null, list: other }] });
+  return out;
 }
 
 /** The head's parts: state, agent, title, and the branch when it is not the main one. */
-function headParts(s: SessionInfo, p: Project): HTMLElement[] {
+function headParts(s: SessionInfo, p: Project | null): HTMLElement[] {
   const out = [stateIcon(s), agentIcon(s), h("span", "title", taskTitle(s))];
   const w = place(s)?.worktree;
-  if (w && !bareWorktree(p) && !w.is_main) out.push(h("span", "where mono", branchName(w)));
+  if (w && p && !bareWorktree(p) && !w.is_main) out.push(h("span", "where mono", branchName(w)));
   return out;
 }
 
@@ -214,7 +225,7 @@ function paint(pre: HTMLElement, s: SessionInfo) {
 }
 
 /** Brings a tile up to date in place. The tile stays, so its light does not flicker. */
-function fresh(b: HTMLElement, s: SessionInfo, p: Project) {
+function fresh(b: HTMLElement, s: SessionInfo, p: Project | null) {
   b.style.setProperty("--pc", accent(p));
   const label = `${taskTitle(s)}, ${s.state}`;
   if (b.getAttribute("aria-label") !== label) b.setAttribute("aria-label", label);
@@ -228,7 +239,7 @@ function fresh(b: HTMLElement, s: SessionInfo, p: Project) {
   if (pre) paint(pre, s);
 }
 
-function tile(s: SessionInfo, p: Project): HTMLElement {
+function tile(s: SessionInfo, p: Project | null): HTMLElement {
   const b = h("button", "mission-tile" + (s.id === lit ? " lit" : ""));
   b.type = "button";
   b.tabIndex = -1;
@@ -306,7 +317,7 @@ function scrollbar(board: HTMLElement): HTMLElement {
 /** The lane head's rollup, put in or taken out in place. */
 function roll(head: Element, l: Lane) {
   const old = head.querySelector(".tree-roll");
-  const next = rollup(l.projects.map((x) => x.p));
+  const next = rollup(l.projects.flatMap((x) => (x.p ? [x.p] : [])));
   if (!next) old?.remove();
   else if (!old) head.appendChild(next);
   else if (!same(old, next)) old.replaceWith(next);
@@ -353,12 +364,15 @@ function build(all = lanes()) {
     lane.appendChild(head);
     for (const { p, list } of l.projects) {
       const group = h("div", "mission-group");
-      group.dataset.project = p.name;
       themed(group, p);
-      const row = h("div", "mission-project");
-      row.style.setProperty("--pc", accent(p));
-      row.append(projectBadge(p), h("span", "project-name", p.name));
-      group.appendChild(row);
+      // Other has no project row: the lane's head names it.
+      if (p) {
+        group.dataset.project = p.name;
+        const row = h("div", "mission-project");
+        row.style.setProperty("--pc", accent(p));
+        row.append(projectBadge(p), h("span", "project-name", p.name));
+        group.appendChild(row);
+      }
       for (const s of list) group.appendChild(tile(s, p));
       lane.appendChild(group);
     }
@@ -379,7 +393,7 @@ function update(all: Lane[]) {
   themed(root, null);
   for (const g of root.querySelectorAll<HTMLElement>(".mission-group")) {
     const p = S.projects.find((x) => x.name === g.dataset.project);
-    if (p) themed(g, p);
+    themed(g, p ?? null);
   }
   const heads = root.querySelectorAll(".mission-lane > .mission-lane-head");
   for (const [i, l] of all.entries()) {
@@ -396,7 +410,7 @@ function update(all: Lane[]) {
 
 /** The board's structure: lanes, their projects, and the sessions in each. A change rebuilds it. */
 function signature(all: Lane[]): string {
-  return all.map((l) => l.name + ":" + l.projects.map((x) => x.p.name + "=" + x.list.map((s) => s.id).join(",")).join(";")).join("|");
+  return all.map((l) => l.name + ":" + l.projects.map((x) => (x.p?.name ?? "\u0000other") + "=" + x.list.map((s) => s.id).join(",")).join(";")).join("|");
 }
 
 async function read() {

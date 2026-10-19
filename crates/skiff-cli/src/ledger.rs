@@ -8,7 +8,10 @@ use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, TransactionBehavior};
 use serde::Serialize;
 use skiff_client::Client;
-use skiff_core::session::SessionInfo;
+use skiff_core::{
+    session::{Role, SessionInfo},
+    state,
+};
 
 use crate::{print, resolve, sessions, LedgerCmd};
 
@@ -20,8 +23,9 @@ const INTERRUPTED: &str = "interrupted";
 /// stored: the session list tells it.
 const GONE: &str = "gone";
 
-/// The schema version, in `user_version`.
-const VERSION: i64 = 3;
+/// The schema version, in `user_version`. 4 added `tasks.socket` and
+/// `owner`; a version 3 file takes both in place, with its rows.
+const VERSION: i64 = 4;
 
 const TASKS: &str = "
 CREATE TABLE IF NOT EXISTS tasks (
@@ -38,14 +42,26 @@ CREATE TABLE IF NOT EXISTS tasks (
   result_path TEXT,
   ref         TEXT,
   updated_at  TEXT NOT NULL,
-  type        TEXT
+  type        TEXT,
+  socket      TEXT
+);
+";
+
+/// The one Skiff agent session that changes this ledger, and its socket.
+/// `skiff skipper` and the agent's `skiff watch` record it.
+const OWNER: &str = "
+CREATE TABLE IF NOT EXISTS owner (
+  id      INTEGER PRIMARY KEY CHECK (id = 1),
+  session TEXT NOT NULL,
+  socket  TEXT NOT NULL,
+  since   TEXT NOT NULL
 );
 ";
 
 /// Every uid the ledger gave out, so a removed row's uid is not given again.
 const UIDS: &str = "CREATE TABLE IF NOT EXISTS uids (uid TEXT PRIMARY KEY);";
 
-const COLUMNS: &str = "id, uid, kind, parent, pane_id, pane_gen, project, task, sent_at, state, result_path, ref, updated_at, type";
+const COLUMNS: &str = "id, uid, kind, parent, pane_id, pane_gen, project, task, sent_at, state, result_path, ref, updated_at, type, socket";
 
 /// UTC, to the second, set by SQLite.
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
@@ -75,6 +91,11 @@ pub struct Row {
     /// The task type from `[skiff_agent.tasks]`. Skiff stores it and never acts on it.
     #[serde(rename = "type")]
     pub task_type: Option<String>,
+    /// The daemon socket of the pane. A pane id means nothing on another socket.
+    pub socket: Option<String>,
+    /// The socket is not this skiff's: no check of the pane was made.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub elsewhere: bool,
     /// The pane still exists. Absent when the daemon did not answer, and on a plan.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub live: Option<bool>,
@@ -87,6 +108,12 @@ pub struct Row {
 impl Row {
     pub fn is_plan(&self) -> bool {
         self.kind == "plan"
+    }
+
+    /// The socket of a task sent on another daemon than `here`'s. Its pane
+    /// cannot be checked from here: it is neither live nor gone.
+    pub fn socket_other_than(&self, here: &Path) -> Option<&str> {
+        self.socket.as_deref().filter(|s| !self.is_plan() && !state::same_socket(Path::new(s), here))
     }
 
     /// The task ran in `s`'s pane, and that pane now runs another program
@@ -111,16 +138,13 @@ impl Row {
 }
 
 /// `SKIFF_LEDGER`, else `ledger.db` in the Skiff agent's folder: the
-/// `[skiff_agent] folder` override, else `~/skiff-agent`.
+/// `[skiff_agent] folder` override, else `~/skiff-agent`, or the folder in
+/// the socket's private state.
 pub fn path() -> Result<PathBuf> {
     if let Some(p) = std::env::var_os("SKIFF_LEDGER") {
         return Ok(PathBuf::from(p));
     }
-    let folder = match skiff_core::config::load()?.skiff_agent.folder {
-        Some(f) => f,
-        None => dirs::home_dir().context("no home folder")?.join("skiff-agent"),
-    };
-    Ok(folder.join("ledger.db"))
+    Ok(skiff_client::skipper::configured(&skiff_core::config::load()?)?.join("ledger.db"))
 }
 
 /// Opens the ledger, making it on first use.
@@ -147,8 +171,29 @@ fn open_at(file: &Path) -> Result<Connection> {
     }
     db.execute_batch(TASKS)?;
     db.execute_batch(UIDS)?;
+    db.execute_batch(OWNER)?;
+    migrate(&mut db)?;
     db.pragma_update(None, "user_version", VERSION)?;
     Ok(db)
+}
+
+/// Version 3 to 4, in place: `tasks` takes a `socket` column. Every row
+/// before it went out on the live daemon, the only one with a Skiff agent.
+/// One transaction, so two first opens at once add the column once.
+fn migrate(db: &mut Connection) -> Result<()> {
+    let has = |db: &Connection| -> rusqlite::Result<bool> {
+        db.query_row("SELECT count(*) FROM pragma_table_info('tasks') WHERE name = 'socket'", [], |r| r.get::<_, i64>(0)).map(|n| n > 0)
+    };
+    if has(db)? {
+        return Ok(());
+    }
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    if !has(&tx)? {
+        tx.execute_batch("ALTER TABLE tasks ADD COLUMN socket TEXT")?;
+        tx.execute("UPDATE tasks SET socket = ?1 WHERE kind = 'task'", [state::live_socket().display().to_string()])?;
+    }
+    tx.commit()?;
+    Ok(())
 }
 
 fn connect(file: &Path) -> Result<Connection> {
@@ -297,6 +342,8 @@ fn rows(db: &Connection, where_: &str, arg: Option<&dyn rusqlite::ToSql>) -> Res
             reference: r.get(11)?,
             updated_at: r.get(12)?,
             task_type: r.get(13)?,
+            socket: r.get(14)?,
+            elsewhere: false,
             live: None,
             interrupted: None,
         })
@@ -332,10 +379,14 @@ fn gen(s: &SessionInfo) -> Option<i64> {
     s.generation().and_then(|g| i64::try_from(g).ok())
 }
 
-/// Fills in `live` and `interrupted` from the sessions, when the daemon answers.
+/// Fills in `live` and `interrupted` from the sessions, when the daemon
+/// answers. A task of another socket is marked `elsewhere` and not checked.
 async fn mark_live(socket: &Path, rows: &mut [Row]) {
+    for r in rows.iter_mut() {
+        r.elsewhere = r.socket_other_than(socket).is_some();
+    }
     if let Some(all) = live(socket).await {
-        for r in rows.iter_mut().filter(|r| !r.is_plan()) {
+        for r in rows.iter_mut().filter(|r| !r.is_plan() && !r.elsewhere) {
             let s = r.pane_id.as_deref().and_then(|p| resolve::session(&all, p).ok());
             r.live = Some(s.is_some());
             r.interrupted = Some(r.interrupted_in(s));
@@ -396,6 +447,7 @@ fn print_rows(rows: &[(Row, bool)]) {
     };
     let refs = rows.iter().any(|(r, _)| r.reference.is_some());
     let types = rows.iter().any(|(r, _)| r.task_type.is_some());
+    let sockets = rows.iter().any(|(r, _)| r.elsewhere);
     let table: Vec<Vec<String>> = rows
         .iter()
         .map(|(r, child)| {
@@ -404,7 +456,7 @@ fn print_rows(rows: &[(Row, bool)]) {
                 r.uid.clone(),
                 r.shown_state().to_string(),
                 if r.is_plan() { "plan".into() } else { print::short_id(r.pane_id.as_deref().unwrap_or("")).to_string() },
-                if r.is_plan() { "-".into() } else { yn(r.live).to_string() },
+                if r.is_plan() { "-".into() } else if r.elsewhere { "elsewhere".into() } else { yn(r.live).to_string() },
                 r.project.clone(),
                 r.sent_at.clone(),
                 r.result_path.as_deref().map(shown_path).unwrap_or_default(),
@@ -414,6 +466,9 @@ fn print_rows(rows: &[(Row, bool)]) {
             }
             if types {
                 row.push(r.task_type.clone().unwrap_or_default());
+            }
+            if sockets {
+                row.push(if r.elsewhere { r.socket.clone().unwrap_or_default() } else { String::new() });
             }
             row.push(r.task.clone());
             row
@@ -425,6 +480,9 @@ fn print_rows(rows: &[(Row, bool)]) {
     }
     if types {
         header.push("TYPE");
+    }
+    if sockets {
+        header.push("SOCKET");
     }
     header.push("TASK");
     print::table(&header, &table);
@@ -439,7 +497,10 @@ fn print_one(r: &Row) {
     }
     if !r.is_plan() {
         f.push(("pane", r.pane_id.clone().unwrap_or_default()));
-        f.push(("live", yn(r.live).into()));
+        f.push(("live", if r.elsewhere { "elsewhere".into() } else { yn(r.live).into() }));
+        if let Some(s) = &r.socket {
+            f.push(("socket", s.clone()));
+        }
     }
     f.extend([("project", r.project.clone()), ("sent", r.sent_at.clone()), ("updated", r.updated_at.clone())]);
     if let Some(p) = &r.result_path {
@@ -468,6 +529,8 @@ struct New {
     result: Option<String>,
     reference: Option<String>,
     task_type: Option<String>,
+    /// The socket of the pane.
+    socket: Option<String>,
 }
 
 /// Adds a row with a new uid, and its default result path unless it names
@@ -485,14 +548,131 @@ fn insert(db: &mut Connection, file: &Path, n: New) -> Result<(i64, String, Stri
     };
     tx.execute(
         &format!(
-            "INSERT INTO tasks (uid, kind, parent, pane_id, pane_gen, project, task, sent_at, state, result_path, ref, updated_at, type)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, {NOW}, ?8, ?9, ?10, {NOW}, ?11)"
+            "INSERT INTO tasks (uid, kind, parent, pane_id, pane_gen, project, task, sent_at, state, result_path, ref, updated_at, type, socket)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, {NOW}, ?8, ?9, ?10, {NOW}, ?11, ?12)"
         ),
-        params![uid, if n.plan { "plan" } else { "task" }, parent.map(|p| p.uid), n.pane_id, n.pane_gen, n.project, n.task, n.state, result, n.reference, n.task_type],
+        params![uid, if n.plan { "plan" } else { "task" }, parent.map(|p| p.uid), n.pane_id, n.pane_gen, n.project, n.task, n.state, result, n.reference, n.task_type, n.socket],
     )?;
     let id = tx.last_insert_rowid();
     tx.commit()?;
     Ok((id, uid, result))
+}
+
+/// The session that owns the ledger, and its socket.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Owner {
+    pub session: String,
+    pub socket: String,
+}
+
+fn owner(db: &Connection) -> Result<Option<Owner>> {
+    let mut st = db.prepare("SELECT session, socket FROM owner WHERE id = 1")?;
+    let mut it = st.query_map([], |r| Ok(Owner { session: r.get(0)?, socket: r.get(1)? }))?;
+    Ok(it.next().transpose()?)
+}
+
+fn set_owner(db: &Connection, session: &str, socket: &Path) -> Result<()> {
+    db.execute(
+        &format!("INSERT INTO owner (id, session, socket, since) VALUES (1, ?1, ?2, {NOW}) ON CONFLICT (id) DO UPDATE SET session = ?1, socket = ?2, since = {NOW}"),
+        params![session, socket.display().to_string()],
+    )?;
+    Ok(())
+}
+
+/// The owner is `session` on `socket`.
+fn is_owner(cur: Option<&Owner>, session: &str, socket: &Path) -> bool {
+    cur.is_some_and(|o| o.session == session && state::same_socket(Path::new(&o.socket), socket))
+}
+
+/// The Skiff agent session of `socket` may take the ledger from `cur`: when
+/// it has no owner, when the owner was on the same daemon (a new Skiff agent
+/// session there replaces the old one), or when `socket` is the live one. A
+/// daemon runs one Skiff agent, so the live agent always wins, and an agent
+/// on another socket never takes the live agent's ledger.
+fn may_claim(cur: Option<&Owner>, socket: &Path) -> bool {
+    match cur {
+        None => true,
+        Some(o) => state::same_socket(Path::new(&o.socket), socket) || state::is_live(socket),
+    }
+}
+
+/// Records `session`, the Skiff agent's session on `socket`, as the owner,
+/// when [`may_claim`] allows it. `skiff skipper` and the agent's `skiff
+/// watch` call it, so a new Skiff agent session takes over at its start.
+pub fn claim(socket: &Path, session: &str) -> Result<()> {
+    claim_at(&path()?, socket, session)
+}
+
+fn claim_at(file: &Path, socket: &Path, session: &str) -> Result<()> {
+    if !file.parent().is_some_and(Path::is_dir) {
+        return Ok(());
+    }
+    let db = open_at(file)?;
+    let tx = db.unchecked_transaction()?;
+    let cur = owner(&tx)?;
+    if is_owner(cur.as_ref(), session, socket) {
+        return Ok(());
+    }
+    if !may_claim(cur.as_ref(), socket) {
+        let o = cur.expect("only an owner refuses");
+        bail!("the ledger belongs to the Skiff agent session {} on {}. It stays there", print::short_id(&o.session), o.socket);
+    }
+    set_owner(&tx, session, socket)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// What a change to the ledger from `me` (`$SKIFF_SESSION`), whose session
+/// on `socket` is `s`, may do.
+#[derive(Debug, PartialEq)]
+enum Writer {
+    Yes,
+    /// The Skiff agent of this socket takes the ledger first.
+    Claim,
+    No,
+}
+
+/// A shell outside Skiff (no `me`) and a shell pane are a person: they may.
+/// The owner may. Any other pane is refused, a Skiff agent on another socket
+/// included, unless [`may_claim`] lets the Skiff agent of `socket` take it.
+fn writer(me: Option<&str>, s: Option<&SessionInfo>, cur: Option<&Owner>, socket: &Path) -> Writer {
+    let Some(me) = me else { return Writer::Yes };
+    if is_owner(cur, me, socket) {
+        return Writer::Yes;
+    }
+    match s {
+        Some(s) if s.coordinator && may_claim(cur, socket) => Writer::Claim,
+        Some(s) if s.role == Role::Shell && !s.coordinator => Writer::Yes,
+        _ => Writer::No,
+    }
+}
+
+/// Refuses a change from a pane that is not the ledger's owner. It runs
+/// before the change.
+async fn check_writer(socket: &Path, db: &Connection) -> Result<()> {
+    let me = std::env::var("SKIFF_SESSION").ok().filter(|s| !s.is_empty());
+    let cur = owner(db)?;
+    let all = match &me {
+        Some(m) if !is_owner(cur.as_ref(), m, socket) => live(socket).await.unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    let s = me.as_deref().and_then(|m| all.iter().find(|s| s.id == m));
+    match writer(me.as_deref(), s, cur.as_ref(), socket) {
+        Writer::Yes => Ok(()),
+        Writer::Claim => set_owner(db, &s.expect("a claim has a session").id, socket),
+        Writer::No => bail!("{}", refusal(cur.as_ref())),
+    }
+}
+
+fn refusal(cur: Option<&Owner>) -> String {
+    match cur {
+        Some(o) => format!(
+            "this ledger belongs to the Skiff agent session {} on {}. Only that session adds, sends, updates or removes tasks. Nothing changed",
+            print::short_id(&o.session),
+            o.socket
+        ),
+        None => "this ledger has no owner yet: `skiff skipper` records the Skiff agent's session, and only that session changes it. Nothing changed".into(),
+    }
 }
 
 /// What `ledger send` and `ledger add --send` type, and how.
@@ -538,6 +718,9 @@ fn state_after(code: i32) -> Option<&'static str> {
 /// Sends the pending task `row` to its pane with `send`'s checks, then
 /// records the outcome. Returns `send`'s exit code.
 async fn send_row(socket: &Path, db: &Connection, row: &Row, o: SendOpts) -> Result<i32> {
+    if let Some(other) = row.socket_other_than(socket) {
+        bail!("task {} went to a pane on {other}, not on {}. Nothing was sent", row.uid, socket.display());
+    }
     let c = crate::connect(socket).await?;
     let all = c.list_sessions().await?;
     let s = row.pane_id.as_deref().and_then(|p| resolve::session(&all, p).ok());
@@ -589,8 +772,10 @@ pub async fn run(socket: &Path, cmd: LedgerCmd) -> Result<i32> {
                 _ => (None, None, project.unwrap_or_default()),
             };
             let file = path()?;
-            let new = New { plan: is_plan, parent, pane_id, pane_gen, project, task, state: st, result, reference, task_type };
+            let here = pane_id.as_ref().map(|_| socket.display().to_string());
+            let new = New { plan: is_plan, parent, pane_id, pane_gen, project, task, state: st, result, reference, task_type, socket: here };
             let mut db = open_at(&file)?;
+            check_writer(socket, &db).await?;
             let (id, uid, result) = insert(&mut db, &file, new)?;
             println!("id {id}\nuid {uid}\nresult {result}");
             if send {
@@ -600,6 +785,7 @@ pub async fn run(socket: &Path, cmd: LedgerCmd) -> Result<i32> {
         }
         LedgerCmd::Send { id, text, enter, shell } => {
             let db = open()?;
+            check_writer(socket, &db).await?;
             let row = one(&db, &id)?;
             return send_row(socket, &db, &row, SendOpts { text, enter, shell }).await;
         }
@@ -607,6 +793,7 @@ pub async fn run(socket: &Path, cmd: LedgerCmd) -> Result<i32> {
             let st = st.as_deref().map(state).transpose()?;
             let task_type = task_type.as_deref().map(skiff_core::tasks::check_name).transpose()?;
             let db = open()?;
+            check_writer(socket, &db).await?;
             let row = one(&db, &id)?;
             if row.is_plan() && (p.is_some() || parent.is_some()) {
                 bail!("ledger row {id} is a plan: it has no pane and no plan above it");
@@ -618,7 +805,7 @@ pub async fn run(socket: &Path, cmd: LedgerCmd) -> Result<i32> {
                     let s = pane(socket, p).await?;
                     (Some(s.id.clone()), Some(gen(&s)))
                 }
-                (None, Some("sent")) if !row.is_plan() => {
+                (None, Some("sent")) if !row.is_plan() && row.socket_other_than(socket).is_none() => {
                     let all = live(socket).await.unwrap_or_default();
                     let s = row.pane_id.as_deref().and_then(|p| resolve::session(&all, p).ok());
                     (None, s.map(gen))
@@ -626,13 +813,15 @@ pub async fn run(socket: &Path, cmd: LedgerCmd) -> Result<i32> {
                 _ => (None, None),
             };
             let parent = parent.as_deref().map(|p| plan(&db, p)).transpose()?.map(|p| p.uid);
+            // A new pane is on this socket.
+            let here = pane_id.as_ref().map(|_| socket.display().to_string());
             db.execute(
                 &format!(
                     "UPDATE tasks SET state = coalesce(?2, state), result_path = coalesce(?3, result_path), task = coalesce(?4, task),
                      pane_id = coalesce(?5, pane_id), project = coalesce(?6, project), parent = coalesce(?7, parent), ref = coalesce(?8, ref),
-                     pane_gen = CASE WHEN ?9 THEN ?10 ELSE pane_gen END, type = coalesce(?11, type), updated_at = {NOW} WHERE id = ?1"
+                     pane_gen = CASE WHEN ?9 THEN ?10 ELSE pane_gen END, type = coalesce(?11, type), socket = coalesce(?12, socket), updated_at = {NOW} WHERE id = ?1"
                 ),
-                params![row.id, st, result, task, pane_id, project, parent, reference, gen.is_some(), gen.flatten(), task_type],
+                params![row.id, st, result, task, pane_id, project, parent, reference, gen.is_some(), gen.flatten(), task_type, here],
             )?;
         }
         LedgerCmd::Ls { state: st, json } => {
@@ -671,6 +860,7 @@ pub async fn run(socket: &Path, cmd: LedgerCmd) -> Result<i32> {
         }
         LedgerCmd::Rm { id } => {
             let db = open()?;
+            check_writer(socket, &db).await?;
             let row = one(&db, &id)?;
             if row.is_plan() {
                 let n: i64 = db.query_row("SELECT count(*) FROM tasks WHERE parent = ?1", [&row.uid], |r| r.get(0))?;
@@ -716,6 +906,7 @@ mod tests {
             result: None,
             reference: None,
             task_type: None,
+            socket: Some("/tmp/here.sock".into()),
         }
     }
 
@@ -732,6 +923,122 @@ mod tests {
         assert_eq!(t.iter().map(|r| (r.task.as_str(), r.state.as_str())).collect::<Vec<_>>(), [("fix bug", "sent"), ("docs", "pending")]);
         let r = one(&db, &id.to_string()).unwrap();
         assert_eq!(serde_json::to_value(&r).unwrap()["type"], "review");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_version_3_ledger_takes_sockets_in_place_and_keeps_its_rows() {
+        let dir = scratch("v3");
+        let file = dir.join("ledger.db");
+        {
+            let v3 = TASKS.replace("type        TEXT,\n  socket      TEXT", "type        TEXT");
+            assert!(!v3.contains("socket"));
+            let db = Connection::open(&file).unwrap();
+            db.execute_batch(&v3).unwrap();
+            db.execute_batch(UIDS).unwrap();
+            db.execute_batch(
+                "INSERT INTO tasks (uid, kind, pane_id, task, sent_at, state, updated_at) VALUES ('a1b2c3d4', 'task', 'abc', 'live work', 'x', 'sent', 'x');
+                 INSERT INTO tasks (uid, kind, task, sent_at, state, updated_at) VALUES ('e5f6a7b8', 'plan', 'a plan', 'x', 'sent', 'x');
+                 PRAGMA user_version = 3;",
+            )
+            .unwrap();
+        }
+        let db = open_at(&file).unwrap();
+        let list = rows(&db, "", None).unwrap();
+        assert_eq!(list.iter().map(|r| r.uid.as_str()).collect::<Vec<_>>(), ["a1b2c3d4", "e5f6a7b8"]);
+        // The task went out on the live daemon; a plan has no pane.
+        assert_eq!(list[0].socket.as_deref(), Some(state::live_socket().to_str().unwrap()));
+        assert_eq!(list[1].socket, None);
+        assert_eq!(db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), VERSION);
+        assert_eq!(owner(&db).unwrap(), None);
+        assert!(!dir.join("ledger.db.old").exists());
+        // A second open changes nothing.
+        drop(db);
+        assert_eq!(rows(&open_at(&file).unwrap(), "", None).unwrap().len(), 2);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_task_on_another_socket_is_never_gone_and_is_not_sent_from_here() {
+        let dir = scratch("elsewhere");
+        let file = dir.join("ledger.db");
+        let mut db = open_at(&file).unwrap();
+        let (_, mine, _) = insert(&mut db, &file, task("mine")).unwrap();
+        let (_, theirs, _) = insert(&mut db, &file, New { socket: Some("/tmp/other.sock".into()), state: "pending".into(), ..task("theirs") }).unwrap();
+        let here = Path::new("/tmp/here.sock");
+        let mut list = rows(&db, "", None).unwrap();
+        // No daemon answers here, as for a pane on another socket.
+        mark_live(here, &mut list).await;
+        let r = |uid: &str| list.iter().find(|r| r.uid == uid).unwrap().clone();
+        assert!(!r(&mine).elsewhere);
+        assert!(r(&theirs).elsewhere);
+        assert_eq!(r(&theirs).socket_other_than(here), Some("/tmp/other.sock"));
+        // Even a daemon that does not know the pane does not make it gone.
+        let mut t = r(&theirs);
+        t.live = None;
+        assert_eq!(t.shown_state(), "pending");
+        let err = send_row(here, &db, &r(&theirs), SendOpts { text: vec![], enter: true, shell: false }).await.unwrap_err().to_string();
+        assert!(err.contains("/tmp/other.sock") && !err.contains("gone"), "{err}");
+        assert_eq!(one(&db, &theirs).unwrap().state, "pending");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn pane(id: &str, role: &str, coordinator: bool) -> SessionInfo {
+        let mut s: SessionInfo = serde_json::from_value(serde_json::json!({
+            "id": id, "label": "x", "role": role, "cwd": "/", "command": "claude",
+            "args": [], "state": "idle", "cols": 80, "rows": 24, "pid": null, "exit_code": null,
+        }))
+        .unwrap();
+        s.coordinator = coordinator;
+        s
+    }
+
+    #[test]
+    fn only_the_owner_a_person_or_the_live_agent_changes_the_ledger() {
+        let live = state::live_socket();
+        let test = Path::new("/tmp/test.sock");
+        let on = |session: &str, socket: &Path| Owner { session: session.into(), socket: socket.display().to_string() };
+        let owner = on("96cb7de8aaaa", &live);
+        let skipper = pane("96cb7de8aaaa", "agent", true);
+        let worker = pane("02900b71aaaa", "agent", false);
+        let shell = pane("70808970aaaa", "shell", false);
+        let w = |me: &SessionInfo, cur: Option<&Owner>, socket: &Path| writer(Some(&me.id), Some(me), cur, socket);
+        // The owner, a shell outside Skiff and a shell pane may.
+        assert_eq!(w(&skipper, Some(&owner), &live), Writer::Yes);
+        assert_eq!(writer(None, None, Some(&owner), &live), Writer::Yes);
+        assert_eq!(w(&shell, Some(&owner), &live), Writer::Yes);
+        // Another agent pane may not, on any socket.
+        assert_eq!(w(&worker, Some(&owner), &live), Writer::No);
+        assert_eq!(w(&worker, None, &live), Writer::No);
+        // A second Skiff agent on a test daemon may not take the live ledger.
+        let dev = pane("4d43fa26aaaa", "agent", true);
+        assert_eq!(w(&dev, Some(&owner), test), Writer::No);
+        // A session the daemon does not list is not a person.
+        assert_eq!(writer(Some("deadbeef"), None, Some(&owner), &live), Writer::No);
+        // Ownership moves: a new Skiff agent on the owner's daemon takes it,
+        // the live agent takes it from any socket, and a first one takes it.
+        let next = pane("f0afaa59aaaa", "agent", true);
+        assert_eq!(w(&next, Some(&owner), &live), Writer::Claim);
+        assert_eq!(w(&skipper, Some(&on("4d43fa26aaaa", test)), &live), Writer::Claim);
+        assert_eq!(w(&dev, None, test), Writer::Claim);
+        assert!(refusal(Some(&owner)).contains("96cb7de8") && refusal(Some(&owner)).contains(live.to_str().unwrap()));
+    }
+
+    #[test]
+    fn claim_records_the_owner_and_keeps_the_live_one() {
+        let dir = scratch("claim");
+        let file = dir.join("ledger.db");
+        let live = state::live_socket();
+        let test = Path::new("/tmp/test.sock");
+        claim_at(&file, &live, "96cb7de8aaaa").unwrap();
+        let get = || owner(&open_at(&file).unwrap()).unwrap().unwrap();
+        assert_eq!(get(), Owner { session: "96cb7de8aaaa".into(), socket: live.display().to_string() });
+        // A Skiff agent on another socket does not take it.
+        assert!(claim_at(&file, test, "4d43fa26aaaa").unwrap_err().to_string().contains("96cb7de8"));
+        assert_eq!(get().session, "96cb7de8aaaa");
+        // A restart on the live daemon moves it.
+        claim_at(&file, &live, "f0afaa59aaaa").unwrap();
+        assert_eq!(get().session, "f0afaa59aaaa");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

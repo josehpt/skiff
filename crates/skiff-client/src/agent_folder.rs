@@ -661,7 +661,7 @@ pub fn change(cfg: &Config, to: &Path, mode: Mode, panes: &Panes, anyway: bool) 
 /// `[skiff_agent] folder` = the canonical path. The default folder takes the
 /// key out.
 fn write_folder(to: &Path) -> Result<()> {
-    let default = real(&skipper::home()?.join("skiff-agent"));
+    let default = real(&skipper::default_folder()?);
     config::set_skiff_agent(SkiffAgentKey::Folder((to != default).then_some(to)))
 }
 

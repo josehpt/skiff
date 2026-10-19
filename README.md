@@ -116,6 +116,13 @@ The app starts `skiffd` on its own when the socket is not there. It looks for th
 next to its own executable, then on `PATH`. `SKIFF_DAEMON` overrides. `SKIFF_SOCKET`
 overrides the socket path, `SKIFF_CONFIG` the config file.
 
+Only the live socket (a release build's default, `$XDG_RUNTIME_DIR/skiff/skiffd.sock`)
+uses your `projects.toml`, workspace, `~/skiff-agent` and its ledger. A daemon, the app or
+the CLI on any other socket keeps its state beside the socket: `/tmp/x.sock` uses
+`/tmp/x.state/` (`config/projects.toml`, `workspace.json`, `skiff-agent/`). Set
+`SKIFF_REAL_STATE=1` to use your files from another socket. `skiff skipper` and
+`skiff watch` refuse the live Skiff agent's folder from another socket even then.
+
 ### Changes to skiffd
 
 The daemon outlives the app. A rebuild does not replace the daemon that is running,
@@ -169,8 +176,8 @@ runs, the app keeps the daemon and offers no restart: a restart would start the 
 build. It logs a line that names the binary and says to rebuild it with
 `cargo build -p skiffd`. A protocol mismatch still shows the warning.
 
-Debug builds use `skiffd-dev.sock` and `workspace-dev.json`, so `pnpm tauri dev` runs
-its own daemon beside the installed app. The daemon writes its log next to the socket
+Debug builds use `skiffd-dev.sock`, so `pnpm tauri dev` runs its own daemon beside the
+installed app, with private state in `skiffd-dev.state/` next to the socket. The daemon writes its log next to the socket
 (`skiffd.log` or `skiffd-dev.log`), which is `$XDG_RUNTIME_DIR/skiff/` on Linux.
 
 ## Packages

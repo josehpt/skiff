@@ -115,21 +115,63 @@ pub fn sync_skill() -> Result<PathBuf> {
     Ok(dest)
 }
 
-/// The agent's folder: `~/skiff-agent`, or the override in projects.toml when
-/// it passes [`check`]. Settings › Skiff agent › Folder changes it with a
-/// copy, check and switch ([`crate::agent_folder`]), so the ledger, the
-/// results and the instructions go with it.
+/// The agent's folder: [`default_folder`], or the override in projects.toml
+/// when it passes [`check`]. Settings › Skiff agent › Folder changes it with
+/// a copy, check and switch ([`crate::agent_folder`]), so the ledger, the
+/// results and the instructions go with it. A socket other than the live
+/// one never gets the live agent's folder ([`refuse_live_folder`]).
 pub fn folder(cfg: &Config) -> Result<PathBuf> {
     let home = home()?;
-    let Some(dir) = cfg.skiff_agent.folder.clone() else { return Ok(home.join("skiff-agent")) };
-    check(&dir, &home, cfg)?;
+    let dir = match cfg.skiff_agent.folder.clone() {
+        Some(dir) => {
+            check(&dir, &home, cfg)?;
+            dir
+        }
+        None => default_folder()?,
+    };
+    refuse_live_folder(&dir)?;
     Ok(dir)
 }
 
 /// The folder projects.toml names, refused or not: the override, else
-/// `~/skiff-agent`. A change of folder copies from it.
+/// [`default_folder`]. A change of folder copies from it.
 pub fn configured(cfg: &Config) -> Result<PathBuf> {
-    Ok(cfg.skiff_agent.folder.clone().unwrap_or(home()?.join("skiff-agent")))
+    match cfg.skiff_agent.folder.clone() {
+        Some(dir) => Ok(dir),
+        None => default_folder(),
+    }
+}
+
+/// `~/skiff-agent`, or `skiff-agent` in the socket's private state (see
+/// [`skiff_core::state`]).
+pub fn default_folder() -> Result<PathBuf> {
+    match skiff_core::state::private_dir() {
+        Some(d) => Ok(d.join("skiff-agent")),
+        None => Ok(home()?.join("skiff-agent")),
+    }
+}
+
+/// Refuses the live Skiff agent's folder (`~/skiff-agent`, or the folder in
+/// the person's projects.toml) to a process on any other socket, opted in
+/// to real state or not. Two Skiff agents in one folder share one ledger,
+/// and each takes the other's tasks for gone.
+pub fn refuse_live_folder(dir: &Path) -> Result<()> {
+    use skiff_core::state;
+    let socket = state::socket();
+    if state::is_live(&socket) {
+        return Ok(());
+    }
+    let d = real(dir);
+    if state::real_agent_folders().iter().any(|f| real(f) == d) {
+        bail!(
+            "{} is the folder of the live Skiff agent, on {}. This skiff uses {}, so it starts no Skiff agent there and follows none of its tasks. Use a folder of its own in [skiff_agent] folder of {}",
+            dir.display(),
+            state::live_socket().display(),
+            socket.display(),
+            config::config_path().display()
+        );
+    }
+    Ok(())
 }
 
 /// The home folder, from `HOME`.
@@ -346,6 +388,8 @@ pub async fn open(c: &Client, how: Open) -> Result<Option<Coordinated>> {
     if !a.enabled {
         bail!("The Skiff agent is off. Turn it on in Settings › Skiff agent");
     }
+    // Before any request: another socket must not resume the live agent's conversation either.
+    folder(&cfg)?;
     let agents = c.list_agents().await?;
     let agent = choose(&agents, a.agent.as_deref());
     let resume = agent.filter(|_| a.continue_on_restore).and_then(|g| continue_line(&g.id, &g.command));

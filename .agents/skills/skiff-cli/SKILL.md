@@ -86,6 +86,12 @@ attach.
   runs a new shell under the old pane id, so the task's process is gone.
   `gone` means that the pane no longer exists. A plan shows `done` when its
   tasks are done, else `sent`.
+- A task sent on another daemon shows `elsewhere` in LIVE and names its socket.
+  It is not gone. Leave it to that daemon's Skiff agent.
+- Only the Skiff agent session that owns the ledger adds, sends, updates or
+  removes rows. `skiff skipper` and its watcher record that session. Other
+  agent panes get a refusal that names the owner and its socket. A person
+  changes rows from a shell pane or a terminal outside Skiff.
 - A gone pane cannot be marked seen. Its `[watch]` line names its open tasks.
   Reassign each one with `skiff ledger update UID --pane S --state pending`,
   or close it with `skiff ledger update UID --state done`.

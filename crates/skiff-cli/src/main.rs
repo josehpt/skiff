@@ -226,7 +226,7 @@ enum Cmd {
         cmd: OpenWithCmd,
     },
     /// The Skiff agent's task ledger: ledger.db in its folder.
-    #[command(after_help = "States: sent, pending (not delivered: the pane was working), blocked (the pane needs the user), done.\nls and show print interrupted for a sent or blocked task whose pane restarted since the send: a restore runs a new shell under the old pane id. They print gone for an open task whose pane no longer exists. A plan with tasks shows done when every task is done, else sent.\nID is the row number or the 8-character uid that add prints. Neither is ever reused.\nResults: a task writes to results/<date>-<uid>-<slug>.md next to the ledger; a plan owns results/<date>-<uid>-<slug>/ with plan.md, and its tasks write <uid>-<slug>.md in that folder. add stores and prints the path and makes no file. rm keeps the files.\nThe ledger is ~/skiff-agent/ledger.db, or ledger.db in the [skiff_agent] folder override. SKIFF_LEDGER overrides the path.\nOn first use, an old ledger.md next to it is imported and kept as ledger.md.bak.")]
+    #[command(after_help = "States: sent, pending (not delivered: the pane was working), blocked (the pane needs the user), done.\nls and show print interrupted for a sent or blocked task whose pane restarted since the send: a restore runs a new shell under the old pane id. They print gone for an open task whose pane no longer exists. A task sent on another daemon shows elsewhere in LIVE and its socket: it is never gone from here, and send refuses it. A plan with tasks shows done when every task is done, else sent.\nID is the row number or the 8-character uid that add prints. Neither is ever reused.\nResults: a task writes to results/<date>-<uid>-<slug>.md next to the ledger; a plan owns results/<date>-<uid>-<slug>/ with plan.md, and its tasks write <uid>-<slug>.md in that folder. add stores and prints the path and makes no file. rm keeps the files.\nThe ledger is ~/skiff-agent/ledger.db, or ledger.db in the [skiff_agent] folder override. On a socket other than the live one, it is in the socket's private state. SKIFF_LEDGER overrides the path.\nOne owner: add, send, update and rm refuse unless the caller is the Skiff agent session that owns the ledger. skiff skipper and the agent's watcher record it; a new Skiff agent session on the owner's daemon, or on the live daemon, takes it over. The refusal names the owner and its socket. A shell pane, or a shell outside Skiff, is a person and may change rows. ls and show work from anywhere.\nOn first use, an old ledger.md next to it is imported and kept as ledger.md.bak.")]
     Ledger {
         #[command(subcommand)]
         cmd: LedgerCmd,
@@ -532,6 +532,8 @@ fn main() {
 /// The exit code. Only `wait`, `events` and `send` return other than 0.
 async fn run(cli: Cli) -> Result<i32> {
     let socket = cli.socket.unwrap_or_else(skiff_core::socket::socket_path);
+    // The state follows the socket: only the live one uses the person's files.
+    skiff_core::state::set_socket(socket.clone());
     match cli.cmd {
         // Read locally: no daemon needed.
         Cmd::Projects { json } => return info::projects(json).map(|_| 0),

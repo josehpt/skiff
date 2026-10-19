@@ -78,6 +78,10 @@ async fn run(start: Start) -> Result<()> {
     pool.spawn_foreground_watcher();
     let path = paths::socket();
     tracing::info!("skiffd {} listening on {}", skiff_core::VERSION, path.display());
+    match skiff_core::state::private_dir() {
+        Some(d) => tracing::info!("private state in {}: not the live socket. {}=1 uses the real state", d.display(), skiff_core::state::REAL_ENV),
+        None => tracing::info!("real state: {}", skiff_core::config::config_path().display()),
+    }
 
     // SIGTERM and SIGINT from inside a session are ignored; see `stop`.
     let mut stops = stop::install()?;

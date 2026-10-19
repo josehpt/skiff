@@ -240,6 +240,25 @@ struct Watcher {
     sent: Option<(Option<WatchFailure>, Option<Vec<String>>)>,
     /// skiffd refused `Watching` on this connection: it is older than 27.
     unregistered: bool,
+    /// What the log last said of tasks on other sockets.
+    elsewhere: String,
+}
+
+/// The open tasks whose panes are on `here`, and a log line for the others.
+/// A pane id names a pane only on its own daemon: a task on another socket
+/// is never gone from here, and never reassigned from here.
+fn on_socket(tasks: Vec<ledger::Row>, here: &Path) -> (Vec<ledger::Row>, String) {
+    let (others, mine): (Vec<_>, Vec<_>) = tasks.into_iter().partition(|t| t.socket_other_than(here).is_some());
+    let mut by: Vec<(String, Vec<&str>)> = Vec::new();
+    for t in &others {
+        let s = t.socket.clone().unwrap_or_default();
+        match by.iter_mut().find(|(k, _)| *k == s) {
+            Some((_, uids)) => uids.push(&t.uid),
+            None => by.push((s, vec![&t.uid])),
+        }
+    }
+    let line = by.iter().map(|(s, uids)| format!("tasks {} belong to {s}; not followed here", uids.join(", "))).collect::<Vec<_>>().join("; ");
+    (mine, line)
 }
 
 /// What came of a line typed into the agent's pane.
@@ -522,13 +541,24 @@ fn log(msg: impl std::fmt::Display) {
 /// watcher runs; 1 when skiffd does not come back; 2 when the session is not
 /// the Skiff agent's.
 pub async fn watch(socket: &Path, o: Options) -> Result<i32> {
+    // Another socket never follows the live agent's ledger.
+    if let Some(dir) = ledger::path()?.parent() {
+        skiff_client::skipper::refuse_live_folder(dir)?;
+    }
     // Checked before the lock, so a stray watcher never holds the lock that
     // the agent's watcher needs.
     if let Ok(c) = Client::connect(socket).await {
         let known = matches!(c.request(Request::Ping).await, Ok(Response::Pong { protocol, .. }) if protocol >= 27);
-        if let Some(refusal) = not_the_agent(&sessions::sorted(&c).await?, &o.skipper, known) {
+        let all = sessions::sorted(&c).await?;
+        if let Some(refusal) = not_the_agent(&all, &o.skipper, known) {
             eprintln!("{refusal}");
             return Ok(2);
+        }
+        // The app starts the agent without `skiff skipper`: its watcher records the owner.
+        if let Some(s) = resolve::session(&all, &o.skipper).ok().filter(|s| s.coordinator) {
+            if let Err(e) = ledger::claim(socket, &s.id) {
+                log(format!("{e:#}"));
+            }
         }
     }
     let Some(_lock) = lock(socket).await? else {
@@ -635,8 +665,18 @@ async fn step(c: &Client, o: &Options, w: &mut Watcher) -> Result<Option<i32>> {
     w.register(c, &skipper.id).await?;
     // A read that fails (the file busy past its timeout) skips this step: the
     // next tick reads again. An empty list would forget the open panes.
+    let here = skiff_core::state::socket();
     let tasks = match ledger::open_tasks() {
-        Ok(t) => t,
+        Ok(t) => {
+            let (mine, line) = on_socket(t, &here);
+            if line != w.elsewhere {
+                if !line.is_empty() {
+                    log(&line);
+                }
+                w.elsewhere = line;
+            }
+            mine
+        }
         Err(e) => {
             log(format!("cannot read the ledger: {e:#}"));
             w.after_ledger(Err(&format!("{e:#}")));
@@ -661,7 +701,7 @@ async fn step(c: &Client, o: &Options, w: &mut Watcher) -> Result<Option<i32>> {
         // The check above took time. Read the rows again, so a task sent
         // meanwhile is not named.
         match ledger::open_tasks() {
-            Ok(tasks) => w.drop_stale(&group(&tasks, &all, &skipper.id).0),
+            Ok(tasks) => w.drop_stale(&group(&on_socket(tasks, &here).0, &all, &skipper.id).0),
             Err(e) => {
                 log(format!("cannot read the ledger: {e:#}"));
                 return Ok(None);
@@ -985,6 +1025,8 @@ mod tests {
             reference: None,
             updated_at: String::new(),
             task_type: None,
+            socket: None,
+            elsewhere: false,
             live: None,
             interrupted: None,
         }
@@ -1230,6 +1272,26 @@ mod tests {
         ];
         assert_eq!(follows(&group(&rows, &all, "skipper").0), ["a", "b"]);
         assert!(follows(&group(&[], &all, "skipper").0).is_empty());
+    }
+
+    #[test]
+    fn a_task_on_another_socket_is_never_gone_here() {
+        let here = Path::new("/tmp/here.sock");
+        let mut theirs = row(1, "u1", "a", "sent", None);
+        theirs.socket = Some("/tmp/other.sock".into());
+        let mut mine = row(2, "u2", "b", "sent", None);
+        mine.socket = Some(here.display().to_string());
+        let (kept, line) = on_socket(vec![theirs, mine], here);
+        assert_eq!(kept.iter().map(|r| r.uid.as_str()).collect::<Vec<_>>(), ["u2"]);
+        assert_eq!(line, "tasks u1 belong to /tmp/other.sock; not followed here");
+        // Neither pane is on this daemon: only the task of this socket is told gone.
+        let mut w = Watcher::default();
+        assert_eq!(run(&mut w, &kept, &[]), [Fact::Gone]);
+        assert!(!wake_line(&w.held).contains("u1"));
+        // With only the other socket's task, nothing is told, and no reassign.
+        let mut w = Watcher::default();
+        assert!(run(&mut w, &on_socket(vec![row(1, "u1", "a", "sent", None)].into_iter().map(|mut r| { r.socket = Some("/tmp/other.sock".into()); r }).collect(), here).0, &[]).is_empty());
+        assert!(w.held.is_empty());
     }
 
     #[test]

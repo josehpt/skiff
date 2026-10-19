@@ -20,8 +20,10 @@ pub fn socket() -> PathBuf {
     listening().unwrap_or_else(skiff_core::socket::socket_path)
 }
 
-/// Sets the socket once. A later call changes nothing.
+/// Sets the socket once. A later call changes nothing. The state follows
+/// it: only the live socket serves the person's files.
 pub fn set_socket(path: PathBuf) {
+    skiff_core::state::set_socket(path.clone());
     let _ = SOCKET.set(path);
 }
 

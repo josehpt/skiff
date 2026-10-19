@@ -5,7 +5,9 @@ use std::{io::Read, path::PathBuf, time::Duration};
 use anyhow::{bail, Context, Result};
 use skiff_client::Client;
 use skiff_core::{
+    config::TaskTypes,
     group::Group,
+    project::AgentInfo,
     session::{Role, SessionInfo, SessionSpec, SessionState},
 };
 
@@ -81,7 +83,7 @@ pub struct New {
 /// shows a CLI session like one made from the + menu.
 pub async fn spec(c: &Client, o: New) -> Result<SessionSpec> {
     let here = std::env::current_dir().context("current directory")?;
-    let cwd = match o.cwd {
+    let cwd = match &o.cwd {
         Some(d) => here.join(d),
         None => here,
     };
@@ -96,24 +98,13 @@ pub async fn spec(c: &Client, o: New) -> Result<SessionSpec> {
         rows: 40,
         ..SessionSpec::default()
     };
-    let words: Vec<String> = if let Some(t) = &o.task_type {
-        let rows = skiff_core::config::load()?.skiff_agent.tasks;
-        let agents = c.list_agents().await?;
-        let (a, line) = skiff_core::tasks::start(&rows, &agents, t, o.model.as_deref())?;
-        if !a.installed {
-            bail!("agent {:?} of task type {t} is not installed: {} is not on skiffd's PATH", a.id, a.command);
-        }
-        line.split_whitespace().map(String::from).collect()
-    } else if let Some(id) = &o.agent {
-        let agents = c.list_agents().await?;
-        let Some(a) = agents.iter().find(|a| &a.id == id) else {
-            let ids: Vec<&str> = agents.iter().map(|a| a.id.as_str()).collect();
-            bail!("no agent {id:?}; known: {}", ids.join(", "));
+    let words: Vec<String> = if o.task_type.is_some() || o.agent.is_some() {
+        let rows = match o.task_type {
+            Some(_) => skiff_core::config::load()?.skiff_agent.tasks,
+            None => Default::default(),
         };
-        if !a.installed {
-            bail!("agent {id:?} is not installed: {} is not on skiffd's PATH", a.command);
-        }
-        a.command.split_whitespace().map(String::from).collect()
+        let agents = c.list_agents().await?;
+        agent_line(&agents, &rows, &o)?.split_whitespace().map(String::from).collect()
     } else {
         o.command
     };
@@ -145,6 +136,27 @@ pub async fn spec(c: &Client, o: New) -> Result<SessionSpec> {
         spec.name = o.name;
     }
     Ok(spec)
+}
+
+/// The line `--type` or `--agent` starts: the person's command from Settings ›
+/// Agents, else the built-in one, which keeps the agent's permission prompts.
+fn agent_line(agents: &[AgentInfo], rows: &TaskTypes, o: &New) -> Result<String> {
+    if let Some(t) = &o.task_type {
+        let (a, line) = skiff_core::tasks::start(rows, agents, t, o.model.as_deref())?;
+        if !a.installed {
+            bail!("agent {:?} of task type {t} is not installed: {} is not on skiffd's PATH", a.id, a.command);
+        }
+        return Ok(line);
+    }
+    let id = o.agent.as_deref().unwrap_or_default();
+    let Some(a) = agents.iter().find(|a| a.id == id) else {
+        let ids: Vec<&str> = agents.iter().map(|a| a.id.as_str()).collect();
+        bail!("no agent {id:?}; known: {}", ids.join(", "));
+    };
+    if !a.installed {
+        bail!("agent {id:?} is not installed: {} is not on skiffd's PATH", a.command);
+    }
+    Ok(a.command.clone())
 }
 
 /// `name`, else `name 2`, `name 3` and on: the first one no live session uses.
@@ -442,7 +454,33 @@ pub async fn kill(c: &Client, args: &[String]) -> Result<()> {
 mod tests {
     use skiff_core::session::{SessionInfo, SessionState};
 
-    use super::{front_refusal, numbered, refusal};
+    use super::{agent_line, front_refusal, numbered, refusal, New};
+    use skiff_core::{
+        config::{TaskRow, TaskTypes},
+        project::AgentInfo,
+    };
+
+    fn agent(id: &str, command: &str) -> AgentInfo {
+        AgentInfo { id: id.into(), command: command.into(), default_command: id.into(), custom: false, installed: true, enabled: true }
+    }
+
+    fn new(agent: Option<&str>, task_type: Option<&str>) -> New {
+        New { name: None, cwd: None, agent: agent.map(Into::into), task_type: task_type.map(Into::into), model: None, role: None, command: vec![] }
+    }
+
+    #[test]
+    fn new_agent_and_new_type_start_the_persons_command() {
+        let rows = TaskTypes(vec![("review".into(), TaskRow { agent: "codex".into(), model: Some("gpt-5".into()) })]);
+        // The built-in line: no permission bypass.
+        let plain = [agent("claude", "claude"), agent("codex", "codex")];
+        assert_eq!(agent_line(&plain, &rows, &new(Some("claude"), None)).unwrap(), "claude");
+        assert_eq!(agent_line(&plain, &rows, &new(None, Some("review"))).unwrap(), "codex -m gpt-5");
+        // The person's override, with its flags, on both paths.
+        let mine = [agent("claude", "claude --dangerously-skip-permissions"), agent("codex", "codex --yolo")];
+        assert_eq!(agent_line(&mine, &rows, &new(Some("claude"), None)).unwrap(), "claude --dangerously-skip-permissions");
+        assert_eq!(agent_line(&mine, &rows, &new(Some("codex"), None)).unwrap(), "codex --yolo");
+        assert_eq!(agent_line(&mine, &rows, &new(None, Some("review"))).unwrap(), "codex --yolo -m gpt-5");
+    }
 
     #[test]
     fn a_task_type_session_takes_the_first_free_number() {

@@ -830,5 +830,29 @@ os.execv("/bin/cat", ["skiff", "watch"])
         assert_eq!(continue_line("codex", "codex --yolo").as_deref(), Some("codex resume --last --yolo"));
         assert_eq!(continue_line("codex", "codex").as_deref(), Some("codex resume --last"));
         assert_eq!(continue_line("mine", "mine").as_deref(), None);
+        // The person's bypass flag stays on resume.
+        assert_eq!(
+            continue_line("claude", "claude --dangerously-skip-permissions").as_deref(),
+            Some("claude --dangerously-skip-permissions --continue")
+        );
+        assert_eq!(continue_line("gemini", "agy --dangerously-skip-permissions").as_deref(), Some("agy --dangerously-skip-permissions --continue"));
+        // The built-in line resumes with the agent's own prompts.
+        assert_eq!(continue_line("gemini", "agy").as_deref(), Some("agy --continue"));
+    }
+
+    #[test]
+    fn launch_starts_the_persons_command() {
+        let agent = |command: &str| AgentInfo {
+            id: "codex".into(),
+            command: command.into(),
+            default_command: "codex".into(),
+            custom: false,
+            installed: true,
+            enabled: true,
+        };
+        let s = spec(&agent("codex"), "Skipper", PathBuf::from("/tmp"));
+        assert_eq!((s.command.as_deref(), s.args.len()), (Some("codex"), 0));
+        let s = spec(&agent(" codex --yolo "), "Skipper", PathBuf::from("/tmp"));
+        assert_eq!((s.command.as_deref(), s.args), (Some("codex"), vec!["--yolo".to_string()]));
     }
 }

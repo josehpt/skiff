@@ -150,7 +150,15 @@ export function createSettings(onAgents: (a: AgentInfo[]) => void, onClose: () =
       back.addEventListener("click", () => void editAgents("restore_agents"));
       intro.appendChild(back);
     }
-    main.append(intro, agentTable());
+    main.append(
+      intro,
+      agentTable(),
+      h(
+        "div",
+        "set-note",
+        "An empty command runs the default. The agent then asks before it acts, as it ships. A flag that skips those prompts, such as codex --yolo, is your choice: add it to the command.",
+      ),
+    );
     if (error) {
       const err = h("div", "set-error", error);
       err.setAttribute("role", "alert");

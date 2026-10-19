@@ -122,9 +122,9 @@ const opensPicker = (s: SessionInfo) => {
   return !!was && !!ADAPTERS[was.agent].picker;
 };
 
-/** The command line the user set for the agent, else its default. */
+/** The command line the user set for the agent, else its default. A removed agent runs its program: gemini is agy. */
 function commandFor(agent: string): string {
-  return S.agents.find((a) => a.id === agent)?.command || agent;
+  return S.agents.find((a) => a.id === agent)?.command || (agent === "gemini" ? "agy" : agent);
 }
 
 /** Types a line into the pane's shell and runs it. */

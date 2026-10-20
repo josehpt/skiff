@@ -569,11 +569,13 @@ enum Writer {
     No,
 }
 
-/// A shell outside Skiff (no `me`) and a shell pane are a person: they may.
-/// The owner may. Any other pane is refused, a Skiff agent on another socket
-/// included, unless [`may_claim`] lets the Skiff agent of `socket` take it.
-fn writer(me: Option<&str>, s: Option<&SessionInfo>, cur: Option<&Owner>, socket: &Path) -> Writer {
-    let Some(me) = me else { return Writer::Yes };
+/// A shell pane is a person: it may. A shell outside Skiff (no `me`) may only
+/// with `person` (`--person`): an agent there has no `SKIFF_SESSION` either,
+/// and nothing else tells the two apart. The owner may. Any other pane is
+/// refused, a Skiff agent on another socket included, unless [`may_claim`]
+/// lets the Skiff agent of `socket` take it.
+fn writer(me: Option<&str>, s: Option<&SessionInfo>, cur: Option<&Owner>, socket: &Path, person: bool) -> Writer {
+    let Some(me) = me else { return if person { Writer::Yes } else { Writer::No } };
     if is_owner(cur, me, socket) {
         return Writer::Yes;
     }
@@ -586,7 +588,7 @@ fn writer(me: Option<&str>, s: Option<&SessionInfo>, cur: Option<&Owner>, socket
 
 /// Refuses a change from a pane that is not the ledger's owner. It runs
 /// before the change.
-async fn check_writer(socket: &Path, db: &Connection) -> Result<()> {
+async fn check_writer(socket: &Path, db: &Connection, person: bool) -> Result<()> {
     let me = std::env::var("SKIFF_SESSION").ok().filter(|s| !s.is_empty());
     let cur = owner(db)?;
     let all = match &me {
@@ -594,9 +596,10 @@ async fn check_writer(socket: &Path, db: &Connection) -> Result<()> {
         _ => Vec::new(),
     };
     let s = me.as_deref().and_then(|m| all.iter().find(|s| s.id == m));
-    match writer(me.as_deref(), s, cur.as_ref(), socket) {
+    match writer(me.as_deref(), s, cur.as_ref(), socket, person) {
         Writer::Yes => Ok(()),
         Writer::Claim => set_owner(db, &s.expect("a claim has a session").id, socket),
+        Writer::No if me.is_none() => bail!("{}", outside_refusal(cur.as_ref())),
         Writer::No => bail!("{}", refusal(cur.as_ref())),
     }
 }
@@ -610,6 +613,11 @@ fn refusal(cur: Option<&Owner>) -> String {
         ),
         None => "this ledger has no owner yet: `skiff skipper` records the Skiff agent's session, and only that session changes it. Nothing changed".into(),
     }
+}
+
+/// The refusal for a shell outside Skiff without `--person`.
+fn outside_refusal(cur: Option<&Owner>) -> String {
+    format!("{}. This shell is outside Skiff: a person passes --person, an agent does not", refusal(cur))
 }
 
 /// What `ledger send` and `ledger add --send` type, and how.
@@ -782,7 +790,7 @@ fn add_state(st: Option<&str>, plan: bool, send: bool) -> Result<&str> {
 }
 
 /// The exit code: `send`'s for `send` and `add --send`, else 0.
-pub async fn run(socket: &Path, cmd: LedgerCmd) -> Result<i32> {
+pub async fn run(socket: &Path, cmd: LedgerCmd, person: bool) -> Result<i32> {
     match cmd {
         LedgerCmd::Add { pane: p, task, title, plan: is_plan, parent, project, state: st, result, reference, task_type, send, enter, shell } => {
             let task_type = task_type.as_deref().map(skiff_core::tasks::check_name).transpose()?.map(str::to_string);
@@ -799,7 +807,7 @@ pub async fn run(socket: &Path, cmd: LedgerCmd) -> Result<i32> {
             let here = pane_id.as_ref().map(|_| socket.display().to_string());
             let new = New { plan: is_plan, parent, pane_id, pane_gen, project, task, title, state: st, result, reference, task_type, socket: here };
             let mut db = open_at(&file)?;
-            check_writer(socket, &db).await?;
+            check_writer(socket, &db, person).await?;
             let (id, uid, result) = insert(&mut db, &file, new)?;
             println!("id {id}\nuid {uid}\nresult {result}");
             if send {
@@ -809,7 +817,7 @@ pub async fn run(socket: &Path, cmd: LedgerCmd) -> Result<i32> {
         }
         LedgerCmd::Send { id, text, enter, shell } => {
             let db = open()?;
-            check_writer(socket, &db).await?;
+            check_writer(socket, &db, person).await?;
             let row = one(&db, &id)?;
             return send_row(socket, &db, &row, SendOpts { text, enter, shell }).await;
         }
@@ -817,7 +825,7 @@ pub async fn run(socket: &Path, cmd: LedgerCmd) -> Result<i32> {
             let st = st.as_deref().map(state).transpose()?;
             let task_type = task_type.as_deref().map(skiff_core::tasks::check_name).transpose()?;
             let db = open()?;
-            check_writer(socket, &db).await?;
+            check_writer(socket, &db, person).await?;
             let row = one(&db, &id)?;
             if row.is_plan() && (p.is_some() || parent.is_some()) {
                 bail!("ledger row {id} is a plan: it has no pane and no plan above it");
@@ -877,14 +885,14 @@ pub async fn run(socket: &Path, cmd: LedgerCmd) -> Result<i32> {
         }
         LedgerCmd::Report { ids, all } => {
             let mut db = open()?;
-            check_writer(socket, &db).await?;
+            check_writer(socket, &db, person).await?;
             let n = report(&mut db, &ids, all)?;
             println!("reported {n} {}", rows_word(n));
         }
         LedgerCmd::Prune { older_than, yes } => {
             let secs = age(&older_than)?;
             let mut db = open()?;
-            check_writer(socket, &db).await?;
+            check_writer(socket, &db, person).await?;
             let mut gone = prune(&mut db, secs, yes)?;
             if gone.is_empty() {
                 println!("no row was reported more than {older_than} ago. Nothing changed");
@@ -917,7 +925,7 @@ pub async fn run(socket: &Path, cmd: LedgerCmd) -> Result<i32> {
         }
         LedgerCmd::Rm { id } => {
             let db = open()?;
-            check_writer(socket, &db).await?;
+            check_writer(socket, &db, person).await?;
             let row = one(&db, &id)?;
             if row.is_plan() {
                 let n: i64 = db.query_row("SELECT count(*) FROM tasks WHERE parent = ?1", [&row.uid], |r| r.get(0))?;
@@ -1228,10 +1236,10 @@ mod tests {
         let skipper = pane("96cb7de8aaaa", "agent", true);
         let worker = pane("02900b71aaaa", "agent", false);
         let shell = pane("70808970aaaa", "shell", false);
-        let w = |me: &SessionInfo, cur: Option<&Owner>, socket: &Path| writer(Some(&me.id), Some(me), cur, socket);
-        // The owner, a shell outside Skiff and a shell pane may.
+        let w = |me: &SessionInfo, cur: Option<&Owner>, socket: &Path| writer(Some(&me.id), Some(me), cur, socket, false);
+        // The owner, a person outside Skiff and a shell pane may.
         assert_eq!(w(&skipper, Some(&owner), &live), Writer::Yes);
-        assert_eq!(writer(None, None, Some(&owner), &live), Writer::Yes);
+        assert_eq!(writer(None, None, Some(&owner), &live, true), Writer::Yes);
         assert_eq!(w(&shell, Some(&owner), &live), Writer::Yes);
         // Another agent pane may not, on any socket.
         assert_eq!(w(&worker, Some(&owner), &live), Writer::No);
@@ -1240,7 +1248,12 @@ mod tests {
         let dev = pane("4d43fa26aaaa", "agent", true);
         assert_eq!(w(&dev, Some(&owner), test), Writer::No);
         // A session the daemon does not list is not a person.
-        assert_eq!(writer(Some("deadbeef"), None, Some(&owner), &live), Writer::No);
+        assert_eq!(writer(Some("deadbeef"), None, Some(&owner), &live, false), Writer::No);
+        // A shell outside Skiff without --person may be an agent: refused.
+        assert_eq!(writer(None, None, Some(&owner), &live, false), Writer::No);
+        assert_eq!(writer(None, None, None, &live, false), Writer::No);
+        // --person does not let an agent pane through.
+        assert_eq!(writer(Some(&worker.id), Some(&worker), Some(&owner), &live, true), Writer::No);
         // Ownership moves: a new Skiff agent on the owner's daemon takes it,
         // the live agent takes it from any socket, and a first one takes it.
         let next = pane("f0afaa59aaaa", "agent", true);

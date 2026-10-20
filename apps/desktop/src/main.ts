@@ -33,11 +33,13 @@ import { toggleFocusMode, toggleMaximize } from "./app/modes";
 import { nextUnread, nextWaiting, selectProject, showGroup, showSingle } from "./workspace/view";
 import { closeMission, goToSession } from "./workspace/missionMotion";
 import { missionOpen, restoreRunning } from "./workspace/missionControl";
+import { startLedger } from "./workspace/ledger";
 
 configureRender(render);
 configurePaneActions({ focusPane, closePane, dragSessions });
 configureActionDispatch(runAction);
 configureCommandUi(switcher);
+startLedger();
 
 // Skiff owns right-click. The webview's own menu (Back, Reload, Inspect)
 // never shows; text fields keep theirs for cut, copy and paste.

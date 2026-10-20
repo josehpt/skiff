@@ -34,6 +34,7 @@ import { animateFold, growOpened } from "../ui/fold";
 import { dragTree } from "./treeDrag";
 import { bareWorktree, fleetKey, folded, isOpen, openToFocused, projectBadge, projectKey, rollup, toggleRow, treeDrag, treeSections, type Section } from "./tree";
 import { render } from "../app/renderRequest";
+import { ledgerNeeds } from "./ledger";
 import { openSkiffAgent, SKIFF_AGENT_KEY, skiffAgentChoice, skiffAgentFolder, skiffAgentName, skiffAgentSession, skiffWatch, syncSkiffAgent } from "../app/skiffAgent";
 
 /** 20px lines, flush against whatever follows. */
@@ -165,7 +166,7 @@ function sidebarSig(): string {
   // The agent icons are inked against the applied app theme: a new theme re-inks them.
   // The watcher state changes with no session event when the grace ends.
   const sa = skiffAgentSession();
-  const agent = skiffAgentFolder() ? [skiffAgentName(), sa?.id ?? null, skiffAgentChoice()?.id ?? null, sa ? skiffWatch(sa) : null, sa?.watch?.follows ?? null] : null;
+  const agent = skiffAgentFolder() ? [skiffAgentName(), sa?.id ?? null, skiffAgentChoice()?.id ?? null, sa ? skiffWatch(sa) : null, sa?.watch?.follows ?? null, ledgerNeeds()] : null;
   return JSON.stringify([
     listGen, appliedTheme(), S.selectedProject, [...folded],
     S.selection, S.renamingSession, S.renaming?.id ?? null, rows, groups, projects, agent,
@@ -261,7 +262,15 @@ function skiffAgentRow(): HTMLElement {
   if (watch.state === "missing" || watch.state === "failed") row.classList.add("watch-error");
   if (watch.text) row.title = watch.text;
   row.setAttribute("aria-label", `${name}, the Skiff agent, ${s.title ?? agentName(s)}, ${s.state}${watch.text ? `. ${watch.text}` : ""}`);
-  row.append(agentIcon(s), h("span", "skiff-agent-name", name), h("span", "title", s.title?.replace(/^[^\p{L}\p{N}]+/u, "") ?? ""), stateIcon(s));
+  row.append(agentIcon(s), h("span", "skiff-agent-name", name), h("span", "title", s.title?.replace(/^[^\p{L}\p{N}]+/u, "") ?? ""));
+  // One amber count, only while ledger tasks need the person.
+  const needs = ledgerNeeds();
+  if (needs) {
+    const c = h("span", "ledger-count", String(needs));
+    c.title = `${needs} ledger ${needs === 1 ? "task needs" : "tasks need"} you`;
+    row.append(c);
+  }
+  row.append(stateIcon(s));
   row.addEventListener("mousedown", (e) => {
     if (e.button === 0) row.focus();
   });

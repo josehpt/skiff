@@ -1,6 +1,6 @@
 /**
- * Focus mode and maximize. Focus mode hides the tree, the top bar
- * and the status bar: the panes of the current view fill the window. Maximize
+ * Focus mode and maximize. Focus mode hides the tree, the top bar,
+ * the status bar and the Ledger beside Skipper: the panes of the current view fill the window. Maximize
  * shows only the focused pane, with the same chrome hidden. Ctrl+Shift+Up/Down
  * step through the panes of the view, as they step through its rows in the
  * tree. While maximized, the next pane is maximized in its place.
@@ -129,7 +129,7 @@ function restore() {
 const SLIDE_MS = 180;
 const EASE = "cubic-bezier(.2, .7, .2, 1)";
 const reduced = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
-const chrome = () => [...document.querySelectorAll<HTMLElement>("#topbar, #sidebar, #statusbar")];
+const chrome = () => [...document.querySelectorAll<HTMLElement>("#topbar, #sidebar, #statusbar, #ledger")];
 const cells = () => [...host.querySelectorAll<HTMLElement>(".layout .cell, .mode-lift > .cell")];
 const motion: { animation: Animation; clean: () => void }[] = [];
 

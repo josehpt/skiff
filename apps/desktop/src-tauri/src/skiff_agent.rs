@@ -36,7 +36,7 @@ fn ensure() -> anyhow::Result<PathBuf> {
 }
 
 /// The `skiff` CLI beside the app binary, else the one on `PATH`.
-fn cli() -> PathBuf {
+pub(crate) fn cli() -> PathBuf {
     std::env::current_exe()
         .ok()
         .map(|e| e.with_file_name("skiff"))

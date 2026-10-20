@@ -7,6 +7,7 @@ mod commands;
 mod config;
 mod diagnostics;
 mod input;
+mod ledger;
 mod reload;
 mod skiff_agent;
 mod streaming;
@@ -52,6 +53,8 @@ pub fn run() {
         .setup(|app| {
             std::thread::spawn(cli_path::sync);
             std::thread::spawn(skiff_agent::sync);
+            let handle = app.handle().clone();
+            std::thread::spawn(move || ledger::watch(handle));
             let Some(window) = app.get_webview_window("main") else { return Ok(()) };
             #[cfg(target_os = "linux")]
             if header_bar::wanted() {
@@ -80,6 +83,8 @@ pub fn run() {
             skiff_agent::open_skiff_agent,
             skiff_agent::preview_skiff_folder,
             skiff_agent::change_skiff_folder,
+            ledger::ledger_rows,
+            ledger::ledger_report,
             commands::list_sessions,
             commands::create_session,
             commands::pty_write,

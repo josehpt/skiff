@@ -15,6 +15,7 @@ import { hasKeys, markSeen } from "./seen";
 
 import { savePlace } from "./stored";
 import { renderLayout } from "../terminal/terminal";
+import { renderLedger } from "../workspace/ledger";
 
 import { applyBackdrop } from "../appearance/backdrop";
 import { applyApp, applyThemes } from "../appearance/themes";
@@ -77,6 +78,7 @@ function renderAll() {
   step("render.sidebar", renderSidebar);
   renderSelectBar();
   step("render.layout", renderLayout);
+  renderLedger();
   renderModes();
   step("render.themes", applyThemes);
   step("render.backdrop", applyBackdrop);

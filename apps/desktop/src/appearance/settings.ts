@@ -406,10 +406,7 @@ export function createSettings(onAgents: (a: AgentInfo[]) => void, onClose: () =
   function openWith(): HTMLElement {
     const main = h("div", "set-main");
     const intro = h("div", "set-head");
-    intro.append(
-      h("div", "set-h", "Open with"),
-      h("div", "set-sub", "Peek opens the command when you select a file. External app shows an Open button. Double-click or Enter opens the file. A file with no command uses the default app."),
-    );
+    intro.append(h("div", "set-h", "Open with"));
     const cols = h("div", "set-row set-open set-cols");
     cols.append(h("span", "c-name", "SHOWS"), h("span", "c-cmd", "COMMAND"), h("span", "c-mode", "OPENS IN"));
     main.append(intro, cols);

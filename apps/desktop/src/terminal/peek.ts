@@ -98,6 +98,12 @@ const early = new Map<string, number | null>();
 const earlyInteractive = new Set<string>();
 /** Apps let go from the peek. Their session goes when they exit. */
 const released = new Set<string>();
+/**
+ * The last command let go as an app, still hidden and subscribed, with the
+ * row it opened on. A terminal tool can be quiet for a while before it takes
+ * the terminal: it shows then, if nothing opened on that row since.
+ */
+let held: { p: Peek; key: string } | null = null;
 /** One number per subscription, as panes count theirs. */
 let stream = 0;
 
@@ -121,7 +127,7 @@ export function previewToken(): number {
 
 /** A peek session that is not the open peek's: left behind, or an app let go. */
 export function strayPeek(s: SessionInfo) {
-  if (s.id === open?.session || [...parked.values()].some((p) => p.session === s.id)) return;
+  if (s.id === open?.session || s.id === held?.p.session || [...parked.values()].some((p) => p.session === s.id)) return;
   // An app still running keeps its window. Its session goes when it exits.
   // A terminal tool out of the peek has no screen left: it ends.
   if (s.state === "done" || s.interactive) invoke("kill_session", { session: s.id }).catch(console.error);
@@ -266,13 +272,19 @@ function settle(mine: number) {
 /** A failed request for a preview the user left says nothing. */
 const failed = (mine: number) => (e: unknown) => (live(mine) ? showError(e) : console.error(e));
 
-/** Closes the peek and ends its tool. A card under it stays; without one, the preview closes. */
-export function closePeek() {
+/**
+ * Closes the peek and ends its tool. A card under it stays; without one, the
+ * preview closes. `hold`: the command runs on hidden, as an app may.
+ */
+export function closePeek(hold = false) {
   const p = open;
   if (!p) return;
   const hadKeys = keysIn(p.el) || !!card?.contains(document.activeElement);
   open = null;
-  drop(p, p.shown);
+  if (hold) {
+    if (held) drop(held.p, false);
+    held = { p, key: active?.key ?? "" };
+  } else drop(p, p.shown);
   // A diff leaves its card when it closes, so its row still owns the main area. Enter shows it again.
   const t = active && !active.closed ? rowActs(active.key)?.preview : undefined;
   if (active && t?.kind === "diff" && !card?.querySelector("button")) {
@@ -357,6 +369,7 @@ function showCard(mine: number, kind: string, path: string, label?: string, act?
 /** Takes the peek down. Its command ends, unless it is an app that runs on. */
 function drop(p: Peek, end: boolean) {
   if (open === p) open = null;
+  if (held?.p === p) held = null;
   if (parked.get(p.request) === p) parked.delete(p.request);
   clearTimeout(p.timer);
   p.resize.disconnect();
@@ -495,14 +508,14 @@ async function run(kind: string, title: string, where: string, script: string, c
     return showError("This skiffd is older than the app. Restart skiffd to open files and diffs.");
   }
   p.session = info.id;
-  // Still hidden and still running: an app with its own window. Let it go.
+  // Still hidden and still running: an app with its own window. Let it go, but keep watching.
   p.timer = window.setTimeout(() => {
-    if (open === p && !p.shown && !p.exited) closePeek();
+    if (open === p && !p.shown && !p.exited) closePeek(true);
   }, APP_AFTER_MS);
   const n = ++stream;
   const channel = new Channel<unknown>();
   channel.onmessage = (m) => {
-    if (open !== p && parked.get(p.request) !== p) return;
+    if (open !== p && held?.p !== p && parked.get(p.request) !== p) return;
     const bytes = toBytes(m);
     if (bytes.length) p.got = true;
     p.term.write(bytes, () => invoke("ack_output", { session: info.id, stream: n, bytes: bytes.length }).catch(console.error));
@@ -519,6 +532,7 @@ async function run(kind: string, title: string, where: string, script: string, c
 /** skiffd changed a peek session: the command took the terminal. */
 export function peekUpdated(info: SessionInfo) {
   if (!info.interactive) return;
+  if (held?.p.session === info.id) return reclaim(held);
   // A command let go as an app turned out to be a terminal tool: nothing shows it, so it ends.
   if (released.delete(info.id)) return void invoke("kill_session", { session: info.id }).catch(console.error);
   const p = open;
@@ -528,6 +542,30 @@ export function peekUpdated(info: SessionInfo) {
   if (p.session !== info.id || p.interactive) return;
   p.interactive = true;
   show(p);
+}
+
+/**
+ * A held command took the terminal late: a slow terminal tool, not an app.
+ * It shows when its row is still current and nothing opened since. Else
+ * nothing can show it, and it ends.
+ */
+function reclaim({ p, key }: { p: Peek; key: string }) {
+  held = null;
+  if (open || p.gen !== gen || currentKey() !== key) return drop(p, true);
+  if (!active || active.closed) active = { key, gen: p.gen, keys: true, closed: false };
+  open = p;
+  p.interactive = true;
+  show(p);
+}
+
+/** The program `sh` could not find, from its message: dash, bash and busybox word it apart. */
+function notFound(term: Terminal): string | null {
+  const b = term.buffer.active;
+  for (let y = 0; y < b.length; y++) {
+    const m = b.getLine(y)?.translateToString(true).match(/([^\s:]+): (?:command )?not found/);
+    if (m) return m[1];
+  }
+  return null;
 }
 
 /** The terminal holds text: the command printed something. */
@@ -541,6 +579,12 @@ function printed(term: Terminal): boolean {
 export function peekExited(id: string, code: number | null): boolean {
   if (released.delete(id)) {
     invoke("kill_session", { session: id }).catch(console.error);
+    return true;
+  }
+  // A held app ended. What it printed was for no one.
+  if (held?.p.session === id) {
+    held.p.exited = true;
+    drop(held.p, true);
     return true;
   }
   const saved = [...parked.values()].find((p) => p.session === id);
@@ -568,6 +612,12 @@ export function peekExited(id: string, code: number | null): boolean {
     if (p.interactive && code === 0 && !printed(p.term)) return closePeek();
     // Nothing printed, no error: an app took the file and runs on its own.
     if (!p.shown && !code && !p.got && !printed(p.term)) return closePeek();
+    // `sh` could not find the program: name it, and where to find tools.
+    if (code === 127) {
+      const name = notFound(p.term) ?? p.program;
+      closePeek();
+      return showError(`${name} not found`, { label: "Find a tool", run: () => openUrl(TOOLS_URL) });
+    }
     show(p);
     if (p.shown) p.term.write(`\r\n\x1b[2m${code ? `${p.program} exited with code ${code}. ` : ""}Press any key to close.\x1b[0m`);
   }, 150);

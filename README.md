@@ -28,7 +28,7 @@ them to suit the work.
 
 You add a project (a Git repository), make worktrees in it, and start agent or shell sessions in each worktree. Sessions can sit side by side in a named group. A project, a group and a session can each have a terminal theme.
 
-Skiff does not edit files. Each worktree lists its changed files and its file tree. Select a changed file and its diff shows in the main area. Select a file and its preview shows there. Press Enter to open the file in the app you choose under Settings › Open with (see the [wiki](https://github.com/solutionscay/skiff/wiki/Open-with)), or to show a folder in your file manager. There are no plugins, no hooks into agent configs, and no automations. Settings live in one file, `projects.toml`.
+Skiff does not edit files. Each worktree lists its changed files and its file tree. Select a changed file and its diff shows in the main area. Select a file and its preview shows there. Press Enter to open the file in the app you choose under Settings › Open with (see the [wiki](https://github.com/solutionscay/skiff/wiki/Open-with)), or to show a folder in your file manager. Each Open with row says where it opens: in the peek for a terminal tool, or as an app. `skiff open-with ls` and `skiff open-with set` read and set the same rows. If a program is missing, Skiff names it. There are no plugins, no hooks into agent configs, and no automations. Settings live in one file, `projects.toml`.
 
 Sessions run in `skiffd`, a daemon that owns every PTY. You can close the window and the agents keep running. When the window opens again, each terminal shows its last screen.
 
@@ -38,6 +38,14 @@ projects and records them in a SQLite ledger (`skiff ledger`). `skiff watch` tel
 a task's pane ends a turn, exits or restarts. `skiff skipper` attaches to it from any
 terminal, an SSH login included, and starts it first when it does not run. Ctrl-\
 detaches. See the [wiki Skiff agent page](https://github.com/solutionscay/skiff/wiki/Skiff-agent).
+
+The Ledger panel at the right of Skipper's pane sorts the work into Working, Open and
+Finished. Work is a plan with its tasks, or a task with no plan. It moves to Finished
+only when Skipper closes it on your word (`skiff ledger close`); `skiff ledger reopen`
+opens it again. `skiff ledger prune` removes only closed work. Ctrl+Alt+Shift+L folds the
+panel to a rail with the count of tasks that need you. Focus mode keeps the panel and
+maximize hides it. Only Skipper's session can change the ledger. A shell outside Skiff,
+such as an SSH login, adds `--person` to change a row.
 
 <p align="center"><img src=".github/screenshot-skipper.webp" alt="Skiff on Linux: Skipper in the center pane reports a finished release, the Ledger panel on the right lists finished tasks and plans, and the projects sidebar is on the left"></p>
 

@@ -16,12 +16,16 @@
  * the pane or the result. The panel never writes: only Skipper changes rows.
  * No row has a menu. The rows come read-only from the backend, again on each
  * change to `ledger.db`.
+ *
+ * The person can fold the panel to a rail: a chevron, and the amber count of
+ * the tasks that need them. The fold stays in localStorage on this machine.
  */
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { keyLabel } from "../app/keys";
 import { render } from "../app/renderRequest";
 import { skiffAgentSession } from "../app/skiffAgent";
-import { sessions } from "../app/state";
+import { S, sessions } from "../app/state";
 import { shownIds } from "../app/stateQueries";
 import type { SessionInfo } from "../platform/types";
 import { openPath, previewOnScreen } from "../terminal/peek";
@@ -222,6 +226,46 @@ function wanted(): boolean {
   return ids.length === 1 && ids[0] === s.id;
 }
 
+/** The panel is on screen: not hidden by focus mode or maximize. The fold acts only then. */
+export function ledgerShown(): boolean {
+  return wanted() && !S.focusMode && !S.maximized;
+}
+
+const FOLD_KEY = "skiff.ledgerFolded";
+let folded = (() => {
+  try {
+    return localStorage.getItem(FOLD_KEY) === "1";
+  } catch {
+    return false;
+  }
+})();
+
+export const ledgerFolded = () => folded;
+
+/** Folds the panel to its rail, or opens it. Nothing while the panel is not on screen. */
+export function toggleLedger() {
+  if (!ledgerShown()) return;
+  folded = !folded;
+  try {
+    localStorage.setItem(FOLD_KEY, folded ? "1" : "0");
+  } catch {
+    /* the fold lasts for this run */
+  }
+  render();
+}
+
+/** The next draw of the open panel flashes the first row that needs the person. */
+let flashNext = false;
+
+function flashNeed(panel: HTMLElement) {
+  const r = panel.querySelector<HTMLElement>(".lg-list .lg-row.need");
+  if (!r) return;
+  r.scrollIntoView({ block: "nearest" });
+  r.classList.remove("flash");
+  void r.offsetWidth;
+  r.classList.add("flash");
+}
+
 function openPane(s: SessionInfo) {
   revealSession(s.id);
   requestAnimationFrame(() => keepRow(s.id));
@@ -232,6 +276,8 @@ const opens = (l: Look) => !!l.pane && l.st !== "gone";
 
 /** The row icons, at the stroke weight of the tree icons. */
 const ICON = {
+  fold: '<svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3.5 1.5 7 5 3.5 8.5"/></svg>',
+  unfold: '<svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M6.5 1.5 3 5l3.5 3.5"/></svg>',
   pane: '<svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.3"><rect x=".65" y="1.15" width="8.7" height="7.7"/><path d="M2.6 3.8 4.2 5 2.6 6.2M5.2 6.4h2"/></svg>',
   result: '<svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 .65h4L8.35 3v6.35H2z"/><path d="M5.8.65V3.2h2.55"/></svg>',
 };
@@ -361,6 +407,49 @@ function animate(list: HTMLElement, before: Map<string, { top: number; el: HTMLE
 /** The panel's list was on screen at the last render, so a change can move. */
 let drawn = false;
 
+/** A click does not take the keys: the terminal that has them keeps them. */
+const keepKeys = (b: HTMLElement) => b.addEventListener("mousedown", (e) => e.preventDefault());
+
+function foldButton(name: "fold" | "unfold"): HTMLButtonElement {
+  const b = h("button", "lg-fold") as HTMLButtonElement;
+  b.type = "button";
+  b.innerHTML = ICON[name];
+  keepKeys(b);
+  b.addEventListener("click", toggleLedger);
+  return b;
+}
+
+/** A tooltip with the fold key, which `[keys]` can change. */
+function foldTip(b: HTMLElement, what: string) {
+  const k = keyLabel("ledger");
+  b.title = k ? `${what} (${k})` : what;
+  b.setAttribute("aria-label", what);
+}
+
+/** The folded panel: a chevron that opens it, and the amber count under it. */
+function renderRail(panel: HTMLElement) {
+  let rail = panel.querySelector<HTMLElement>(".lg-rail");
+  if (!rail) {
+    const count = h("button", "lg-rail-need");
+    (count as HTMLButtonElement).type = "button";
+    keepKeys(count);
+    count.addEventListener("click", () => {
+      flashNext = true;
+      toggleLedger();
+    });
+    rail = h("div", "lg-rail");
+    rail.append(foldButton("unfold"), count);
+    panel.replaceChildren(rail);
+  }
+  foldTip(rail.querySelector(".lg-fold")!, "Show the Ledger");
+  const count = rail.querySelector<HTMLElement>(".lg-rail-need")!;
+  const n = needing(queue(units()));
+  count.hidden = !n;
+  count.textContent = String(n);
+  count.title = `${n} ledger ${n === 1 ? "task needs" : "tasks need"} you`;
+  count.setAttribute("aria-label", count.title);
+}
+
 /** Runs on each render, before the modes: shows, hides and fills the panel. */
 export function renderLedger() {
   const panel = document.getElementById("ledger");
@@ -371,29 +460,32 @@ export function renderLedger() {
     drawn = false;
     return;
   }
+  panel.classList.toggle("folded", folded);
+  if (folded) {
+    drawn = false;
+    renderRail(panel);
+    return;
+  }
   const us = units();
   const q = queue(us);
   const f = finished(us);
   const sig = signature(q, f);
-  if (drawn && panel.dataset.sig === sig) return;
-  panel.dataset.sig = sig;
-
   let list = panel.querySelector<HTMLElement>(".lg-list");
   let need = panel.querySelector<HTMLElement>(".lg-need");
+  const fold = panel.querySelector<HTMLElement>(".lg-head .lg-fold");
+  if (fold) foldTip(fold, "Hide the Ledger");
+  if (drawn && list && panel.dataset.sig === sig) return;
+  panel.dataset.sig = sig;
+
   if (!list || !need) {
     need = h("button", "lg-need");
     (need as HTMLButtonElement).type = "button";
     need.title = "Go to the first row that needs you";
-    need.addEventListener("click", () => {
-      const r = panel.querySelector<HTMLElement>(".lg-list .lg-row.need");
-      if (!r) return;
-      r.scrollIntoView({ block: "nearest" });
-      r.classList.remove("flash");
-      void r.offsetWidth;
-      r.classList.add("flash");
-    });
+    need.addEventListener("click", () => flashNeed(panel));
     const head = h("div", "lg-head");
-    head.append(h("span", "lg-name", "Ledger"), need);
+    const fold = foldButton("fold");
+    foldTip(fold, "Hide the Ledger");
+    head.append(h("span", "lg-name", "Ledger"), need, fold);
     list = h("div", "lg-list");
     panel.replaceChildren(head, list);
   }
@@ -413,4 +505,8 @@ export function renderLedger() {
   list.replaceChildren(...out);
   if (move) animate(list, before);
   drawn = loaded;
+  if (flashNext) {
+    flashNext = false;
+    flashNeed(panel);
+  }
 }

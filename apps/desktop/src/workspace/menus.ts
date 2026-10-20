@@ -34,6 +34,7 @@ import { groupOf, launchChoices, launchDigit, place, shownIds, splitFull } from 
 import { groupThemeMenu, projectThemeMenu, sessionThemeMenu } from "../appearance/themes";
 import { focusPane, refocusTerminal, removeFromGroup, showGroup, splitWith, unsplit } from "./view";
 import { resumeAllEntry, resumeOffer, resumePane } from "../terminal/resume";
+import { ledgerFolded, ledgerShown, toggleLedger } from "./ledger";
 
 async function setIcon(p: Project, icon: string | null) {
   try {
@@ -430,6 +431,9 @@ export function skiffAgentMenu(s: SessionInfo | null, x: number, y: number) {
     if (watch === "missing" || watch === "failed") entries.push({ icon: "indicators-square-arrow-out-up-right", label: "Open watch log", run: openWatchLog });
     entries.push(
       { icon: "view-focus", label: S.focusMode ? "Leave focus mode" : "Focus mode", hint: keyLabel("focus-mode"), run: toggleFocusMode },
+    );
+    if (ledgerShown()) entries.push({ icon: "layouts-panel-left:flip", label: ledgerFolded() ? "Show Ledger" : "Hide Ledger", hint: keyLabel("ledger"), run: toggleLedger });
+    entries.push(
       themeEntry(s),
       endEntry(s),
     );

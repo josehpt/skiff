@@ -17,6 +17,22 @@
 .lg-need { padding: 0; border: 0; background: none; cursor: pointer; font-family: var(--mono); font-size: calc(11px * var(--zoom, 1)); font-weight: 400; color: var(--state-waiting-text); }
 .lg-need[hidden] { display: none; }
 .lg-need:hover { text-decoration: underline; }
+/* The fold chevron: at the right edge of the header, and on top of the rail. */
+.lg-fold { width: calc(16 * var(--u)); height: calc(20 * var(--u)); flex-shrink: 0; margin-right: calc(-4 * var(--u)); padding: 0; border: 0; background: none; display: grid; place-items: center; color: var(--text-dim); cursor: pointer; }
+.lg-fold:hover { color: var(--text); }
+.lg-fold svg { width: calc(9 * var(--u)); height: calc(9 * var(--u)); }
+/* Folded: a rail with the chevron on a header-high cell, and the amber count under it. */
+#ledger.folded { width: calc(28 * var(--u)); }
+.lg-rail { display: flex; flex-direction: column; align-items: center; }
+.lg-rail .lg-fold { width: 100%; height: var(--row); margin: 0; border-bottom: 1px solid var(--rule); }
+.lg-rail-need {
+  display: flex; flex-direction: column; align-items: center; gap: calc(4 * var(--u));
+  margin-top: calc(8 * var(--u)); padding: calc(4 * var(--u)) 0; width: 100%; border: 0; background: none; cursor: pointer;
+  font-family: var(--mono); font-size: calc(11px * var(--zoom, 1)); color: var(--state-waiting-text);
+}
+.lg-rail-need::before { content: ""; width: calc(6 * var(--u)); height: calc(6 * var(--u)); border-radius: 50%; background: var(--state-waiting); }
+.lg-rail-need[hidden] { display: none; }
+.lg-rail-need:hover { background: var(--hover); }
 .lg-list { position: relative; flex-grow: 1; min-height: 0; overflow-y: auto; padding: calc(6 * var(--u)) 0 calc(10 * var(--u)); }
 .lg-row {
   position: relative;

@@ -31,6 +31,7 @@ import { closeMission, goToSession, maximizeLit, toggleMission } from "../worksp
 import { showShortcuts } from "../ui/infoDialogs";
 import { isSkiffAgent, openSkiffAgent, skiffAgentSession } from "./skiffAgent";
 import { groupThemeMenu, projectThemeMenu, sessionThemeMenu } from "../appearance/themes";
+import { toggleLedger } from "../workspace/ledger";
 function openNewSession() {
   // Its key works from inside a menu, such as the worktree menu that shows it: that menu goes.
   ctxMenu.close(false);
@@ -108,6 +109,7 @@ export function runAction(a: Action) {
       const s = skiffAgentSession();
       return s && missionOpen() ? goToSession(s.id) : openSkiffAgent();
     }
+    case "ledger": return toggleLedger();
     case "mission-control": return toggleMission();
     case "back": return goBack();
     case "rename": {

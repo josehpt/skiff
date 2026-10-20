@@ -26,6 +26,7 @@ import { accent, activeGroupObj, currentProject, currentWorktree, inShownGroup, 
 
 import { sessionThemeMenu } from "../appearance/themes";
 import { modeKeyBlocked } from "./modes";
+import { ledgerFolded, ledgerShown } from "../workspace/ledger";
 import { refocusTerminal, revealSession, selectWorktree } from "../workspace/view";
 
 interface Cmd {
@@ -81,6 +82,7 @@ function commands(): Cmd[] {
       section: "View", label: `${skiffAgentSession() ? "Show" : "Start"} ${skiffAgentName()}`, key: k("skiff-agent"), action: "skiff-agent",
       run: act("skiff-agent"), off: !skiffAgentFolder(),
     },
+    { section: "View", label: ledgerFolded() ? "Show Ledger" : "Hide Ledger", key: k("ledger"), action: "ledger", run: act("ledger"), off: !ledgerShown() },
     { section: "View", label: "Back to last session", key: k("back"), action: "back", run: act("back"), off: !S.previous },
     { section: "View", label: S.focusMode ? "Leave focus mode" : "Focus mode", key: k("focus-mode"), action: "focus-mode", run: act("focus-mode"), off: (!S.focusMode && !shown) || modeKeyBlocked("focus-mode") },
     { section: "View", label: S.maximized ? "Restore pane" : "Maximize pane", key: k("maximize"), action: "maximize", run: act("maximize"), off: (!S.maximized && !shown) || modeKeyBlocked("maximize") },

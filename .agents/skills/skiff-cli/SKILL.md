@@ -5,298 +5,241 @@ description: Manage Skiff sessions and coordinate agent tasks with the skiff CLI
 
 # Skiff CLI
 
-`skiff` talks to `skiffd`, the daemon that owns every Skiff terminal. The app and the CLI see the same sessions and groups. A change from one shows in the other at once.
-
-Full reference: https://github.com/solutionscay/skiff/wiki/CLI
+`skiff` talks to `skiffd`, the daemon that owns every Skiff terminal. The app and the CLI see the same sessions and groups. A change from one shows in the other at once. `skiff COMMAND --help` gives the full flags and exit codes.
 
 ## Boot sequence
 
-Do these steps before the first command in a task.
+Do these steps once per task, before the first other command.
 
-1. Run `skiff status`. If the command is not found, stop. Tell the user to run Help › Install skiff command… in Skiff. The app ships the CLI and keeps it up to date. If it says skiffd is not running, stop and tell the user to open Skiff.
-2. Check `$SKIFF_SESSION`. If it is set, you run inside a Skiff pane, and `.` means your own session. `--group .` means the group your pane is in.
-3. Run `skiff ls --json` and `skiff group ls --json` to see what exists. Read JSON, not the tables.
-
-Run this sequence once per task.
-From an external shell, use session and group IDs. Do not use `.` or `--group .` when `$SKIFF_SESSION` is unset.
-
-## Session report
-
-For a terminal report of all sessions, run the bundled tool:
-
-```sh
-python3 ~/.agents/skills/skiff-cli/scripts/session_report.py
-```
-
-If that installation path is absent, use `scripts/session_report.py` relative to this
-skill's directory. The script reads session and group JSON from the local daemon.
-It uses Python 3 and Rich to draw a table for each project, with session names,
-states, unread output and titles. Rich must be available to that Python interpreter.
-Use `--details` to include full paths, IDs, programs and groups, including empty groups.
-Output wraps to the terminal width. Use `--width 80` for a fixed layout.
-For a phone or mobile chat, use `--mobile`. This uses a single-column table at
-most 38 characters wide. Do not paste the desktop table into a mobile chat.
-If terminal width is unavailable, the report defaults to 38 columns.
-The script does not send messages or mark output as seen.
-
-Use the report when the user asks what is open or wants a session overview.
-Use the JSON commands for selecting a target or making a state decision.
-
-## Coordinate agent tasks
-
-Keep task handoffs and result collection in this skill. No separate orchestration
-skill is needed. The calling agent can run in Termius or any shell that can reach
-the same `skiffd`.
-
-The Skiff agent is the normal coordinator. It is one agent session in its own folder
-(`~/skiff-agent` by default, set in Settings › Skiff agent › Folder), turned on in Skiff
-under Settings › Skiff agent. Its
-`AGENTS.md` is the user's standing authorization to send tasks to sessions in Skiff
-projects. Its ledger lists the open and pending tasks, with pane ids and result
-paths. It is `ledger.db` in its folder. Read and change it only with
-`skiff ledger ls`, `add`, `send`, `update`, `show`, `report`, `prune` and `rm`.
-Never edit the file.
-
-A person opens the Skiff agent from its row in the app, or with `skiff skipper`
-from any terminal, an SSH login included. `skiff skipper` attaches to the Skiff
-agent's session. If none runs, it sets up the folder, starts the agent and its
-`skiff watch`, then attaches. If skiffd does not run, it starts skiffd. skiffd
-marks the session, so the app and the CLI open the same one, and two opens at
-once start one. Ctrl-\ detaches. The agent keeps running. While attached, the
-session has the terminal's size, in the app too. On detach, the pane gets its
-size back, unless the app sized it since. A second Ctrl-C within 2 seconds is
-held back once. `skiff skipper --no-attach` prints the session id and does not
-attach.
-
-- Each row has an id and an 8-character uid. Both are never used again. Each
-  command that takes an ID also takes the uid.
-- `skiff ledger add` prints the id, the uid and a result path in `results/`.
-  It makes no file.
-- `skiff ledger add --pane S --task "..." --send --enter` adds the task and
-  sends it with its result path. `skiff ledger send UID --enter` sends a
-  `pending` or `interrupted` task. Both run every `send` check and exit with
-  its code. The task becomes `sent` on exit 0 and `blocked` on exit 8. On a
-  refusal it keeps its state.
-- A plan groups tasks: `skiff ledger add --plan --task "..."` makes a row with
-  no pane, and `--parent UID` puts a task under it. `ls` shows each plan's tasks
-  under it. A plan's notes and its tasks' results go in the plan's own folder.
-- `--title TEXT` on `ledger add` and `ledger update` stores a short title for
-  the app's Ledger panel. Give every task and plan a title of 3 to 6 words,
-  such as `--title "Fix found-set count"`. Without one, the panel takes the
-  first sentence of the task text.
-- `--ref TEXT` is optional free text, such as a URL or a ticket key. Skiff
-  stores it and does not read it. The ledger needs no tracker, no git and no
-  network.
-- `interrupted` in `ls` means that the pane restarted after the send. A restore
-  runs a new shell under the old pane id, so the task's process is gone.
-  `gone` means that the pane no longer exists. A plan shows `done` when its
-  tasks are done, else `sent`.
-- A task sent on another daemon shows `elsewhere` in LIVE and names its socket.
-  It is not gone. Leave it to that daemon's Skiff agent.
-- Only the Skiff agent session that owns the ledger adds, sends, updates,
-  reports or removes rows. `skiff skipper` and its watcher record that session. Other
-  agent panes get a refusal that names the owner and its socket. A person
-  changes rows from a shell pane or a terminal outside Skiff.
-- A gone pane cannot be marked seen. Its `[watch]` line names its open tasks.
-  Reassign each one with `skiff ledger update UID --pane S --state pending`,
-  or close it with `skiff ledger update UID --state done`.
-- `skiff ledger rm` removes one row at once. Use `report`, and later `prune`,
-  for finished work. The result files stay.
-- `skiff ledger ls` shows open work and done tasks not yet reported. `--all`
-  shows every row. `--reported` shows only reported rows. `--state S` filters
-  inside that list: `ls --state done` lists the done tasks to report.
-- `skiff ledger report UID...` marks done tasks as told to the person. Run it
-  in the same turn as the report. A plan's uid reports its done tasks. A task
-  that is not done is refused. `--all` reports every done task. A task set to
-  another state than `done` loses its mark.
-- `skiff ledger prune [--older-than 7d] [--yes]` removes rows reported longer
-  ago than the age, and a plan with its last task. It never removes an
-  unreported or open row. Without `--yes`, it prints the rows and changes
-  nothing.
-- At its start, `skiff watch` sends one line when done tasks wait for a report:
-  `[watch] N done tasks not reported: skiff ledger ls --state done`.
-- `--type TYPE` on `ledger add` stores the task type the task went out as.
-  `ls` and `show` print it. Skiff does not act on it.
-
-### Task types
-
-`skiff agents --json` prints `{"agents": [...], "tasks": [...]}`. Each task type
-has its `type`, `agent`, `model` (null: the agent's default) and the `command`
-it starts. The person sets the table in Settings › Skiff agent › Task types
-(`[skiff_agent.tasks]` in `projects.toml`).
-
-When a task fits a type in `skiff agents --json` and the person names no model,
-start the session with `skiff new --type TYPE`. A model the person names wins:
-pass it with `--model`. With no matching type, start the project's agent as today.
-
-- You pick the type. Skiff reads no task text.
-- `--type` with no row exits 1 and starts nothing. `--type` with `--agent` is an error.
-- With no `--name`, the session takes the type's name: `review`, then `review 2`.
-- A custom agent takes its model in its command. It refuses `--model`.
-
-### Send a task
-
-1. Find the requested pane in the JSON list. Use its ID and confirm its working directory.
-2. Read `skiff peek S -n 40` before sending. Check the current result and input box.
-   If the requested task is already running or complete, report that state instead of sending it again.
-3. Send a clear task: the requested result, scope, relevant context, authorized actions,
-   and what the agent must report. An investigation request authorizes an investigation.
-   Pass on existing permission to fix or deploy when the user has given it.
-4. For long prompts, write a temporary file and use `skiff send S - --enter < prompt.md`.
-   Keep shell syntax and user text separate.
-
-Skiff has no message queue. A refused send types nothing. Do not wait for the
-pane and retry the send, and do not interrupt the pane to make room for the
-message. Report that the task was not delivered. A task sent with
-`skiff ledger send` stays `pending`, and `skiff watch` names it again when the
-pane is idle.
-
-### Monitor and collect the result
-
-When the user asks for the result or says to report when the agent is done, keep
-monitoring after a successful send. A request only to deliver a message can end
-after delivery is confirmed.
-
-- Use one `skiff wait S --for idle` at a time. From an agent it times out after
-  45 seconds, and a `--timeout` is at most 60. Resume an outstanding shell call
-  before starting another wait. Give a short progress update when needed.
-- For several children, use `skiff wait S1 S2 S3 --any --for idle`.
-  It returns when the first one stops and prints that session's id. Read that
-  screen, then wait again on the rest.
-- To keep your own turn free for the user, run `skiff events --json [S...]` as a
-  background job. It prints one line for each state change, exit or removal, and
-  no screen text. After any line, read that screen with `peek`.
-- After a successful wait, read the screen. If the task still runs, wait again.
-- On timeout, read the screen and state. Continue when the task is still running.
-  On `waiting`, report the pane and requested approval. Follow the approval rules below.
-- Collect the task result, checks, and any remaining blocker. For a deployment,
-  require the agent's deployment result before reporting it as live. Distinguish
-  local checks from checks on production and state any material limitation.
-- A child should leave its result on screen. Use a result file only when the
-  report is too long for `peek`; tell the child where to write it. Do not claim
-  completion from the pane state alone.
-
-If the user asks for multiple agents, give each a distinct task and working
-directory. State which files each can change when they share a repository.
-Collect each result before work that depends on it. Start agents only within
-the user's requested scope; a named existing pane can handle a single task.
+1. Run `skiff status`. If the command is not found, stop. Tell the user to run Help › Install skiff command… in Skiff. If skiffd does not run, stop and tell the user to open Skiff. If it prints a warning, tell the user.
+2. Check `$SKIFF_SESSION`. If it is set, you run in a Skiff pane. Then `.` is your own session, and `--group .` is the group of your pane. If it is not set, use ids. Do not use `.`.
+3. Run `skiff ls --json` and `skiff group ls --json`. Read the JSON, not the tables. `"coordinator": true` marks the Skiff agent's session.
 
 ## Names
 
 - A session is a full id, a unique id prefix, or the name the sidebar shows. A group is an id, a prefix or a name.
-- An argument that matches more than one session is an error that lists them. Pick the id from the list and run again.
-- Use ids in scripts. Names can change.
+- An argument that matches more than one session is an error that lists them. Pick the id and run again.
+- `skiff new --agent` with no `--name` gives the agent a random call sign, such as `Corsair Cutlass`. `skiff new --type T` names it after the type: `review`, then `review 2`. A shell has no name. The sidebar shows its title or program.
+- Names change and can repeat. Use ids in scripts.
+
+## Session report
+
+For an overview of all sessions, run the bundled script from this skill's folder:
+
+```sh
+python3 <skill folder>/scripts/session_report.py --width 100
+```
+
+- It needs Python 3 and Rich. It changes nothing. It does not mark output as seen.
+- It draws one table for each working directory, with names, states, unread output and titles.
+- Always give `--width`. With no terminal on stdout, as from an agent's shell, it falls back to 38 columns.
+- For a phone or a mobile chat, use `--mobile`. Do not paste a wide table into a mobile chat.
+- `--details` adds paths, ids, programs, groups and empty groups.
+
+Use the report to show the user what is open. Use the JSON to pick a target or make a decision.
 
 ## Commands
 
 | Task | Command |
 |---|---|
-| List sessions | `skiff ls [--json]` |
+| List sessions, groups, projects | `skiff ls --json`, `skiff g ls --json`, `skiff projects --json` |
 | Start a shell | `skiff new [--name N] [--cwd DIR]` |
-| Start an agent | `skiff new --agent claude [--name N]` (`skiff agents` lists ids) |
-| Start a task type's agent and model | `skiff new --type review [--model M] [--cwd DIR] [--name N]` (`skiff agents --json` lists `tasks`) |
+| Start an agent | `skiff new --agent ID [--name N] [--cwd DIR]` (`skiff agents --json` lists ids) |
+| Start a task type | `skiff new --type T [--model M] [--cwd DIR]` |
 | Start a command | `skiff new -- npm run dev` |
 | Start next to me | `skiff new --agent codex --group . --split right` |
-| Type into an idle session | `skiff send S "text" --enter` |
-| Send a pending ledger task | `skiff ledger send UID --enter` |
+| Type into an idle agent | `skiff send S "text" --enter` |
 | Type a command into an idle shell | `skiff send S "make test" --enter --shell` |
-| Send a file or long prompt | `skiff send S - --enter < prompt.md` |
+| Send a long prompt | `skiff send S - --enter < prompt.md` |
 | Read the screen | `skiff peek S [-n 40]` |
-| Wait for it to stop | `skiff wait S --for idle [--timeout SECS]` |
-| Wait for the first of several to stop | `skiff wait S1 S2 --any --for idle [--timeout SECS]` |
-| Follow state changes | `skiff events [--json] [S...] [--timeout N]` |
-| Wait for an approval prompt | `skiff wait S --for waiting` |
-| Rename | `skiff rename S "name"` |
+| Wait for a stop | `skiff wait S --for idle` |
+| Wait for the first of several | `skiff wait S1 S2 --any --for idle` |
+| Follow state changes | `skiff events --json [S...] [--timeout SECS]` |
+| Rename, clear the name | `skiff rename S "name"`, `skiff rename S ""` |
 | Mark seen | `skiff seen S` |
-| Stop | `skiff kill S` |
-| Themes | `skiff theme ls`, `theme session set S ID`, `theme project set NAME ID`, `theme app set ID`, and `clear` in place of `set ID` |
-| Open with | `skiff open-with ls`, `open-with set KEY "CMD"`, `open-with clear KEY`. Keys: `diff`, `text`, `markdown`, `html` |
-| Groups | `skiff g ls`, `g new [--name N] S1 S2 [--dir row\|col]`, `g add G S [--split right\|down\|left\|up] [--of S]`, `g rm G S`, `g rename G N`, `g delete G` |
+| Stop | `skiff kill S...` |
+| Groups | `g new [--name N] [--cwd DIR] [--dir row\|col] [S...]`, `g add G S [--split right\|down\|left\|up] [--of S]`, `g rm G S`, `g rename G N`, `g delete G...` |
+| Themes | `skiff theme ls`, `theme session\|project\|app set ... ID`, `clear` |
+| Open with | `skiff open-with ls`, `set KEY "CMD"`, `clear KEY`. Keys: `diff`, `text`, `markdown`, `html` |
 
-`skiff new` prints the new session id on stdout. `--json` prints the full session.
+- `skiff new` prints the new id. `--json` prints the full session.
+- `--cwd` is relative to your current folder. With `--group` and no `--cwd`, the session starts in the group's folder.
+- `--split` needs `--group`. A full group refuses before anything starts.
+- A group holds 4 panes at most. A session is in one group at most. `g add` takes it out of its old group.
 
-States: `working`, `waiting`, `idle`, `done`. `waiting` means an approval prompt or a bell. Only a person answers it.
+States: `working`, `waiting`, `idle`, `done`.
 
-`send` checks the session before it types any bytes. It refuses in this order:
+- `waiting` is an approval prompt or a bell. Only a person answers it.
+- `idle` means no output for a while. It does not prove that the agent is done.
+- An agent that exits leaves a shell in its pane. `done` means the shell exited too.
+
+## Task types
+
+`skiff agents --json` prints `{"agents": [...], "tasks": [...]}`. Each task row has `type`, `agent`, `model` (null: the agent's default), `command` and `error`. The person sets the table in Settings › Skiff agent › Task types.
+
+1. Pick the type yourself. Skiff reads no task text.
+2. Do not use a row whose `error` is not null.
+3. If a task fits a type, start it with `skiff new --type T --cwd DIR`.
+4. If the person names a model, add `--model M`. A custom agent (`"custom": true`) takes its model in its command and refuses `--model`.
+5. If no type fits, start the project's agent with `--agent`.
+
+`--type` with no row exits 1 and starts nothing. `--type` with `--agent` or `-- CMD` is an error.
+
+## Send a task
+
+1. Find the pane in the JSON. Use its id. Confirm its working directory.
+2. Run `skiff peek S -n 40`. Check the current result and the input box. If the task already runs or is complete, report that. Do not send it again.
+3. Write a clear task: the result, the scope, the context, the permitted actions, and what to report. An investigation request permits an investigation only. Pass on a permission to fix or deploy only when the user gave it.
+4. For a long prompt, write a file and send it with `skiff send S - --enter < file`. Keep shell syntax and user text apart.
+
+`send` types the text as a paste. Newlines stay in the text. `--enter` presses Enter once, after the text.
+
+Skiff has no message queue. A refused send types nothing. Do not wait and retry. Do not interrupt the pane to make room. Report that the task was not delivered.
+
+### Send exit codes
+
+`send` checks the session before it types. The checks run in this order:
 
 | Exit | Condition | What to do |
 |---|---|---|
-| 7 | The session is your own (`$SKIFF_SESSION`), by any name, id, prefix or `.` | Send to another session. |
+| 7 | The session is your own (`$SKIFF_SESSION`), by any name | Send to another session. |
 | 3 | The session is `waiting` | Tell the user which pane needs them. End the turn. |
-| 4 | The session is `working` | Do not wait for it and do not retry. See the rules. |
+| 4 | The session is `working` | Do not wait and do not retry. |
 | 6 | The session is `done` | Its program exited. Start a new session. |
-| 5 | A shell, or a program Skiff cannot identify, is in front | Add `--shell` only if you mean to type a shell command. A program started with `skiff new -- CMD` or a custom agent shows its launch shell in front, so a send to it needs `--shell`. |
-| 9 | A known agent shows text in its input box or its busy line, or took input after the check | For a draft, tell the user which pane holds it. For the busy line, as exit 4. |
+| 5 | A shell or an unknown program is in front | Add `--shell` only to type a shell command. A `skiff new -- CMD` session or a custom agent shows its launch shell, so it needs `--shell`. |
+| 9 | A known agent shows a draft or its busy line, or the session took input after the check | For a draft, tell the user which pane holds it. For the busy line, do as for exit 4. |
 | 0 | Sent | |
-| 1 | Error, for example no such session | |
+| 1 | Error, for example no match or more than one | |
 
-`--shell` relaxes only the exit 5 check.
-
-After the bytes go in, one more check applies:
+`--shell` relaxes only exit 5. After the text goes in, one more check applies:
 
 | Exit | Condition | What to do |
 |---|---|---|
-| 8 | `--enter` went to a known agent (Claude Code, Codex, Gemini, Grok, opencode), but the session stayed `idle` for 5 seconds after Enter | Run `skiff peek S`. If the text is in the input box, tell the user which pane. |
+| 8 | `--enter` went to a known agent (Claude Code, Codex, Gemini, Grok, opencode), but no turn started in 5 seconds | Run `skiff peek S`. If the text is in the input box, tell the user which pane, with its name and id. |
 
-`send` never presses Enter a second time. It skips this check without `--enter`, with `--raw`, and when the program in front is not a known agent. A turn that starts and ends in under 5 seconds with no output can also give exit 8.
+- `send` never presses Enter a second time. A second send while the text is in the box gets exit 9.
+- There is no exit 8 without `--enter`, with `--raw`, or when the program in front is not a known agent.
+- A turn that starts and ends in under 5 seconds with no output can also give exit 8.
+
+## Monitor and collect the result
+
+Keep monitoring after a send when the user wants the result. A request only to deliver a message ends when the send exits 0.
+
+- Run one `skiff wait S --for idle` at a time. Finish an open shell call before you start another wait.
+- In a Skiff pane, or with no terminal on stdout, `wait` stops after 45 seconds. A `--timeout` above 60 becomes 60. On a timeout, read the screen and wait again while the task runs.
+- For several children, use `skiff wait S1 S2 S3 --any --for idle`. It prints the id, name and state of the first one. Read that screen, then wait on the rest.
+- To keep your turn free, run `skiff events --json [S...]` as a background job. It has no time limit. In the foreground, give `--timeout`. With no names, it follows every session, new ones too.
+- After each `wait` exit 0 and each event, run `peek`. `idle` means quiet, not done.
+- Collect the result, the checks and any blocker. Do not report a task as done from the state alone.
+- For a deployment, get the agent's deployment result before you call it live. Keep local checks apart from production checks.
+- A child leaves its result on screen. For a long result, give the child a file path.
 
 `wait` exit codes:
 
 | Exit | Meaning |
 |---|---|
-| 0 | Every session reached the state. With `--any`: one session reached it. Its id, name and state print on stdout. |
+| 0 | Every session reached the state. With `--any`: one did. |
 | 1 | Timeout. |
-| 2 | A session closed or exited before it reached the state. With `--any`: every session did. |
-| 3 | A session is `waiting`. Check its pane. |
+| 2 | A session closed or exited first. With `--any`: every session did. |
+| 3 | A session is `waiting`. With `--for idle`, `done` or `any-not-working`, this stops the wait at once. |
 
-With `--for idle`, `done` or `any-not-working`, `wait` stops at once with exit 3 when any session is `waiting`, at the start or later. `--for waiting` does not change.
+With `--for idle`, a known agent that shows its busy line ("esc to interrupt") is not idle yet.
 
-With `--for idle`, a known agent that is quiet but shows its busy line ("esc to interrupt") is not idle yet. In a Skiff pane, or with no terminal on stdout, the timeout defaults to 45 seconds and is at most 60.
+`events --json` lines:
 
-`events` prints one line for each state change, exit or removal. With `--json`, each line is one object: `{"event":"state","session":ID,"name":N,"state":"idle"}`, `{"event":"exit",...,"code":0}` or `{"event":"removed",...}`. It runs until Ctrl+C or `--timeout`.
+```
+{"event":"state","session":ID,"name":N,"state":"idle"}
+{"event":"exit","session":ID,"name":N,"code":0}
+{"event":"removed","session":ID,"name":N}
+```
 
-| Exit | Meaning |
+`events` exits 0 when `--timeout` ends or every named session is gone, 1 on an error, and 2 when a name matches no session.
+
+For several agents, give each a different task and folder. If they share a repository, say which files each one can change. Collect each result before work that depends on it. Start agents only in the requested scope. A named existing pane can do a single task.
+
+## The Skiff agent and its ledger
+
+The Skiff agent (default name Skipper) is the normal coordinator. It is one agent session in its own folder, `~/skiff-agent` by default. Its `AGENTS.md` is the user's standing permission to send tasks to sessions in Skiff projects. A person opens it from its row in the app, or with `skiff skipper` in any terminal. `skiff skipper --no-attach` prints its id.
+
+The ledger is `ledger.db` in that folder. Use only `skiff ledger` to read or change it. Never open or edit the file.
+
+- Only the session that owns the ledger changes rows: `add`, `send`, `update`, `report`, `prune`, `rm`. `skiff skipper` records the owner. Another agent pane gets a refusal that names the owner. A shell outside Skiff is refused too, unless a person passes `--person`.
+- `ls` and `show` work from anywhere.
+- Each row has an id and an 8-character uid. Neither is used again. Every ID argument takes both. Use the uid when you name a task.
+
+Task states are `pending`, `sent`, `blocked` and `done`. `ls` and `show` also print:
+
+- `interrupted`: the pane restarted after the send. A restore runs a new shell under the old id, so the task does not run.
+- `gone`: the pane no longer exists.
+- `elsewhere` in LIVE: the task went out on another daemon. Its socket shows. It is not gone. Leave it to that daemon's Skiff agent.
+
+A plan shows `done` when every task in it is done, else `sent`.
+
+### Ledger commands
+
+| Command | Use |
 |---|---|
-| 0 | `--timeout` ran out, or every named session was removed. |
-| 1 | Error. |
-| 2 | A name matches no session. |
+| `ledger add --pane S --task "..." --title "..." --send --enter [--parent UID] [--type T] [--ref TEXT]` | Add a task and send it. |
+| `ledger add --plan --task "..." --title "..." [--ref TEXT]` | Add a plan for work with more than one task. |
+| `ledger send UID --enter` | Send a `pending` or `interrupted` task. |
+| `ledger update UID [--state S] [--pane S] [--title T] [--result PATH] [--parent UID] ...` | Change only the given fields. |
+| `ledger ls [--state S] [--all \| --reported] [--json]` | Show open work and done tasks not reported. |
+| `ledger show UID [--json]` | Show one row. |
+| `ledger report UID... \| --all` | Mark done tasks as told to the person. |
+| `ledger prune [--older-than 7d] [--yes]` | Remove reported rows. Without `--yes` it only prints them. |
+| `ledger rm UID` | Remove one row now. |
 
-`idle` in an event means quiet, not done. Read the screen with `peek` before you act on it.
+- `add` prints the id, the uid and the result path. It makes no file. A task needs `--pane`. A plan has none.
+- `--send` and `ledger send` add " Write your result to PATH." to the task text. Do not put the path in `--task`.
+- Both run every `send` check and exit with its code. Exit 0 sets `sent`. Exit 8 sets `blocked`. A refusal leaves the task `pending`.
+- `ledger send` exits 1 and types nothing for a task that is `sent`, `blocked` or `done`, for a plan, for a gone pane, or for a task on another daemon.
+- Give every task and plan a `--title` of 3 to 6 words, such as `--title "Fix found-set count"`. Without one, the Ledger panel uses the first sentence of the task.
+- `--type T` records the task type. `--ref TEXT` stores a URL or a ticket key. Skiff stores both and does not act on them.
+- `--parent UID` puts a task under a plan. A plan cannot be under a plan.
+- `ls --state` takes `sent`, `pending`, `blocked`, `done`, `interrupted` or `gone`. `ls --state done` lists the done tasks to report.
+- Run `ledger report` in the same turn as you tell the person. A plan's uid reports its done tasks. A task that is not done is refused. A state change away from `done` clears the mark.
+- `prune` never removes an open or unreported row. `rm` and `prune` keep the result files.
 
-## Recipes
+Result paths, in `results/` in the agent folder:
+
+- A task with no plan: `results/<date>-<uid>-<slug>.md`.
+- A plan: the folder `results/<date>-<uid>-<slug>/`, with its notes in `plan.md`.
+- A task in a plan: `<uid>-<slug>.md` in the plan's folder.
+
+### The watcher
+
+`skiff watch` runs with the Skiff agent's session. It types one `[watch]` line into the agent when a ledger pane ends a turn, exits, restarts or is gone, or is idle with a pending task. It types only while the agent is idle and its input box is empty. A `waiting` pane gives the person a desktop notification and gives the agent nothing.
+
+1. Read each pane that a `[watch]` line names with `skiff peek`.
+2. Then run `skiff seen S`. An unread pane is named again on the next run.
+3. A gone pane cannot be marked seen. Reassign each open task with `skiff ledger update UID --pane S --state pending`, or set it to `done`.
+4. On `[watch] N done tasks not reported`, run `skiff ledger ls --state done` and report them.
+
+### The Ledger panel
+
+The app shows the ledger in a panel at the right of the Skiff agent's pane. The panel is read-only. It shows the queue on top: done and not reported, then in progress, then pending. Under it, Finished shows the last 20 reported items. A row that needs the person is amber. `ledger report` moves a row to Finished. The panel shows `--title`.
+
+## Recipe
 
 Hand a task to a new agent and collect the result:
 
 ```sh
 id=$(skiff new --agent claude --name reviewer --cwd /path/to/repo)
 skiff wait "$id" --for idle                # let it boot
-skiff peek "$id" -n 40                     # check the agent and input box
+skiff peek "$id" -n 40                     # check the agent and its input box
 skiff send "$id" "Review the diff on this branch. List bugs only." --enter
-skiff wait "$id" --for idle
+skiff wait "$id" --for idle                # on exit 1, peek and wait again
 skiff peek "$id" -n 80
-```
-
-If a `wait` times out and the child still works, run `wait` again. If it exits 3, stop. See the rules.
-
-Put two agents side by side in a new group:
-
-```sh
-a=$(skiff new --agent claude) ; b=$(skiff new --agent codex)
-skiff g new --name pair "$a" "$b" --dir row
 ```
 
 ## Rules
 
-- Never signal skiffd (`kill`, `pkill`, `killall`). skiffd ignores SIGTERM and SIGINT from its own panes and logs the sender. `skiff daemon stop` ends every session. Run it only when the user asks for it.
-- Do not `kill` a session, or remove a session from its group, unless the user asked for that session by name or you started it in this task.
-- Do not `send` into a session you did not start unless the user asked you to. A request in the current conversation counts. A standing authorization in the instructions file of your own folder also counts, for example the Skiff agent's `AGENTS.md`. With it, you can send to any session in a Skiff project. All other checks stay: peek first, do not retry, and obey every `send` and `wait` refusal.
-- A standing authorization covers `send` only. It does not cover `kill`, removal from a group, approvals or theme changes.
-- On exit 8 from `send`, run `skiff peek S`. If the text is in the input box, tell the user which pane holds it, with its name and id.
-- Only a person answers an approval. On exit 3 from `send` or `wait`, tell the user which pane needs them, with its name and id. End the turn. Do not answer the prompt. Do not retry until the user says to continue.
-- A child reports to its parent when it ends its turn with the result on screen or in a file. The parent waits, then reads the result with `peek`.
-- Never wait for the session that started you. A send to a busy parent is refused with exit 4. Then leave the result on screen or in a file and end your turn. Do not retry. A send to an idle parent is permitted.
-- If a child's report names another pane that needs a person, pass that report to the user and stop.
-- Change a project or app theme, or an Open with command, only when the user asks. Those edit `projects.toml` and apply to every pane.
-- A group holds 4 panes at most. A session is in one group at most. Adding it to a group takes it out of its old one.
-- `idle` means no output for a while. It does not prove the agent is done. After each successful `wait`, read the screen with `peek` before you report a result.
-- An agent that exits leaves a shell in its pane. `done` means the shell exited too.
+- Never signal skiffd (`kill`, `pkill`, `killall`). skiffd ignores SIGTERM and SIGINT from its own panes and logs the sender.
+- Run `skiff daemon stop` or `skiff daemon reload` only when the user asks. `stop` ends every session.
+- Do not `kill` a session, or take it out of its group, unless the user named it or you started it in this task.
+- Do not `send` to a session you did not start unless the user asked. A request in this conversation counts. A standing permission in the instructions file of your own folder also counts, such as the Skiff agent's `AGENTS.md`.
+- A standing permission covers `send` only. It does not cover `kill`, removal from a group, approvals or theme changes. Every `send` and `wait` refusal still applies.
+- Only a person answers an approval. On exit 3 from `send` or `wait`, tell the user the pane's name and id. End the turn. Do not answer the prompt. Do not retry until the user says so.
+- Never wait for the session that started you. A send to a busy parent gets exit 4. Then leave the result on screen or in a file and end your turn.
+- If a child's report names another pane that needs a person, pass the report to the user and stop.
+- Change a project or app theme, or an Open with command, only when the user asks. They change `projects.toml` and apply to every pane.

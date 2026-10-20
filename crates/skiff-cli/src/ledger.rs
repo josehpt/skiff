@@ -24,8 +24,9 @@ const INTERRUPTED: &str = "interrupted";
 const GONE: &str = "gone";
 
 /// The schema version, in `user_version`. 4 added `tasks.socket` and
-/// `owner`; a version 3 file takes both in place, with its rows.
-const VERSION: i64 = 4;
+/// `owner`, 5 added `tasks.reported_at`; an older file from version 3 on
+/// takes each in place, with its rows.
+const VERSION: i64 = 5;
 
 const TASKS: &str = "
 CREATE TABLE IF NOT EXISTS tasks (
@@ -43,7 +44,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   ref         TEXT,
   updated_at  TEXT NOT NULL,
   type        TEXT,
-  socket      TEXT
+  socket      TEXT,
+  reported_at TEXT
 );
 ";
 
@@ -61,7 +63,7 @@ CREATE TABLE IF NOT EXISTS owner (
 /// Every uid the ledger gave out, so a removed row's uid is not given again.
 const UIDS: &str = "CREATE TABLE IF NOT EXISTS uids (uid TEXT PRIMARY KEY);";
 
-const COLUMNS: &str = "id, uid, kind, parent, pane_id, pane_gen, project, task, sent_at, state, result_path, ref, updated_at, type, socket";
+const COLUMNS: &str = "id, uid, kind, parent, pane_id, pane_gen, project, task, sent_at, state, result_path, ref, updated_at, type, socket, reported_at";
 
 /// UTC, to the second, set by SQLite.
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
@@ -93,6 +95,8 @@ pub struct Row {
     pub task_type: Option<String>,
     /// The daemon socket of the pane. A pane id means nothing on another socket.
     pub socket: Option<String>,
+    /// When the person was told the result. `None`: not yet. Open work has none.
+    pub reported_at: Option<String>,
     /// The socket is not this skiff's: no check of the pane was made.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub elsewhere: bool,
@@ -177,20 +181,33 @@ fn open_at(file: &Path) -> Result<Connection> {
     Ok(db)
 }
 
-/// Version 3 to 4, in place: `tasks` takes a `socket` column. Every row
-/// before it went out on the live daemon, the only one with a Skiff agent.
-/// One transaction, so two first opens at once add the column once.
+/// Each step adds one column in place, when the file lacks it:
+///
+/// - 3 to 4: `socket`. Every row before it went out on the live daemon, the
+///   only one with a Skiff agent.
+/// - 4 to 5: `reported_at`. Every row stays not reported: the migration
+///   cannot tell what the person saw.
 fn migrate(db: &mut Connection) -> Result<()> {
+    add_column(db, "socket", |tx| {
+        tx.execute("UPDATE tasks SET socket = ?1 WHERE kind = 'task'", [state::live_socket().display().to_string()])?;
+        Ok(())
+    })?;
+    add_column(db, "reported_at", |_| Ok(()))
+}
+
+/// Adds the column `name TEXT` to `tasks` and runs `fill`, unless it is
+/// there. One transaction, so two first opens at once add it once.
+fn add_column(db: &mut Connection, name: &str, fill: impl FnOnce(&Connection) -> Result<()>) -> Result<()> {
     let has = |db: &Connection| -> rusqlite::Result<bool> {
-        db.query_row("SELECT count(*) FROM pragma_table_info('tasks') WHERE name = 'socket'", [], |r| r.get::<_, i64>(0)).map(|n| n > 0)
+        db.query_row("SELECT count(*) FROM pragma_table_info('tasks') WHERE name = ?1", [name], |r| r.get::<_, i64>(0)).map(|n| n > 0)
     };
     if has(db)? {
         return Ok(());
     }
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     if !has(&tx)? {
-        tx.execute_batch("ALTER TABLE tasks ADD COLUMN socket TEXT")?;
-        tx.execute("UPDATE tasks SET socket = ?1 WHERE kind = 'task'", [state::live_socket().display().to_string()])?;
+        tx.execute_batch(&format!("ALTER TABLE tasks ADD COLUMN {name} TEXT"))?;
+        fill(&tx)?;
     }
     tx.commit()?;
     Ok(())
@@ -292,6 +309,21 @@ fn open_tasks_at(file: &Path) -> Result<Vec<Row>> {
     rows(&db, "WHERE kind = 'task' AND state IN ('sent', 'pending', 'blocked')", None)
 }
 
+/// The done tasks the person was not told of yet. `skiff watch` names the
+/// count at its start. No `ledger.db` yet gives 0, and makes no file.
+pub fn unreported() -> Result<usize> {
+    unreported_at(&path()?)
+}
+
+fn unreported_at(file: &Path) -> Result<usize> {
+    if !file.exists() {
+        return Ok(0);
+    }
+    let db = open_at(file)?;
+    let n: i64 = db.query_row("SELECT count(*) FROM tasks WHERE kind = 'task' AND state = 'done' AND reported_at IS NULL", [], |r| r.get(0))?;
+    Ok(usize::try_from(n).unwrap_or(0))
+}
+
 fn state(s: &str) -> Result<&str> {
     match STATES.iter().find(|x| **x == s) {
         Some(x) => Ok(x),
@@ -343,6 +375,7 @@ fn rows(db: &Connection, where_: &str, arg: Option<&dyn rusqlite::ToSql>) -> Res
             updated_at: r.get(12)?,
             task_type: r.get(13)?,
             socket: r.get(14)?,
+            reported_at: r.get(15)?,
             elsewhere: false,
             live: None,
             interrupted: None,
@@ -413,6 +446,38 @@ fn roll_up(rows: &mut [Row]) {
     }
 }
 
+/// Which rows `ls` lists.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum View {
+    /// Open work, and done work the person was not told of.
+    Open,
+    All,
+    /// Only the rows the person was told of.
+    Reported,
+}
+
+impl View {
+    fn takes(self, r: &Row) -> bool {
+        match self {
+            View::Open => r.state != "done" || r.reported_at.is_none(),
+            View::All => true,
+            View::Reported => r.reported_at.is_some(),
+        }
+    }
+}
+
+/// Keeps the rows in `view`. A plan stays while one of its tasks stays; a
+/// plan with no task stands on its own state and stamp. Run it after
+/// [`roll_up`].
+fn keep(rows: &mut Vec<Row>, view: View) {
+    let kept: std::collections::HashSet<String> = rows.iter().filter(|r| !r.is_plan() && view.takes(r)).filter_map(|r| r.parent.clone()).collect();
+    let parents: std::collections::HashSet<String> = rows.iter().filter(|r| !r.is_plan()).filter_map(|r| r.parent.clone()).collect();
+    rows.retain(|r| match (r.is_plan(), parents.contains(&r.uid)) {
+        (true, true) => kept.contains(&r.uid),
+        _ => view.takes(r),
+    });
+}
+
 /// Each plan with its tasks under it, by id. A task whose plan is not in
 /// `rows` stands alone. The bool marks a task shown under its plan.
 fn tree(rows: Vec<Row>) -> Vec<(Row, bool)> {
@@ -439,7 +504,8 @@ fn shown_path(p: &str) -> String {
     }
 }
 
-fn print_rows(rows: &[(Row, bool)]) {
+/// `reported`: add the REPORTED column.
+fn print_rows(rows: &[(Row, bool)], reported: bool) {
     let yn = |l: Option<bool>| match l {
         Some(true) => "yes",
         Some(false) => "no",
@@ -470,6 +536,9 @@ fn print_rows(rows: &[(Row, bool)]) {
             if sockets {
                 row.push(if r.elsewhere { r.socket.clone().unwrap_or_default() } else { String::new() });
             }
+            if reported {
+                row.push(r.reported_at.clone().unwrap_or_default());
+            }
             row.push(r.task.clone());
             row
         })
@@ -483,6 +552,9 @@ fn print_rows(rows: &[(Row, bool)]) {
     }
     if sockets {
         header.push("SOCKET");
+    }
+    if reported {
+        header.push("REPORTED");
     }
     header.push("TASK");
     print::table(&header, &table);
@@ -502,7 +574,12 @@ fn print_one(r: &Row) {
             f.push(("socket", s.clone()));
         }
     }
-    f.extend([("project", r.project.clone()), ("sent", r.sent_at.clone()), ("updated", r.updated_at.clone())]);
+    f.extend([
+        ("project", r.project.clone()),
+        ("sent", r.sent_at.clone()),
+        ("updated", r.updated_at.clone()),
+        ("reported", r.reported_at.clone().unwrap_or_else(|| "no".into())),
+    ]);
     if let Some(p) = &r.result_path {
         f.push(("result", p.clone()));
     }
@@ -667,7 +744,7 @@ async fn check_writer(socket: &Path, db: &Connection) -> Result<()> {
 fn refusal(cur: Option<&Owner>) -> String {
     match cur {
         Some(o) => format!(
-            "this ledger belongs to the Skiff agent session {} on {}. Only that session adds, sends, updates or removes tasks. Nothing changed",
+            "this ledger belongs to the Skiff agent session {} on {}. Only that session adds, sends, updates, reports or removes tasks. Nothing changed",
             print::short_id(&o.session),
             o.socket
         ),
@@ -744,6 +821,93 @@ async fn send_row(socket: &Path, db: &Connection, row: &Row, o: SendOpts) -> Res
         None => eprintln!("skiff: task {} stays {}", row.uid, row.state),
     }
     Ok(code)
+}
+
+/// Stamps `reported_at` on the done rows `ids` name, in one transaction.
+/// A plan with tasks stamps its done tasks and leaves the others; a plan with
+/// none is stamped itself. A row that is not done refuses the lot. A first
+/// stamp stays. `all`: every done task, and every done plan with no task.
+/// Returns how many rows took a new stamp.
+fn report(db: &mut Connection, ids: &[String], all: bool) -> Result<usize> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let stamp = format!("UPDATE tasks SET reported_at = {NOW} WHERE state = 'done' AND reported_at IS NULL");
+    let mut n = 0;
+    if all {
+        n += tx.execute(&format!("{stamp} AND (kind = 'task' OR NOT EXISTS (SELECT 1 FROM tasks t WHERE t.parent = tasks.uid))"), [])?;
+    }
+    for id in ids {
+        let r = one(&tx, id)?;
+        let tasks = if r.is_plan() { rows(&tx, "WHERE parent = ?1", Some(&r.uid))? } else { Vec::new() };
+        if !tasks.is_empty() {
+            n += tx.execute(&format!("{stamp} AND parent = ?1"), [&r.uid])?;
+            continue;
+        }
+        if r.state != "done" {
+            bail!("{} {} is {}, not done. Nothing changed", r.kind, r.uid, r.state);
+        }
+        n += tx.execute(&format!("{stamp} AND id = ?1"), [r.id])?;
+    }
+    tx.commit()?;
+    Ok(n)
+}
+
+/// A row set to a state other than done opens again. That is new work: its
+/// stamp goes, and `ls` shows it once it is done.
+fn reopen(db: &Connection, id: i64, st: Option<&str>) -> Result<()> {
+    if st.is_some_and(|s| s != "done") {
+        db.execute("UPDATE tasks SET reported_at = NULL WHERE id = ?1", [id])?;
+    }
+    Ok(())
+}
+
+fn rows_word(n: usize) -> &'static str {
+    if n == 1 {
+        "row"
+    } else {
+        "rows"
+    }
+}
+
+/// `7d`, `12h`, `30m` or `45s`, in seconds.
+fn age(s: &str) -> Result<i64> {
+    let unit = match s.chars().last() {
+        Some('d') => 86_400,
+        Some('h') => 3_600,
+        Some('m') => 60,
+        Some('s') => 1,
+        _ => bail!("cannot read the age {s:?}. Use a number and d, h, m or s, such as 7d"),
+    };
+    let n: i64 = s[..s.len() - 1].parse().with_context(|| format!("cannot read the age {s:?}. Use a number and d, h, m or s, such as 7d"))?;
+    Ok(n * unit)
+}
+
+/// The rows `prune` takes: done tasks reported at least `secs` ago, each
+/// plan whose last tasks they are, and each done plan with no task reported
+/// that long ago. Open and unreported rows never go. `yes`: delete them.
+fn prune(db: &mut Connection, secs: i64, yes: bool) -> Result<Vec<Row>> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let cutoff: String = tx.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?1)", [format!("-{secs} seconds")], |r| r.get(0))?;
+    let old = |r: &Row| r.state == "done" && r.reported_at.as_deref().is_some_and(|t| t <= cutoff.as_str());
+    let all = rows(&tx, "", None)?;
+    let gone: Vec<Row> = all
+        .iter()
+        .filter(|r| {
+            let mut tasks = all.iter().filter(|t| !t.is_plan() && t.parent.as_deref() == Some(&r.uid)).peekable();
+            match (r.is_plan(), tasks.peek().is_some()) {
+                (true, true) => tasks.all(old),
+                _ => old(r),
+            }
+        })
+        .cloned()
+        .collect();
+    if yes {
+        for r in &gone {
+            // The row only: a result file stays where it is.
+            tx.execute("DELETE FROM tasks WHERE id = ?1", [r.id])?;
+        }
+        tx.commit()?;
+    }
+    Ok(gone)
 }
 
 /// The state `ledger add` stores. `--send` adds the task as pending and
@@ -823,15 +987,24 @@ pub async fn run(socket: &Path, cmd: LedgerCmd) -> Result<i32> {
                 ),
                 params![row.id, st, result, task, pane_id, project, parent, reference, gen.is_some(), gen.flatten(), task_type, here],
             )?;
+            reopen(&db, row.id, st)?;
         }
-        LedgerCmd::Ls { state: st, json } => {
+        LedgerCmd::Ls { state: st, all, reported, json } => {
             if let Some(s) = st.as_deref().filter(|s| *s != INTERRUPTED && *s != GONE) {
                 state(s)?;
             }
+            let view = if all {
+                View::All
+            } else if reported {
+                View::Reported
+            } else {
+                View::Open
+            };
             let db = open()?;
             let mut list = rows(&db, "", None)?;
             mark_live(socket, &mut list).await;
             roll_up(&mut list);
+            keep(&mut list, view);
             if let Some(s) = &st {
                 list.retain(|r| r.shown_state() == s);
             }
@@ -839,7 +1012,31 @@ pub async fn run(socket: &Path, cmd: LedgerCmd) -> Result<i32> {
             if json {
                 print::json(&list.iter().map(|(r, _)| r).collect::<Vec<_>>())?;
             } else {
-                print_rows(&list);
+                print_rows(&list, view != View::Open);
+            }
+        }
+        LedgerCmd::Report { ids, all } => {
+            let mut db = open()?;
+            check_writer(socket, &db).await?;
+            let n = report(&mut db, &ids, all)?;
+            println!("reported {n} {}", rows_word(n));
+        }
+        LedgerCmd::Prune { older_than, yes } => {
+            let secs = age(&older_than)?;
+            let mut db = open()?;
+            check_writer(socket, &db).await?;
+            let mut gone = prune(&mut db, secs, yes)?;
+            if gone.is_empty() {
+                println!("no row was reported more than {older_than} ago. Nothing changed");
+                return Ok(0);
+            }
+            let n = gone.len();
+            mark_live(socket, &mut gone).await;
+            print_rows(&tree(gone), true);
+            if yes {
+                println!("removed {n} {}. The result files stay", rows_word(n));
+            } else {
+                println!("would remove {n} {}. Nothing changed. Run again with --yes to remove them", rows_word(n));
             }
         }
         LedgerCmd::Show { id, json } => {
@@ -931,7 +1128,7 @@ mod tests {
         let dir = scratch("v3");
         let file = dir.join("ledger.db");
         {
-            let v3 = TASKS.replace("type        TEXT,\n  socket      TEXT", "type        TEXT");
+            let v3 = TASKS.replace("type        TEXT,\n  socket      TEXT,\n  reported_at TEXT", "type        TEXT");
             assert!(!v3.contains("socket"));
             let db = Connection::open(&file).unwrap();
             db.execute_batch(&v3).unwrap();
@@ -955,6 +1152,166 @@ mod tests {
         // A second open changes nothing.
         drop(db);
         assert_eq!(rows(&open_at(&file).unwrap(), "", None).unwrap().len(), 2);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_version_4_ledger_takes_reported_at_in_place_and_keeps_its_rows() {
+        let dir = scratch("v4");
+        let file = dir.join("ledger.db");
+        {
+            let v4 = TASKS.replace(",\n  reported_at TEXT", "");
+            assert!(!v4.contains("reported_at"));
+            let db = Connection::open(&file).unwrap();
+            db.execute_batch(&v4).unwrap();
+            db.execute_batch(UIDS).unwrap();
+            db.execute_batch(OWNER).unwrap();
+            db.execute_batch(
+                "INSERT INTO tasks (uid, kind, pane_id, task, sent_at, state, updated_at, socket) VALUES ('a1b2c3d4', 'task', 'abc', 'old work', 'x', 'done', 'x', '/tmp/s.sock');
+                 INSERT INTO tasks (uid, kind, pane_id, task, sent_at, state, updated_at, socket) VALUES ('e5f6a7b8', 'task', 'abc', 'live work', 'x', 'sent', 'x', '/tmp/s.sock');
+                 PRAGMA user_version = 4;",
+            )
+            .unwrap();
+        }
+        let db = open_at(&file).unwrap();
+        let list = rows(&db, "", None).unwrap();
+        assert_eq!(list.iter().map(|r| (r.uid.as_str(), r.reported_at.as_deref())).collect::<Vec<_>>(), [("a1b2c3d4", None), ("e5f6a7b8", None)]);
+        // The v4 socket stays as it was.
+        assert_eq!(list[0].socket.as_deref(), Some("/tmp/s.sock"));
+        assert_eq!(db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 5);
+        assert_eq!(unreported_at(&file).unwrap(), 1);
+        // A second open adds nothing.
+        drop(db);
+        let db = open_at(&file).unwrap();
+        let n: i64 = db.query_row("SELECT count(*) FROM pragma_table_info('tasks') WHERE name = 'reported_at'", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(rows(&db, "", None).unwrap().len(), 2);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The uids `ls` lists in `view`, with `state` if given, as `run` does it.
+    fn listed(db: &Connection, view: View, state: Option<&str>) -> Vec<String> {
+        let mut list = rows(db, "", None).unwrap();
+        roll_up(&mut list);
+        keep(&mut list, view);
+        if let Some(s) = state {
+            list.retain(|r| r.shown_state() == s);
+        }
+        tree(list).into_iter().map(|(r, _)| r.uid).collect()
+    }
+
+    #[test]
+    fn ls_shows_open_work_and_done_work_not_yet_reported() {
+        let dir = scratch("view");
+        let file = dir.join("ledger.db");
+        let mut db = open_at(&file).unwrap();
+        let done = |t: &str| New { state: "done".into(), ..task(t) };
+        let (_, open, _) = insert(&mut db, &file, task("open")).unwrap();
+        let (_, told, _) = insert(&mut db, &file, done("told")).unwrap();
+        let (_, untold, _) = insert(&mut db, &file, done("untold")).unwrap();
+        let (_, p, _) = insert(&mut db, &file, New { plan: true, pane_id: None, ..task("half") }).unwrap();
+        let (_, p_open, _) = insert(&mut db, &file, New { parent: Some(p.clone()), ..task("a") }).unwrap();
+        let (_, p_told, _) = insert(&mut db, &file, New { parent: Some(p.clone()), ..done("b") }).unwrap();
+        let (_, q, _) = insert(&mut db, &file, New { plan: true, pane_id: None, ..task("all told") }).unwrap();
+        let (_, q_told, _) = insert(&mut db, &file, New { parent: Some(q.clone()), ..done("c") }).unwrap();
+        assert_eq!(report(&mut db, &[told.clone(), p_told.clone(), q.clone()], false).unwrap(), 3);
+        let s = |v: &[&String]| v.iter().map(|u| u.to_string()).collect::<Vec<_>>();
+
+        // A plan stays while one task stays, with only that task under it.
+        assert_eq!(listed(&db, View::Open, None), s(&[&open, &untold, &p, &p_open]));
+        assert_eq!(listed(&db, View::All, None), s(&[&open, &told, &untold, &p, &p_open, &p_told, &q, &q_told]));
+        assert_eq!(listed(&db, View::Reported, None), s(&[&told, &p, &p_told, &q, &q_told]));
+        assert_eq!(listed(&db, View::Open, Some("done")), s(&[&untold]));
+        assert_eq!(listed(&db, View::All, Some("done")), s(&[&told, &untold, &p_told, &q, &q_told]));
+
+        // Interrupted and gone work is open.
+        let mut list = rows(&db, "", None).unwrap();
+        list.iter_mut().find(|r| r.uid == open).unwrap().live = Some(false);
+        keep(&mut list, View::Open);
+        assert!(list.iter().any(|r| r.uid == open && r.shown_state() == GONE));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn report_stamps_done_rows_once_and_refuses_open_ones() {
+        let dir = scratch("report");
+        let file = dir.join("ledger.db");
+        let mut db = open_at(&file).unwrap();
+        let done = |t: &str| New { state: "done".into(), ..task(t) };
+        let (_, a, _) = insert(&mut db, &file, done("a")).unwrap();
+        let (_, b, _) = insert(&mut db, &file, done("b")).unwrap();
+        let (_, open, _) = insert(&mut db, &file, task("open")).unwrap();
+        let (_, p, _) = insert(&mut db, &file, New { plan: true, pane_id: None, ..task("p") }).unwrap();
+        let (_, p_done, _) = insert(&mut db, &file, New { parent: Some(p.clone()), ..done("c") }).unwrap();
+        let (_, p_open, _) = insert(&mut db, &file, New { parent: Some(p.clone()), ..task("d") }).unwrap();
+        let stamp = |db: &Connection, uid: &str| one(db, uid).unwrap().reported_at;
+        assert_eq!(unreported_at(&file).unwrap(), 3);
+
+        assert_eq!(report(&mut db, std::slice::from_ref(&a), false).unwrap(), 1);
+        assert!(stamp(&db, &a).is_some());
+        // A second run keeps the first stamp.
+        db.execute("UPDATE tasks SET reported_at = '2020-01-01T00:00:00Z' WHERE uid = ?1", [&a]).unwrap();
+        assert_eq!(report(&mut db, std::slice::from_ref(&a), false).unwrap(), 0);
+        assert_eq!(stamp(&db, &a).as_deref(), Some("2020-01-01T00:00:00Z"));
+        // An open task refuses the lot.
+        let err = report(&mut db, &[b.clone(), open.clone()], false).unwrap_err().to_string();
+        assert_eq!(err, format!("task {open} is sent, not done. Nothing changed"));
+        assert!(stamp(&db, &b).is_none());
+        // A plan stamps its done tasks only.
+        assert_eq!(report(&mut db, std::slice::from_ref(&p), false).unwrap(), 1);
+        assert!(stamp(&db, &p_done).is_some() && stamp(&db, &p_open).is_none() && stamp(&db, &p).is_none());
+        // --all stamps every done task not reported, and only those.
+        assert_eq!(report(&mut db, &[], true).unwrap(), 1);
+        assert!(stamp(&db, &b).is_some() && stamp(&db, &open).is_none());
+        assert_eq!(stamp(&db, &a).as_deref(), Some("2020-01-01T00:00:00Z"));
+        assert_eq!(unreported_at(&file).unwrap(), 0);
+
+        // A task that opens again loses its stamp.
+        reopen(&db, one(&db, &b).unwrap().id, Some("done")).unwrap();
+        assert!(stamp(&db, &b).is_some());
+        reopen(&db, one(&db, &b).unwrap().id, None).unwrap();
+        assert!(stamp(&db, &b).is_some());
+        reopen(&db, one(&db, &b).unwrap().id, Some("pending")).unwrap();
+        assert!(stamp(&db, &b).is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn prune_takes_only_old_reported_rows_and_a_plan_with_its_last_task() {
+        let dir = scratch("prune");
+        let file = dir.join("ledger.db");
+        let mut db = open_at(&file).unwrap();
+        let done = |t: &str| New { state: "done".into(), ..task(t) };
+        let (_, old, _) = insert(&mut db, &file, done("old")).unwrap();
+        let (_, new, _) = insert(&mut db, &file, done("new")).unwrap();
+        let (_, untold, _) = insert(&mut db, &file, done("untold")).unwrap();
+        let (_, open, _) = insert(&mut db, &file, task("open")).unwrap();
+        let (_, p, _) = insert(&mut db, &file, New { plan: true, pane_id: None, ..task("p") }).unwrap();
+        let (_, p_old, _) = insert(&mut db, &file, New { parent: Some(p.clone()), ..done("a") }).unwrap();
+        let (_, q, _) = insert(&mut db, &file, New { plan: true, pane_id: None, ..task("q") }).unwrap();
+        let (_, q_old, _) = insert(&mut db, &file, New { parent: Some(q.clone()), ..done("b") }).unwrap();
+        let (_, q_untold, _) = insert(&mut db, &file, New { parent: Some(q.clone()), ..done("c") }).unwrap();
+        report(&mut db, std::slice::from_ref(&new), false).unwrap();
+        for uid in [&old, &p_old, &q_old] {
+            db.execute("UPDATE tasks SET reported_at = '2020-01-01T00:00:00Z' WHERE uid = ?1", [uid]).unwrap();
+        }
+        let uids = |rows: Vec<Row>| rows.into_iter().map(|r| r.uid).collect::<Vec<_>>();
+        let all = || uids(rows(&open_at(&file).unwrap(), "", None).unwrap());
+        let before = all();
+
+        // A dry run lists and changes nothing.
+        let want = vec![old.clone(), p.clone(), p_old.clone(), q_old.clone()];
+        assert_eq!(uids(prune(&mut db, 7 * 86_400, false).unwrap()), want);
+        assert_eq!(all(), before);
+        assert_eq!(uids(prune(&mut db, 7 * 86_400, true).unwrap()), want);
+        // q keeps its unreported task, so q stays.
+        assert_eq!(all(), [new.clone(), untold.clone(), open.clone(), q.clone(), q_untold.clone()]);
+        // A short window takes the new one too.
+        db.execute("UPDATE tasks SET reported_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-2 hours') WHERE uid = ?1", [&new]).unwrap();
+        assert!(prune(&mut db, age("7d").unwrap(), true).unwrap().is_empty());
+        assert_eq!(uids(prune(&mut db, age("1h").unwrap(), true).unwrap()), [new]);
+        assert_eq!(age("30m").unwrap(), 1800);
+        assert!(age("7").is_err() && age("xd").is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -17,7 +17,9 @@ Do these steps when a conversation starts, before any other `skiff` command.
 3. Run `skiff ls --json` and `skiff group ls --json`.
 4. Rebuild your state from the ledger and the session list. A row that shows
    `gone` lost its pane: tell the user.
-5. A row with `interrupted` is a pane that restarted after the send. Skiff
+5. Run `skiff ledger ls --state done`. Tell the user each result in it. Then
+   run `skiff ledger report UID...` for those rows.
+6. A row with `interrupted` is a pane that restarted after the send. Skiff
    restored it as a new shell, so the task does not run. Do these steps for
    each such row:
    1. Read its result file and `skiff peek PANE -n 40`.
@@ -59,10 +61,16 @@ the commands:
 | `skiff ledger update ID --state S [--result PATH]` | You mark a task `blocked` or `done`. |
 | `skiff ledger ls [--state S] [--json]` | You start a turn or report on work. |
 | `skiff ledger show ID` | You need one row. |
-| `skiff ledger rm ID` | You reported the result to the user. |
+| `skiff ledger report UID...` | You told the user the result. Do it in the same turn. |
 
+- `ls` shows open work and done tasks not yet reported. `--all` shows every
+  row. `--reported` shows only reported rows.
+- `report` refuses a task that is not done. A plan's uid reports its done
+  tasks. A task set to another state than `done` is new work: it shows again.
+- `skiff ledger prune` removes rows reported more than 7 days ago. Run it only
+  when the user asks.
 - `--pane` takes a pane id, a prefix or a name.
-- ID is the row id or the uid. Neither is used again after `rm`. Use the uid
+- ID is the row id or the uid. Neither is used again after a row goes. Use the uid
   when you name a task to the user or in a file.
 - A plan has no pane. Put each of its tasks under it with `--parent UID`. `ls`
   shows the tasks under their plan, and the plan shows `done` when they are.
@@ -100,7 +108,7 @@ Skiff agent › Task types is the list of types. This file lists none.
   - A task in a plan: `<uid>-<slug>.md` in the plan's folder.
 - If the child cannot write outside its repository, use a path in that
   repository. Record it with `skiff ledger update ID --result PATH`.
-- `skiff ledger rm` keeps the result files.
+- `skiff ledger prune` and `rm` keep the result files.
 - Do not report a task as done from the pane state alone. Read the result.
 
 ## Sends to you

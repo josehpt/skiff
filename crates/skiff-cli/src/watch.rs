@@ -9,7 +9,8 @@
 //! send` command for it. A task whose pane
 //! restarted since the send (a restore runs a new shell under the old id)
 //! wakes the agent once as interrupted. Plans have no pane and are not
-//! followed.
+//! followed. At its start, a run counts the done tasks not yet reported and,
+//! if there are any, tells the agent once, in a line of its own.
 //!
 //! It keeps no state of its own. The ledger, the session list and each pane's
 //! unread flag are the input, so a new run rebuilds the same view. One lock
@@ -242,6 +243,10 @@ struct Watcher {
     unregistered: bool,
     /// What the log last said of tasks on other sockets.
     elsewhere: String,
+    /// The done tasks not reported were counted in this run.
+    counted: bool,
+    /// The line that names them, until the agent takes it.
+    unreported: Option<String>,
 }
 
 /// The open tasks whose panes are on `here`, and a log line for the others.
@@ -270,6 +275,15 @@ enum Delivery {
     Refused,
     /// Typed and Enter pressed, but no turn started.
     NoTurn,
+}
+
+/// What to log of a delivery.
+fn report(d: Delivery, line: &str) -> String {
+    match d {
+        Delivery::Refused => format!("held: the person typed in the agent's pane: {line}"),
+        Delivery::Taken => format!("woke the agent: {line}"),
+        Delivery::NoTurn => format!("undelivered: no turn started; the line can be in the agent's input box: {line}"),
+    }
 }
 
 /// The open rows that name one live pane, or one pane that no session
@@ -461,17 +475,24 @@ impl Watcher {
         });
     }
 
+    /// Takes the count of done tasks not yet reported, once per run. Above
+    /// 0 it holds one line that names the count and the command to list them.
+    fn count_unreported(&mut self, n: usize) {
+        if std::mem::replace(&mut self.counted, true) || n == 0 {
+            return;
+        }
+        let tasks = if n == 1 { "task" } else { "tasks" };
+        self.unreported = Some(format!("[watch] {n} done {tasks} not reported: skiff ledger ls --state done"));
+    }
+
     /// Settles the held lines after a delivery, and says what to log. A line
     /// that started no turn can sit in the input box: Enter is not pressed
     /// again, as it could submit twice.
     fn delivered(&mut self, d: Delivery, line: &str) -> String {
-        let msg = match d {
-            Delivery::Refused => return format!("held: the person typed in the agent's pane: {line}"),
-            Delivery::Taken => format!("woke the agent: {line}"),
-            Delivery::NoTurn => format!("undelivered: no turn started; the line can be in the agent's input box: {line}"),
-        };
-        self.held.clear();
-        msg
+        if d != Delivery::Refused {
+            self.held.clear();
+        }
+        report(d, line)
     }
 
     /// The failure after a delivery: an undelivered line sets one, a line
@@ -685,6 +706,12 @@ async fn step(c: &Client, o: &Options, w: &mut Watcher) -> Result<Option<i32>> {
         }
     };
     w.after_ledger(Ok(()));
+    if !w.counted {
+        match ledger::unreported() {
+            Ok(n) => w.count_unreported(n),
+            Err(e) => log(format!("cannot count the done tasks not reported: {e:#}")),
+        }
+    }
     let (groups, interrupted) = group(&tasks, &all, &skipper.id);
     w.follows = Some(follows(&groups));
     w.register(c, &skipper.id).await?;
@@ -695,6 +722,21 @@ async fn step(c: &Client, o: &Options, w: &mut Watcher) -> Result<Option<i32>> {
             let title = format!("{} ({}) is waiting", wake.name, print::short_id(&wake.id));
             desktop_notify(&title, "It needs you. Answer it in its pane.");
         }
+    }
+
+    // The start line goes alone, before any wake. A refused one waits.
+    if let Some(line) = w.unreported.clone() {
+        if ready(c, skipper).await {
+            let d = submit(c, skipper, &line).await?;
+            if d != Delivery::Refused {
+                w.unreported = None;
+            }
+            let msg = report(d, &line);
+            log(&msg);
+            w.after_delivery(d, &msg);
+            w.register(c, &skipper.id).await?;
+        }
+        return Ok(None);
     }
 
     if !w.held.is_empty() && ready(c, skipper).await {
@@ -711,22 +753,27 @@ async fn step(c: &Client, o: &Options, w: &mut Watcher) -> Result<Option<i32>> {
             return Ok(None);
         }
         let line = wake_line(&w.held);
-        // The check above read the screen. The daemon refuses the line if
-        // the person typed after the list this step read.
-        let events = c.events();
-        let d = if !c.submit(&skipper.id, line.clone().into_bytes(), true, true, skipper.input_gen).await? {
-            Delivery::Refused
-        } else if sessions::turn_started(c, &skipper.id, events).await? {
-            Delivery::Taken
-        } else {
-            Delivery::NoTurn
-        };
+        let d = submit(c, skipper, &line).await?;
         let msg = w.delivered(d, &line);
         log(&msg);
         w.after_delivery(d, &msg);
         w.register(c, &skipper.id).await?;
     }
     Ok(None)
+}
+
+/// Types `line` into the agent's pane and presses Enter. The check before it
+/// read the screen. The daemon refuses the line if the person typed after
+/// the list this step read.
+async fn submit(c: &Client, skipper: &SessionInfo, line: &str) -> Result<Delivery> {
+    let events = c.events();
+    Ok(if !c.submit(&skipper.id, line.as_bytes().to_vec(), true, true, skipper.input_gen).await? {
+        Delivery::Refused
+    } else if sessions::turn_started(c, &skipper.id, events).await? {
+        Delivery::Taken
+    } else {
+        Delivery::NoTurn
+    })
 }
 
 /// The agent can take a line: it is idle, an agent Skiff knows is in front,
@@ -942,6 +989,23 @@ mod tests {
     }
 
     #[test]
+    fn the_first_step_names_the_unreported_count_once() {
+        let mut w = Watcher::default();
+        w.count_unreported(4);
+        assert_eq!(w.unreported.as_deref(), Some("[watch] 4 done tasks not reported: skiff ledger ls --state done"));
+        // Once per run: a later count, or a new connection, adds nothing.
+        w.unreported = None;
+        w.count_unreported(5);
+        assert_eq!(w.unreported, None);
+        let mut w = Watcher::default();
+        w.count_unreported(0);
+        assert!(w.counted && w.unreported.is_none());
+        let mut w = Watcher::default();
+        w.count_unreported(1);
+        assert_eq!(w.unreported.as_deref(), Some("[watch] 1 done task not reported: skiff ledger ls --state done"));
+    }
+
+    #[test]
     fn only_the_agents_session_is_watched() {
         let mut agent = info("abc12345", "idle", false);
         agent.coordinator = true;
@@ -1026,6 +1090,7 @@ mod tests {
             updated_at: String::new(),
             task_type: None,
             socket: None,
+            reported_at: None,
             elsewhere: false,
             live: None,
             interrupted: None,

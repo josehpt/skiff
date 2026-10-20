@@ -54,7 +54,8 @@ under Settings › Skiff agent. Its
 `AGENTS.md` is the user's standing authorization to send tasks to sessions in Skiff
 projects. Its ledger lists the open and pending tasks, with pane ids and result
 paths. It is `ledger.db` in its folder. Read and change it only with
-`skiff ledger ls`, `add`, `send`, `update`, `show` and `rm`. Never edit the file.
+`skiff ledger ls`, `add`, `send`, `update`, `show`, `report`, `prune` and `rm`.
+Never edit the file.
 
 A person opens the Skiff agent from its row in the app, or with `skiff skipper`
 from any terminal, an SSH login included. `skiff skipper` attaches to the Skiff
@@ -88,14 +89,28 @@ attach.
   tasks are done, else `sent`.
 - A task sent on another daemon shows `elsewhere` in LIVE and names its socket.
   It is not gone. Leave it to that daemon's Skiff agent.
-- Only the Skiff agent session that owns the ledger adds, sends, updates or
-  removes rows. `skiff skipper` and its watcher record that session. Other
+- Only the Skiff agent session that owns the ledger adds, sends, updates,
+  reports or removes rows. `skiff skipper` and its watcher record that session. Other
   agent panes get a refusal that names the owner and its socket. A person
   changes rows from a shell pane or a terminal outside Skiff.
 - A gone pane cannot be marked seen. Its `[watch]` line names its open tasks.
   Reassign each one with `skiff ledger update UID --pane S --state pending`,
   or close it with `skiff ledger update UID --state done`.
-- `skiff ledger rm` removes the row only. The result files stay.
+- `skiff ledger rm` removes one row at once. Use `report`, and later `prune`,
+  for finished work. The result files stay.
+- `skiff ledger ls` shows open work and done tasks not yet reported. `--all`
+  shows every row. `--reported` shows only reported rows. `--state S` filters
+  inside that list: `ls --state done` lists the done tasks to report.
+- `skiff ledger report UID...` marks done tasks as told to the person. Run it
+  in the same turn as the report. A plan's uid reports its done tasks. A task
+  that is not done is refused. `--all` reports every done task. A task set to
+  another state than `done` loses its mark.
+- `skiff ledger prune [--older-than 7d] [--yes]` removes rows reported longer
+  ago than the age, and a plan with its last task. It never removes an
+  unreported or open row. Without `--yes`, it prints the rows and changes
+  nothing.
+- At its start, `skiff watch` sends one line when done tasks wait for a report:
+  `[watch] N done tasks not reported: skiff ledger ls --state done`.
 - `--type TYPE` on `ledger add` stores the task type the task went out as.
   `ls` and `show` print it. Skiff does not act on it.
 

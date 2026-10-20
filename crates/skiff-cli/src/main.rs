@@ -226,7 +226,7 @@ enum Cmd {
         cmd: OpenWithCmd,
     },
     /// The Skiff agent's task ledger: ledger.db in its folder.
-    #[command(after_help = "States: sent, pending (not delivered: the pane was working), blocked (the pane needs the user), done.\nls and show print interrupted for a sent or blocked task whose pane restarted since the send: a restore runs a new shell under the old pane id. They print gone for an open task whose pane no longer exists. A task sent on another daemon shows elsewhere in LIVE and its socket: it is never gone from here, and send refuses it. A plan with tasks shows done when every task is done, else sent.\nID is the row number or the 8-character uid that add prints. Neither is ever reused.\nResults: a task writes to results/<date>-<uid>-<slug>.md next to the ledger; a plan owns results/<date>-<uid>-<slug>/ with plan.md, and its tasks write <uid>-<slug>.md in that folder. add stores and prints the path and makes no file. rm keeps the files.\nThe ledger is ~/skiff-agent/ledger.db, or ledger.db in the [skiff_agent] folder override. On a socket other than the live one, it is in the socket's private state. SKIFF_LEDGER overrides the path.\nOne owner: add, send, update and rm refuse unless the caller is the Skiff agent session that owns the ledger. skiff skipper and the agent's watcher record it; a new Skiff agent session on the owner's daemon, or on the live daemon, takes it over. The refusal names the owner and its socket. A shell pane, or a shell outside Skiff, is a person and may change rows. ls and show work from anywhere.\nOn first use, an old ledger.md next to it is imported and kept as ledger.md.bak.")]
+    #[command(after_help = "States: sent, pending (not delivered: the pane was working), blocked (the pane needs the user), done.\nls and show print interrupted for a sent or blocked task whose pane restarted since the send: a restore runs a new shell under the old pane id. They print gone for an open task whose pane no longer exists. A task sent on another daemon shows elsewhere in LIVE and its socket: it is never gone from here, and send refuses it. A plan with tasks shows done when every task is done, else sent.\nID is the row number or the 8-character uid that add prints. Neither is ever reused.\nResults: a task writes to results/<date>-<uid>-<slug>.md next to the ledger; a plan owns results/<date>-<uid>-<slug>/ with plan.md, and its tasks write <uid>-<slug>.md in that folder. add stores and prints the path and makes no file. rm and prune keep the files.\nReported: report stamps a done task once the person was told. ls hides it from then on. An update to a state other than done clears the stamp. prune removes reported rows after a while.\nThe ledger is ~/skiff-agent/ledger.db, or ledger.db in the [skiff_agent] folder override. On a socket other than the live one, it is in the socket's private state. SKIFF_LEDGER overrides the path.\nOne owner: add, send, update, report, prune and rm refuse unless the caller is the Skiff agent session that owns the ledger. skiff skipper and the agent's watcher record it; a new Skiff agent session on the owner's daemon, or on the live daemon, takes it over. The refusal names the owner and its socket. A shell pane, or a shell outside Skiff, is a person and may change rows. ls and show work from anywhere.\nOn first use, an old ledger.md next to it is imported and kept as ledger.md.bak.")]
     Ledger {
         #[command(subcommand)]
         cmd: LedgerCmd,
@@ -314,12 +314,19 @@ pub enum LedgerCmd {
         #[arg(long = "type", value_name = "TYPE")]
         task_type: Option<String>,
     },
-    /// List tasks, oldest first, each plan's tasks under it. LIVE says if
-    /// the pane still exists.
+    /// List open work and done tasks not yet reported, oldest first, each
+    /// plan's tasks under it. LIVE says if the pane still exists.
+    #[command(after_help = "A plan shows while one of its tasks shows. --state filters inside the list: --state done lists the done tasks not yet reported.")]
     Ls {
         /// sent, pending, blocked, done, interrupted or gone.
         #[arg(long)]
         state: Option<String>,
+        /// Every row, reported ones included.
+        #[arg(long, conflicts_with = "reported")]
+        all: bool,
+        /// Only the reported rows.
+        #[arg(long)]
+        reported: bool,
         #[arg(long)]
         json: bool,
     },
@@ -329,7 +336,28 @@ pub enum LedgerCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Take a task out of the ledger. Its result file stays.
+    /// Mark done tasks as told to the person. ls hides them from then on.
+    #[command(
+        after_help = "A task that is not done is refused, and nothing changes. A reported task keeps its first stamp.\nA plan's ID reports its done tasks and leaves its open ones."
+    )]
+    Report {
+        #[arg(required_unless_present = "all", value_name = "ID")]
+        ids: Vec<String>,
+        /// Every done task not yet reported.
+        #[arg(long, conflicts_with = "ids")]
+        all: bool,
+    },
+    /// Remove reported rows, and plans whose last tasks they are. Unreported
+    /// and open rows stay. Without --yes, it prints the rows and changes nothing.
+    Prune {
+        /// Remove rows reported longer ago than this: 7d, 12h, 30m.
+        #[arg(long, value_name = "AGE", default_value = "7d")]
+        older_than: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Take a row out of the ledger now. Its result file stays. For finished
+    /// work, use report, and later prune.
     Rm { id: String },
 }
 

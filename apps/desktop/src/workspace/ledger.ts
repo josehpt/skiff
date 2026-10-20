@@ -3,13 +3,14 @@
  * only while Skipper's pane is the one pane on screen. Focus mode keeps it;
  * maximize hides it with the other chrome.
  *
- * Two parts, always visible. On top, the live queue: done and not reported
- * (oldest finished first, the next to leave), then the work in progress in
- * send order, then the pending work. A row that needs the person turns amber
- * where it is. Under it, Finished: the reported items, newest first, the
- * last 20. A plan is a head row with its tasks always open under it, and it
- * counts as one item. Rows slide to their new place, flash on a change and
- * fade in; a report slides the row down into Finished.
+ * Three sections, each shown when it has work. Working: an agent is on the
+ * work now (a sent task whose pane works or ended its turn), in send order.
+ * Open: the work is not closed and no agent is on it: the rows that need the
+ * person first, then done tasks, then the rest. A row that needs the person
+ * turns amber. Finished: the work Skipper closed on the person's word, newest
+ * first, the last 20. A plan is a head row with its tasks always open under
+ * it, and it counts as one item. Rows slide to their new place, flash on a
+ * change and fade in; a close slides the work down into Finished.
  *
  * A click on a row does the main action for its state: open the pane or the
  * result. Small icons at the right edge do the rest, only when they apply:
@@ -51,7 +52,8 @@ interface Entry {
   state: "sent" | "pending" | "blocked" | "done";
   result_path: string | null;
   updated_at: string;
-  reported_at: string | null;
+  /** When the person closed the work. Only a plan, or a task with no plan, has it. */
+  closed_at: string | null;
   /** The pane is on another daemon. */
   elsewhere?: boolean;
   result_exists: boolean;
@@ -72,8 +74,8 @@ const WHY: Partial<Record<State, string>> = {
 /** The order of the needs, most urgent first: a plan shows the first its tasks have. */
 const URGENT: State[] = ["approval", "blocked", "interrupted", "gone", "exited"];
 
-/** The part of the queue a state sits in: 0 finished (top), 1 in progress, 2 not sent yet. */
-const zone = (st: State) => (st === "done" ? 0 : st === "pending" ? 2 : 1);
+/** The order in Open: needs the person, then done, then the rest. */
+const rank = (st: State) => (NEED[st] ? 0 : st === "done" ? 1 : 2);
 
 /** Finished keeps this many items. A plan counts as one. */
 const KEEP = 20;
@@ -94,10 +96,10 @@ interface Unit {
   st: State;
   look?: Look;
   kids?: Look[];
-  /** When it was reported. `null`: it is in the queue. */
-  reported: string | null;
-  /** When it finished: its last update, or its last task's. */
-  done: string;
+  /** When the work was closed. `null`: it is open. */
+  closed: string | null;
+  /** An agent is on one of its tasks now. */
+  working: boolean;
 }
 
 let rows: Entry[] = [];
@@ -171,8 +173,6 @@ function planState(kids: Look[]): State {
   return "sent";
 }
 
-const latest = (xs: string[]) => xs.reduce((a, b) => (b > a ? b : a), "");
-
 /** Every item, in ledger order. */
 function units(): Unit[] {
   const plans = new Set(rows.filter((r) => r.kind === "plan").map((r) => r.uid));
@@ -183,41 +183,49 @@ function units(): Unit[] {
       if (!kids.length) {
         // A plan with no task stands by its own state.
         const st: State = r.state === "done" || r.state === "pending" || r.state === "blocked" ? r.state : "sent";
-        out.push({ r, st, kids, reported: st === "done" ? r.reported_at : null, done: r.updated_at });
+        out.push({ r, st, kids, closed: r.closed_at, working: false });
         continue;
       }
-      const all = kids.every((k) => k.r.state === "done" && k.r.reported_at);
-      out.push({ r, st: planState(kids), kids, reported: all ? latest(kids.map((k) => k.r.reported_at!)) : null, done: latest(kids.map((k) => k.r.updated_at)) });
+      out.push({ r, st: planState(kids), kids, closed: r.closed_at, working: kids.some((k) => k.st === "sent") });
     } else if (!r.parent || !plans.has(r.parent)) {
       const l = look(r);
-      out.push({ r, st: l.st, look: l, reported: r.state === "done" ? r.reported_at : null, done: r.updated_at });
+      out.push({ r, st: l.st, look: l, closed: r.closed_at, working: l.st === "sent" });
     }
   }
   return out;
 }
 
-/** The queue: done first, oldest finished on top; then in progress and pending, in send order. */
-function queue(us: Unit[]): Unit[] {
-  const key = (u: Unit) => (u.st === "done" ? u.done : "");
-  return us.filter((u) => !u.reported).sort((a, b) => zone(a.st) - zone(b.st) || key(a).localeCompare(key(b)) || a.r.id - b.r.id);
+/** The three sections. */
+interface Sections {
+  working: Unit[];
+  open: Unit[];
+  finished: Unit[];
 }
 
-/** Finished: the reported items, newest first, the last [`KEEP`]. */
-function finished(us: Unit[]): Unit[] {
+/** Working and Open in send order, Open by its rank first; Finished newest closed first, the last [`KEEP`]. */
+function sections(us: Unit[]): Sections {
+  const live = us.filter((u) => !u.closed);
+  return {
+    working: live.filter((u) => u.working),
+    open: live.filter((u) => !u.working).sort((a, b) => rank(a.st) - rank(b.st) || a.r.id - b.r.id),
+    finished: us
+      .filter((u) => u.closed)
+      .sort((a, b) => b.closed!.localeCompare(a.closed!) || b.r.id - a.r.id)
+      .slice(0, KEEP),
+  };
+}
+
+/** The tasks of work not closed that need the person. */
+function needing(us: Unit[]): number {
   return us
-    .filter((u) => u.reported)
-    .sort((a, b) => b.reported!.localeCompare(a.reported!) || b.r.id - a.r.id)
-    .slice(0, KEEP);
-}
-
-/** The tasks in the queue that need the person. */
-function needing(q: Unit[]): number {
-  return q.flatMap((u) => u.kids ?? (u.look ? [u.look] : [])).filter((l) => NEED[l.st]).length;
+    .filter((u) => !u.closed)
+    .flatMap((u) => u.kids ?? (u.look ? [u.look] : []))
+    .filter((l) => NEED[l.st]).length;
 }
 
 /** The count on Skipper's row. */
 export function ledgerNeeds(): number {
-  return needing(queue(units()));
+  return needing(units());
 }
 
 /** The panel shows while Skipper's pane is the one pane on screen. */
@@ -382,10 +390,10 @@ function unitRows(u: Unit, fin: boolean): HTMLElement[] {
 }
 
 /** What the list draws. The panel is rebuilt only when it changes. */
-function signature(q: Unit[], f: Unit[]): string {
-  const look = (l: Look) => [l.r.id, l.r.state, l.r.title, l.r.task, l.r.reported_at, l.r.result_exists, l.st, l.where, opens(l)];
+function signature(x: Sections): string {
+  const look = (l: Look) => [l.r.id, l.r.state, l.r.title, l.r.task, l.r.result_exists, l.st, l.where, opens(l)];
   const unit = (u: Unit) => [u.r.id, u.st, u.r.title, u.r.task, u.r.result_exists, u.look ? look(u.look) : null, u.kids?.map(look)];
-  return JSON.stringify([error, q.map(unit), f.map(unit)]);
+  return JSON.stringify([error, x.working.map(unit), x.open.map(unit), x.finished.map(unit)]);
 }
 
 const still = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -472,7 +480,7 @@ function renderRail(panel: HTMLElement) {
   }
   foldTip(rail.querySelector(".lg-fold")!, "Show the Ledger");
   const count = rail.querySelector<HTMLElement>(".lg-rail-need")!;
-  const n = needing(queue(units()));
+  const n = needing(units());
   count.hidden = !n;
   count.textContent = String(n);
   count.title = `${n} ledger ${n === 1 ? "task needs" : "tasks need"} you`;
@@ -496,9 +504,8 @@ export function renderLedger() {
     return;
   }
   const us = units();
-  const q = queue(us);
-  const f = finished(us);
-  const sig = signature(q, f);
+  const x = sections(us);
+  const sig = signature(x);
   let list = panel.querySelector<HTMLElement>(".lg-list");
   let need = panel.querySelector<HTMLElement>(".lg-need");
   const fold = panel.querySelector<HTMLElement>(".lg-head .lg-fold");
@@ -518,7 +525,7 @@ export function renderLedger() {
     list = h("div", "lg-list");
     panel.replaceChildren(head, list);
   }
-  const n = needing(q);
+  const n = needing(us);
   need.hidden = !n;
   need.textContent = `${n} need${n === 1 ? "s" : ""} you`;
 
@@ -528,9 +535,11 @@ export function renderLedger() {
 
   const out: HTMLElement[] = [];
   if (error) out.push(h("div", "lg-empty", error));
-  for (const u of q) out.push(...unitRows(u, false));
-  out.push(h("div", "lg-fin-label", "Finished"));
-  for (const u of f) out.push(...unitRows(u, true));
+  for (const [label, part, fin] of [["Working", x.working, false], ["Open", x.open, false], ["Finished", x.finished, true]] as const) {
+    if (!part.length) continue;
+    out.push(h("div", "lg-sec", label));
+    for (const u of part) out.push(...unitRows(u, fin));
+  }
   list.replaceChildren(...out);
   if (move) animate(list, before);
   drawn = loaded;

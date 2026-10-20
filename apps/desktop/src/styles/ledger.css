@@ -74,13 +74,14 @@
 .lg-row.need .lg-pane { color: var(--state-waiting-text); }
 .lg-row:is(.s-interrupted, .s-gone).need .lg-dot { background: transparent; box-shadow: inset 0 0 0 1.5px var(--state-waiting); }
 
-/* Finished: a grey list under the queue, newest first. */
-.lg-fin-label {
+/* A section label: Working, Open, Finished. The first one sits at the top with no rule. */
+.lg-sec {
   height: calc(20 * var(--u)); margin-top: calc(10 * var(--u)); padding: 0 calc(16 * var(--u));
   display: flex; align-items: center;
   border-top: 1px solid var(--rule);
   font-size: calc(11px * var(--zoom, 1)); color: var(--text-dim);
 }
+.lg-list > .lg-sec:first-child { margin-top: 0; border-top: 0; }
 .lg-row.fin { opacity: 0.55; }
 .lg-row.fin .lg-dot { background: var(--state-done); box-shadow: none; }
 .lg-row.fin :is(.lg-title, .lg-pane, .lg-n) { color: var(--text-dim); }

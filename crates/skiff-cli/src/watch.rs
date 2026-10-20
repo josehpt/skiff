@@ -482,7 +482,7 @@ impl Watcher {
             return;
         }
         let tasks = if n == 1 { "task" } else { "tasks" };
-        self.unreported = Some(format!("[watch] {n} done {tasks} not reported: skiff ledger ls --state done"));
+        self.unreported = Some(format!("[watch] {n} done {tasks} not reported: skiff ledger ls --unreported"));
     }
 
     /// Settles the held lines after a delivery, and says what to log. A line
@@ -992,7 +992,7 @@ mod tests {
     fn the_first_step_names_the_unreported_count_once() {
         let mut w = Watcher::default();
         w.count_unreported(4);
-        assert_eq!(w.unreported.as_deref(), Some("[watch] 4 done tasks not reported: skiff ledger ls --state done"));
+        assert_eq!(w.unreported.as_deref(), Some("[watch] 4 done tasks not reported: skiff ledger ls --unreported"));
         // Once per run: a later count, or a new connection, adds nothing.
         w.unreported = None;
         w.count_unreported(5);
@@ -1002,7 +1002,7 @@ mod tests {
         assert!(w.counted && w.unreported.is_none());
         let mut w = Watcher::default();
         w.count_unreported(1);
-        assert_eq!(w.unreported.as_deref(), Some("[watch] 1 done task not reported: skiff ledger ls --state done"));
+        assert_eq!(w.unreported.as_deref(), Some("[watch] 1 done task not reported: skiff ledger ls --unreported"));
     }
 
     #[test]
@@ -1092,6 +1092,9 @@ mod tests {
             socket: None,
             reported_at: None,
             title: None,
+            closed_at: None,
+            bucket: None,
+            agent_on: false,
             elsewhere: false,
             live: None,
             interrupted: None,

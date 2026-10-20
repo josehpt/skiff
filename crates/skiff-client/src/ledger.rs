@@ -6,7 +6,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
-use skiff_core::{session::SessionInfo, state};
+use skiff_core::{
+    session::{SessionInfo, SessionState},
+    state,
+};
 
 /// Shown in place of `sent` or `blocked` when the pane restarted since the
 /// send. Never stored: the pane generation tells it.
@@ -16,11 +19,19 @@ pub const INTERRUPTED: &str = "interrupted";
 pub const GONE: &str = "gone";
 
 /// The schema version, in `user_version`. 4 added `tasks.socket` and
-/// `owner`, 5 added `tasks.reported_at`, 6 added `tasks.title`; an older
-/// file from version 3 on takes each in place, with its rows.
-pub const VERSION: i64 = 6;
+/// `owner`, 5 added `tasks.reported_at`, 6 added `tasks.title`, 7 added
+/// `tasks.closed_at`; an older file from version 3 on takes each in place,
+/// with its rows.
+pub const VERSION: i64 = 7;
 
-pub const COLUMNS: &str = "id, uid, kind, parent, pane_id, pane_gen, project, task, sent_at, state, result_path, ref, updated_at, type, socket, reported_at, title";
+pub const COLUMNS: &str = "id, uid, kind, parent, pane_id, pane_gen, project, task, sent_at, state, result_path, ref, updated_at, type, socket, reported_at, title, closed_at";
+
+/// Where work stands. Never stored: the close stamp, the task states and the
+/// panes tell it. An agent is on working work now; open work waits for the
+/// person or for Skipper; finished work is closed.
+pub const WORKING: &str = "working";
+pub const OPEN: &str = "open";
+pub const FINISHED: &str = "finished";
 
 #[derive(Serialize, Clone)]
 pub struct Row {
@@ -54,6 +65,18 @@ pub struct Row {
     /// A short title, 3 to 6 words, for the app's panel. `None`: the panel
     /// takes one from the task text.
     pub title: Option<String>,
+    /// When the person closed the work. Only a work head has it: a plan, or a
+    /// task with no plan. A task in a plan is closed with its plan. `None`:
+    /// the work is open.
+    pub closed_at: Option<String>,
+    /// [`WORKING`], [`OPEN`] or [`FINISHED`], for the whole work. Set by
+    /// [`buckets`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bucket: Option<&'static str>,
+    /// An agent is on this task now. Set by the caller from the sessions:
+    /// see [`Row::agent_on_in`].
+    #[serde(skip)]
+    pub agent_on: bool,
     /// The socket is not this skiff's: no check of the pane was made.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub elsewhere: bool,
@@ -86,6 +109,20 @@ impl Row {
             && s.and_then(gen).is_some_and(|g| Some(g) != self.pane_gen)
     }
 
+    /// The uid of the work the row belongs to: its plan's, else its own.
+    pub fn work(&self) -> &str {
+        self.parent.as_deref().unwrap_or(&self.uid)
+    }
+
+    /// A sent task whose pane `s` still runs its program, and works or ended
+    /// its turn: the result is on its way. A pane that waits for approval,
+    /// exited, restarted or is gone needs the person instead.
+    pub fn agent_on_in(&self, s: Option<&SessionInfo>) -> bool {
+        self.state == "sent"
+            && !self.interrupted_in(s)
+            && s.is_some_and(|s| s.agent_exit.is_none() && matches!(s.state, SessionState::Working | SessionState::Idle))
+    }
+
     /// The state as `ls` shows it.
     pub fn shown_state(&self) -> &str {
         if self.interrupted == Some(true) {
@@ -114,7 +151,7 @@ pub fn gen(s: &SessionInfo) -> Option<i64> {
 }
 
 /// Opens the ledger read-only, for a reader that must not change it: no
-/// migration, no new file. A file without `tasks.title` (older than
+/// migration, no new file. A file without `tasks.closed_at` (older than
 /// [`VERSION`]) is refused: any `skiff ledger` command brings it up to date.
 /// The columns decide, not `user_version`: an older skiff stamps its own
 /// lower version on a file that has every column.
@@ -122,7 +159,7 @@ pub fn open_read(file: &Path) -> Result<Connection> {
     let db = Connection::open_with_flags(file, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)
         .with_context(|| format!("open {}", file.display()))?;
     db.busy_timeout(std::time::Duration::from_secs(2))?;
-    let n: i64 = db.query_row("SELECT count(*) FROM pragma_table_info('tasks') WHERE name = 'title'", [], |r| r.get(0))?;
+    let n: i64 = db.query_row("SELECT count(*) FROM pragma_table_info('tasks') WHERE name = 'closed_at'", [], |r| r.get(0))?;
     if n == 0 {
         bail!("the ledger is older than version {VERSION}. Run any `skiff ledger` command to update it");
     }
@@ -151,6 +188,9 @@ pub fn rows(db: &Connection, where_: &str, arg: Option<&dyn rusqlite::ToSql>) ->
             socket: r.get(14)?,
             reported_at: r.get(15)?,
             title: r.get(16)?,
+            closed_at: r.get(17)?,
+            bucket: None,
+            agent_on: false,
             elsewhere: false,
             live: None,
             interrupted: None,
@@ -182,6 +222,24 @@ pub fn roll_up(rows: &mut [Row]) {
     }
 }
 
+/// Sets each row's bucket from its work: [`FINISHED`] once the work head is
+/// closed, else [`WORKING`] while an agent is on one of its tasks, else
+/// [`OPEN`]. Set `agent_on` first.
+pub fn buckets(rows: &mut [Row]) {
+    use std::collections::HashSet;
+    let closed: HashSet<String> = rows.iter().filter(|r| r.closed_at.is_some()).map(|r| r.uid.clone()).collect();
+    let working: HashSet<String> = rows.iter().filter(|r| r.agent_on).map(|r| r.work().to_string()).collect();
+    for r in rows.iter_mut() {
+        r.bucket = Some(if closed.contains(r.work()) {
+            FINISHED
+        } else if working.contains(r.work()) {
+            WORKING
+        } else {
+            OPEN
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,9 +250,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("ledger.db");
-        // Version 5: no title. Refused.
+        // Version 6: no closed_at. Refused.
         let db = Connection::open(&file).unwrap();
-        db.execute_batch("CREATE TABLE tasks (id INTEGER PRIMARY KEY, uid TEXT, socket TEXT, reported_at TEXT); PRAGMA user_version = 5;").unwrap();
+        db.execute_batch("CREATE TABLE tasks (id INTEGER PRIMARY KEY, uid TEXT, socket TEXT, reported_at TEXT, title TEXT); PRAGMA user_version = 6;").unwrap();
         assert!(open_read(&file).unwrap_err().to_string().contains("skiff ledger"));
         drop(db);
         std::fs::remove_file(&file).unwrap();
@@ -202,7 +260,7 @@ mod tests {
         let db = Connection::open(&file).unwrap();
         db.execute_batch(&format!(
             "CREATE TABLE tasks (id INTEGER PRIMARY KEY, uid TEXT, kind TEXT, parent TEXT, pane_id TEXT, pane_gen INTEGER, project TEXT,
-               task TEXT, sent_at TEXT, state TEXT, result_path TEXT, ref TEXT, updated_at TEXT, type TEXT, socket TEXT, reported_at TEXT, title TEXT);
+               task TEXT, sent_at TEXT, state TEXT, result_path TEXT, ref TEXT, updated_at TEXT, type TEXT, socket TEXT, reported_at TEXT, title TEXT, closed_at TEXT);
              INSERT INTO tasks (uid, kind, project, task, sent_at, state, updated_at) VALUES ('a1b2c3d4', 'plan', '', 'p', 'x', 'sent', 'x');
              INSERT INTO tasks (uid, kind, parent, project, task, sent_at, state, updated_at) VALUES ('e5f6a7b8', 'task', 'a1b2c3d4', '', 't', 'x', 'done', 'x');
              PRAGMA user_version = {};",

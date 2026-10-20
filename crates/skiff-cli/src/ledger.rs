@@ -14,7 +14,7 @@ use skiff_core::{
 
 use crate::{print, resolve, sessions, LedgerCmd};
 pub use skiff_client::ledger::{path, Row};
-use skiff_client::ledger::{gen, plan_state, roll_up, rows, GONE, INTERRUPTED, VERSION};
+use skiff_client::ledger::{buckets, gen, roll_up, rows, GONE, INTERRUPTED, OPEN, VERSION, WORKING};
 
 const STATES: [&str; 4] = ["sent", "pending", "blocked", "done"];
 const TASKS: &str = "
@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   type        TEXT,
   socket      TEXT,
   reported_at TEXT,
-  title       TEXT
+  title       TEXT,
+  closed_at   TEXT
 );
 ";
 
@@ -99,13 +100,16 @@ fn open_at(file: &Path) -> Result<Connection> {
 ///   cannot tell what the person saw.
 /// - 5 to 6: `title`. Every row stays with none: the app takes one from the
 ///   task text.
+/// - 6 to 7: `closed_at`. All work stays open: only the person can say that
+///   work is over.
 fn migrate(db: &mut Connection) -> Result<()> {
     add_column(db, "socket", |tx| {
         tx.execute("UPDATE tasks SET socket = ?1 WHERE kind = 'task'", [state::live_socket().display().to_string()])?;
         Ok(())
     })?;
     add_column(db, "reported_at", |_| Ok(()))?;
-    add_column(db, "title", |_| Ok(()))
+    add_column(db, "title", |_| Ok(()))?;
+    add_column(db, "closed_at", |_| Ok(()))
 }
 
 /// Adds the column `name TEXT` to `tasks` and runs `fill`, unless it is
@@ -278,60 +282,93 @@ fn one(db: &Connection, arg: &str) -> Result<Row> {
     found.into_iter().next().with_context(|| format!("no ledger row {arg}"))
 }
 
-/// The plan `arg` names. A task is no plan.
-fn plan(db: &Connection, arg: &str) -> Result<Row> {
-    let p = one(db, arg)?;
-    if !p.is_plan() {
-        bail!("ledger row {arg} is a task, not a plan. Make one with `skiff ledger add --plan --task \"...\"`");
+/// The work head `arg` names: a plan, or a task with no plan.
+fn head(db: &Connection, arg: &str) -> Result<Row> {
+    let r = one(db, arg)?;
+    if let Some(p) = &r.parent {
+        bail!("task {} is in plan {p}. Name the plan. Nothing changed", r.uid);
     }
-    Ok(p)
+    Ok(r)
 }
 
-/// Fills in `live` and `interrupted` from the sessions, when the daemon
-/// answers. A task of another socket is marked `elsewhere` and not checked.
+/// The plan a task joins with `--parent arg`: the plan `arg` names, or a new
+/// plan that wraps the task with no plan `arg` names. The new plan takes the
+/// task's text, title, project, ref, type, send time and close stamp. Closed
+/// work opens again: the task is new work in it. Run it in a transaction.
+fn join(db: &Connection, file: &Path, arg: &str) -> Result<Row> {
+    let r = head(db, arg)?;
+    if r.is_plan() {
+        db.execute("UPDATE tasks SET closed_at = NULL WHERE id = ?1", [r.id])?;
+        return one(db, &r.uid);
+    }
+    let uid = new_uid(db)?;
+    let date: String = db.query_row("SELECT date('now', 'localtime')", [], |r| r.get(0))?;
+    let result = result_path(file, &date, &uid, &r.task, true, None).display().to_string();
+    db.execute(
+        &format!(
+            "INSERT INTO tasks (uid, kind, project, task, sent_at, state, result_path, ref, updated_at, type, title)
+             VALUES (?1, 'plan', ?2, ?3, ?4, 'sent', ?5, ?6, {NOW}, ?7, ?8)"
+        ),
+        params![uid, r.project, r.task, r.sent_at, result, r.reference, r.task_type, r.title],
+    )?;
+    db.execute(&format!("UPDATE tasks SET parent = ?2, closed_at = NULL, updated_at = {NOW} WHERE id = ?1"), params![r.id, uid])?;
+    one(db, &uid)
+}
+
+/// Fills in `live`, `interrupted` and `agent_on` from the sessions, when the
+/// daemon answers, then each row's bucket. A task of another socket is
+/// marked `elsewhere` and not checked. A sent task that cannot be checked
+/// counts as worked on.
 async fn mark_live(socket: &Path, rows: &mut [Row]) {
     for r in rows.iter_mut() {
         r.elsewhere = r.socket_other_than(socket).is_some();
+        r.agent_on = !r.is_plan() && r.state == "sent";
     }
     if let Some(all) = live(socket).await {
         for r in rows.iter_mut().filter(|r| !r.is_plan() && !r.elsewhere) {
             let s = r.pane_id.as_deref().and_then(|p| resolve::session(&all, p).ok());
             r.live = Some(s.is_some());
             r.interrupted = Some(r.interrupted_in(s));
+            r.agent_on = r.agent_on_in(s);
         }
     }
+    buckets(rows);
 }
 
 /// Which rows `ls` lists.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum View {
-    /// Open work, and done work the person was not told of.
+    /// The work that is not closed.
     Open,
+    /// Only closed work.
+    Closed,
     All,
-    /// Only the rows the person was told of.
-    Reported,
+    /// Only the done tasks the person was not told of, under their plans.
+    Unreported,
 }
 
-impl View {
-    fn takes(self, r: &Row) -> bool {
-        match self {
-            View::Open => r.state != "done" || r.reported_at.is_none(),
-            View::All => true,
-            View::Reported => r.reported_at.is_some(),
-        }
-    }
-}
-
-/// Keeps the rows in `view`. A plan stays while one of its tasks stays; a
-/// plan with no task stands on its own state and stamp. Run it after
-/// [`roll_up`].
+/// Keeps the rows in `view`. A work's rows go together: a task in a plan is
+/// closed with its plan.
 fn keep(rows: &mut Vec<Row>, view: View) {
-    let kept: std::collections::HashSet<String> = rows.iter().filter(|r| !r.is_plan() && view.takes(r)).filter_map(|r| r.parent.clone()).collect();
-    let parents: std::collections::HashSet<String> = rows.iter().filter(|r| !r.is_plan()).filter_map(|r| r.parent.clone()).collect();
-    rows.retain(|r| match (r.is_plan(), parents.contains(&r.uid)) {
-        (true, true) => kept.contains(&r.uid),
-        _ => view.takes(r),
+    use std::collections::HashSet;
+    let closed: HashSet<String> = rows.iter().filter(|r| r.closed_at.is_some()).map(|r| r.uid.clone()).collect();
+    let untold = |r: &Row| !r.is_plan() && r.state == "done" && r.reported_at.is_none();
+    let plans: HashSet<String> = rows.iter().filter(|r| untold(r)).filter_map(|r| r.parent.clone()).collect();
+    rows.retain(|r| match view {
+        View::Open => !closed.contains(r.work()),
+        View::Closed => closed.contains(r.work()),
+        View::All => true,
+        View::Unreported => untold(r) || plans.contains(&r.uid),
     });
+}
+
+/// The order of the groups in `ls`.
+fn rank(bucket: Option<&str>) -> u8 {
+    match bucket {
+        Some(WORKING) => 0,
+        Some(OPEN) => 1,
+        _ => 2,
+    }
 }
 
 /// Each plan with its tasks under it, by id. A task whose plan is not in
@@ -360,8 +397,9 @@ fn shown_path(p: &str) -> String {
     }
 }
 
-/// `reported`: add the REPORTED column.
-fn print_rows(rows: &[(Row, bool)], reported: bool) {
+/// Rows grouped by bucket. WORK names each group on its first row. `closed`:
+/// add the CLOSED column, the work head's stamp.
+fn print_rows(rows: &[(Row, bool)], closed: bool) {
     let yn = |l: Option<bool>| match l {
         Some(true) => "yes",
         Some(false) => "no",
@@ -372,8 +410,11 @@ fn print_rows(rows: &[(Row, bool)], reported: bool) {
     let sockets = rows.iter().any(|(r, _)| r.elsewhere);
     let table: Vec<Vec<String>> = rows
         .iter()
-        .map(|(r, child)| {
+        .enumerate()
+        .map(|(i, (r, child))| {
+            let first = i == 0 || rows[i - 1].0.bucket != r.bucket;
             let mut row = vec![
+                if first { r.bucket.unwrap_or_default().to_string() } else { String::new() },
                 if *child { format!("└ {}", r.id) } else { r.id.to_string() },
                 r.uid.clone(),
                 r.shown_state().to_string(),
@@ -392,14 +433,14 @@ fn print_rows(rows: &[(Row, bool)], reported: bool) {
             if sockets {
                 row.push(if r.elsewhere { r.socket.clone().unwrap_or_default() } else { String::new() });
             }
-            if reported {
-                row.push(r.reported_at.clone().unwrap_or_default());
+            if closed {
+                row.push(r.closed_at.clone().unwrap_or_default());
             }
             row.push(r.task.clone());
             row
         })
         .collect();
-    let mut header = vec!["ID", "UID", "STATE", "PANE", "LIVE", "PROJECT", "SENT", "RESULT"];
+    let mut header = vec!["WORK", "ID", "UID", "STATE", "PANE", "LIVE", "PROJECT", "SENT", "RESULT"];
     if refs {
         header.push("REF");
     }
@@ -409,15 +450,16 @@ fn print_rows(rows: &[(Row, bool)], reported: bool) {
     if sockets {
         header.push("SOCKET");
     }
-    if reported {
-        header.push("REPORTED");
+    if closed {
+        header.push("CLOSED");
     }
     header.push("TASK");
     print::table(&header, &table);
 }
 
-/// One row, a field per line, as `show` prints it.
-fn print_one(r: &Row) {
+/// One row, a field per line, as `show` prints it. `closed`: the work
+/// head's stamp.
+fn print_one(r: &Row, closed: Option<&str>) {
     let yn = |l: Option<bool>| l.map_or("?", |l| if l { "yes" } else { "no" });
     let mut f: Vec<(&str, String)> = vec![("id", r.id.to_string()), ("uid", r.uid.clone()), ("kind", r.kind.clone()), ("state", r.shown_state().to_string())];
     if let Some(p) = &r.parent {
@@ -435,6 +477,8 @@ fn print_one(r: &Row) {
         ("sent", r.sent_at.clone()),
         ("updated", r.updated_at.clone()),
         ("reported", r.reported_at.clone().unwrap_or_else(|| "no".into())),
+        ("work", r.bucket.unwrap_or_default().to_string()),
+        ("closed", closed.unwrap_or("no").to_string()),
     ]);
     if let Some(p) = &r.result_path {
         f.push(("result", p.clone()));
@@ -471,10 +515,11 @@ struct New {
 }
 
 /// Adds a row with a new uid, and its default result path unless it names
-/// one. Returns the id, the uid and the result path.
-fn insert(db: &mut Connection, file: &Path, n: New) -> Result<(i64, String, String)> {
+/// one. A parent is joined as [`join`] does. Returns the id, the uid, the
+/// result path and the plan's uid.
+fn insert(db: &mut Connection, file: &Path, n: New) -> Result<(i64, String, String, Option<String>)> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let parent = n.parent.as_deref().map(|p| plan(&tx, p)).transpose()?;
+    let parent = n.parent.as_deref().map(|p| join(&tx, file, p)).transpose()?;
     let uid = new_uid(&tx)?;
     let result = match n.result {
         Some(r) => r,
@@ -488,11 +533,11 @@ fn insert(db: &mut Connection, file: &Path, n: New) -> Result<(i64, String, Stri
             "INSERT INTO tasks (uid, kind, parent, pane_id, pane_gen, project, task, sent_at, state, result_path, ref, updated_at, type, socket, title)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, {NOW}, ?8, ?9, ?10, {NOW}, ?11, ?12, ?13)"
         ),
-        params![uid, if n.plan { "plan" } else { "task" }, parent.map(|p| p.uid), n.pane_id, n.pane_gen, n.project, n.task, n.state, result, n.reference, n.task_type, n.socket, n.title],
+        params![uid, if n.plan { "plan" } else { "task" }, parent.as_ref().map(|p| &p.uid), n.pane_id, n.pane_gen, n.project, n.task, n.state, result, n.reference, n.task_type, n.socket, n.title],
     )?;
     let id = tx.last_insert_rowid();
     tx.commit()?;
-    Ok((id, uid, result))
+    Ok((id, uid, result, parent.map(|p| p.uid)))
 }
 
 /// The session that owns the ledger, and its socket.
@@ -720,12 +765,60 @@ fn report(db: &mut Connection, ids: &[String], all: bool) -> Result<usize> {
 }
 
 /// A row set to a state other than done opens again. That is new work: its
-/// stamp goes, and `ls` shows it once it is done.
-fn reopen(db: &Connection, id: i64, st: Option<&str>) -> Result<()> {
+/// report stamp goes, and its work opens again.
+fn restate(db: &Connection, r: &Row, st: Option<&str>) -> Result<()> {
     if st.is_some_and(|s| s != "done") {
-        db.execute("UPDATE tasks SET reported_at = NULL WHERE id = ?1", [id])?;
+        db.execute("UPDATE tasks SET reported_at = NULL WHERE id = ?1", [r.id])?;
+        db.execute("UPDATE tasks SET closed_at = NULL WHERE uid = ?1", [r.work()])?;
     }
     Ok(())
+}
+
+/// Stamps `closed_at` on the work `ids` name, in one transaction, and
+/// `reported_at` on its done tasks not yet reported. Work with a task that is
+/// not done refuses the lot. A first stamp stays. Returns how many work
+/// items took a new stamp.
+fn close(db: &mut Connection, ids: &[String]) -> Result<usize> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let mut n = 0;
+    for id in ids {
+        let r = head(&tx, id)?;
+        let tasks = if r.is_plan() { rows(&tx, "WHERE parent = ?1", Some(&r.uid))? } else { vec![r.clone()] };
+        if let Some(t) = tasks.iter().find(|t| t.state != "done") {
+            bail!("task {} is {}, not done. Set it done or remove it first. Nothing changed", t.uid, t.state);
+        }
+        if r.closed_at.is_some() {
+            continue;
+        }
+        tx.execute(
+            &format!("UPDATE tasks SET reported_at = {NOW} WHERE kind = 'task' AND state = 'done' AND reported_at IS NULL AND (id = ?1 OR parent = ?2)"),
+            params![r.id, r.uid],
+        )?;
+        n += tx.execute(&format!("UPDATE tasks SET closed_at = {NOW} WHERE id = ?1"), [r.id])?;
+    }
+    tx.commit()?;
+    Ok(n)
+}
+
+/// Clears `closed_at` on the work `ids` name, in one transaction. Returns how
+/// many work items were closed.
+fn reopen(db: &mut Connection, ids: &[String]) -> Result<usize> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let mut n = 0;
+    for id in ids {
+        let r = head(&tx, id)?;
+        n += tx.execute("UPDATE tasks SET closed_at = NULL WHERE id = ?1 AND closed_at IS NOT NULL", [r.id])?;
+    }
+    tx.commit()?;
+    Ok(n)
+}
+
+fn work_word(n: usize) -> &'static str {
+    if n == 1 {
+        "work item"
+    } else {
+        "work items"
+    }
 }
 
 fn rows_word(n: usize) -> &'static str {
@@ -749,25 +842,15 @@ fn age(s: &str) -> Result<i64> {
     Ok(n * unit)
 }
 
-/// The rows `prune` takes: done tasks reported at least `secs` ago, each
-/// plan whose last tasks they are, and each done plan with no task reported
-/// that long ago. Open and unreported rows never go. `yes`: delete them.
+/// The rows `prune` takes: the work closed at least `secs` ago, each with its
+/// tasks. Open work never goes. `yes`: delete them.
 fn prune(db: &mut Connection, secs: i64, yes: bool) -> Result<Vec<Row>> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let cutoff: String = tx.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?1)", [format!("-{secs} seconds")], |r| r.get(0))?;
-    let old = |r: &Row| r.state == "done" && r.reported_at.as_deref().is_some_and(|t| t <= cutoff.as_str());
     let all = rows(&tx, "", None)?;
-    let gone: Vec<Row> = all
-        .iter()
-        .filter(|r| {
-            let mut tasks = all.iter().filter(|t| !t.is_plan() && t.parent.as_deref() == Some(&r.uid)).peekable();
-            match (r.is_plan(), tasks.peek().is_some()) {
-                (true, true) => tasks.all(old),
-                _ => old(r),
-            }
-        })
-        .cloned()
-        .collect();
+    let old: std::collections::HashSet<&str> =
+        all.iter().filter(|r| r.closed_at.as_deref().is_some_and(|t| t <= cutoff.as_str())).map(|r| r.uid.as_str()).collect();
+    let gone: Vec<Row> = all.iter().filter(|r| old.contains(r.work())).cloned().collect();
     if yes {
         for r in &gone {
             // The row only: a result file stays where it is.
@@ -808,8 +891,11 @@ pub async fn run(socket: &Path, cmd: LedgerCmd, person: bool) -> Result<i32> {
             let new = New { plan: is_plan, parent, pane_id, pane_gen, project, task, title, state: st, result, reference, task_type, socket: here };
             let mut db = open_at(&file)?;
             check_writer(socket, &db, person).await?;
-            let (id, uid, result) = insert(&mut db, &file, new)?;
+            let (id, uid, result, plan) = insert(&mut db, &file, new)?;
             println!("id {id}\nuid {uid}\nresult {result}");
+            if let Some(p) = plan {
+                println!("plan {p}");
+            }
             if send {
                 let row = one(&db, &uid)?;
                 return send_row(socket, &db, &row, SendOpts { text: Vec::new(), enter, shell }).await;
@@ -824,7 +910,8 @@ pub async fn run(socket: &Path, cmd: LedgerCmd, person: bool) -> Result<i32> {
         LedgerCmd::Update { id, state: st, result, task, title, pane: p, project, parent, reference, task_type } => {
             let st = st.as_deref().map(state).transpose()?;
             let task_type = task_type.as_deref().map(skiff_core::tasks::check_name).transpose()?;
-            let db = open()?;
+            let file = path()?;
+            let mut db = open_at(&file)?;
             check_writer(socket, &db, person).await?;
             let row = one(&db, &id)?;
             if row.is_plan() && (p.is_some() || parent.is_some()) {
@@ -844,27 +931,35 @@ pub async fn run(socket: &Path, cmd: LedgerCmd, person: bool) -> Result<i32> {
                 }
                 _ => (None, None),
             };
-            let parent = parent.as_deref().map(|p| plan(&db, p)).transpose()?.map(|p| p.uid);
+            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            if parent.as_deref().is_some_and(|p| one(&tx, p).is_ok_and(|p| p.id == row.id)) {
+                bail!("task {} cannot join its own work. Nothing changed", row.uid);
+            }
+            let parent = parent.as_deref().map(|p| join(&tx, &file, p)).transpose()?.map(|p| p.uid);
             // A new pane is on this socket.
             let here = pane_id.as_ref().map(|_| socket.display().to_string());
-            db.execute(
+            tx.execute(
                 &format!(
                     "UPDATE tasks SET state = coalesce(?2, state), result_path = coalesce(?3, result_path), task = coalesce(?4, task),
                      pane_id = coalesce(?5, pane_id), project = coalesce(?6, project), parent = coalesce(?7, parent), ref = coalesce(?8, ref),
-                     pane_gen = CASE WHEN ?9 THEN ?10 ELSE pane_gen END, type = coalesce(?11, type), socket = coalesce(?12, socket), title = coalesce(?13, title), updated_at = {NOW} WHERE id = ?1"
+                     pane_gen = CASE WHEN ?9 THEN ?10 ELSE pane_gen END, type = coalesce(?11, type), socket = coalesce(?12, socket), title = coalesce(?13, title),
+                     closed_at = CASE WHEN ?7 IS NULL THEN closed_at END, updated_at = {NOW} WHERE id = ?1"
                 ),
                 params![row.id, st, result, task, pane_id, project, parent, reference, gen.is_some(), gen.flatten(), task_type, here, title],
             )?;
-            reopen(&db, row.id, st)?;
+            restate(&tx, &one(&tx, &row.uid)?, st)?;
+            tx.commit()?;
         }
-        LedgerCmd::Ls { state: st, all, reported, json } => {
+        LedgerCmd::Ls { state: st, all, closed, unreported, json } => {
             if let Some(s) = st.as_deref().filter(|s| *s != INTERRUPTED && *s != GONE) {
                 state(s)?;
             }
             let view = if all {
                 View::All
-            } else if reported {
-                View::Reported
+            } else if closed {
+                View::Closed
+            } else if unreported {
+                View::Unreported
             } else {
                 View::Open
             };
@@ -876,11 +971,13 @@ pub async fn run(socket: &Path, cmd: LedgerCmd, person: bool) -> Result<i32> {
             if let Some(s) = &st {
                 list.retain(|r| r.shown_state() == s);
             }
-            let list = tree(list);
+            let mut list = tree(list);
+            // Stable: each work keeps its tasks under it.
+            list.sort_by_key(|(r, _)| rank(r.bucket));
             if json {
                 print::json(&list.iter().map(|(r, _)| r).collect::<Vec<_>>())?;
             } else {
-                print_rows(&list, view != View::Open);
+                print_rows(&list, matches!(view, View::Closed | View::All));
             }
         }
         LedgerCmd::Report { ids, all } => {
@@ -889,13 +986,25 @@ pub async fn run(socket: &Path, cmd: LedgerCmd, person: bool) -> Result<i32> {
             let n = report(&mut db, &ids, all)?;
             println!("reported {n} {}", rows_word(n));
         }
+        LedgerCmd::Close { ids } => {
+            let mut db = open()?;
+            check_writer(socket, &db, person).await?;
+            let n = close(&mut db, &ids)?;
+            println!("closed {n} {}", work_word(n));
+        }
+        LedgerCmd::Reopen { ids } => {
+            let mut db = open()?;
+            check_writer(socket, &db, person).await?;
+            let n = reopen(&mut db, &ids)?;
+            println!("reopened {n} {}", work_word(n));
+        }
         LedgerCmd::Prune { older_than, yes } => {
             let secs = age(&older_than)?;
             let mut db = open()?;
             check_writer(socket, &db, person).await?;
             let mut gone = prune(&mut db, secs, yes)?;
             if gone.is_empty() {
-                println!("no row was reported more than {older_than} ago. Nothing changed");
+                println!("no work was closed more than {older_than} ago. Nothing changed");
                 return Ok(0);
             }
             let n = gone.len();
@@ -909,18 +1018,17 @@ pub async fn run(socket: &Path, cmd: LedgerCmd, person: bool) -> Result<i32> {
         }
         LedgerCmd::Show { id, json } => {
             let db = open()?;
-            let mut r = [one(&db, &id)?];
-            mark_live(socket, &mut r).await;
-            if r[0].is_plan() {
-                let tasks = rows(&db, "WHERE parent = ?1", Some(&r[0].uid))?;
-                if let Some(st) = plan_state(&r[0].uid, &tasks) {
-                    r[0].state = st.to_string();
-                }
-            }
+            let r = one(&db, &id)?;
+            // The whole work: a plan's state and the bucket come from its tasks.
+            let mut work = rows(&db, "WHERE uid = ?1 OR parent = ?1", Some(&r.work().to_string()))?;
+            mark_live(socket, &mut work).await;
+            roll_up(&mut work);
+            let closed = work.iter().find(|w| w.uid == r.work()).and_then(|w| w.closed_at.clone());
+            let r = work.into_iter().find(|w| w.uid == r.uid).context("the row left the ledger")?;
             if json {
-                print::json(&r[0])?;
+                print::json(&r)?;
             } else {
-                print_one(&r[0]);
+                print_one(&r, closed.as_deref());
             }
         }
         LedgerCmd::Rm { id } => {
@@ -984,7 +1092,7 @@ mod tests {
         let mut db = open_at(&file).unwrap();
         insert(&mut db, &file, task("fix bug")).unwrap();
         insert(&mut db, &file, New { state: "done".into(), ..task("seo") }).unwrap();
-        let (id, _, _) = insert(&mut db, &file, New { state: "pending".into(), task_type: Some("review".into()), ..task("docs") }).unwrap();
+        let (id, _, _, _) = insert(&mut db, &file, New { state: "pending".into(), task_type: Some("review".into()), ..task("docs") }).unwrap();
         let t = open_tasks_at(&file).unwrap();
         assert_eq!(t.iter().map(|r| (r.task.as_str(), r.state.as_str())).collect::<Vec<_>>(), [("fix bug", "sent"), ("docs", "pending")]);
         let r = one(&db, &id.to_string()).unwrap();
@@ -997,7 +1105,7 @@ mod tests {
         let dir = scratch("v3");
         let file = dir.join("ledger.db");
         {
-            let v3 = TASKS.replace("type        TEXT,\n  socket      TEXT,\n  reported_at TEXT,\n  title       TEXT", "type        TEXT");
+            let v3 = TASKS.replace("type        TEXT,\n  socket      TEXT,\n  reported_at TEXT,\n  title       TEXT,\n  closed_at   TEXT", "type        TEXT");
             assert!(!v3.contains("socket"));
             let db = Connection::open(&file).unwrap();
             db.execute_batch(&v3).unwrap();
@@ -1034,7 +1142,7 @@ mod tests {
         let dir = scratch("v4");
         let file = dir.join("ledger.db");
         {
-            let v4 = TASKS.replace(",\n  reported_at TEXT,\n  title       TEXT", "");
+            let v4 = TASKS.replace(",\n  reported_at TEXT,\n  title       TEXT,\n  closed_at   TEXT", "");
             assert!(!v4.contains("reported_at") && !v4.contains("title"));
             let db = Connection::open(&file).unwrap();
             db.execute_batch(&v4).unwrap();
@@ -1078,28 +1186,30 @@ mod tests {
     }
 
     #[test]
-    fn ls_shows_open_work_and_done_work_not_yet_reported() {
+    fn ls_lists_open_work_closed_work_and_untold_tasks() {
         let dir = scratch("view");
         let file = dir.join("ledger.db");
         let mut db = open_at(&file).unwrap();
         let done = |t: &str| New { state: "done".into(), ..task(t) };
-        let (_, open, _) = insert(&mut db, &file, task("open")).unwrap();
-        let (_, told, _) = insert(&mut db, &file, done("told")).unwrap();
-        let (_, untold, _) = insert(&mut db, &file, done("untold")).unwrap();
-        let (_, p, _) = insert(&mut db, &file, New { plan: true, pane_id: None, ..task("half") }).unwrap();
-        let (_, p_open, _) = insert(&mut db, &file, New { parent: Some(p.clone()), ..task("a") }).unwrap();
-        let (_, p_told, _) = insert(&mut db, &file, New { parent: Some(p.clone()), ..done("b") }).unwrap();
-        let (_, q, _) = insert(&mut db, &file, New { plan: true, pane_id: None, ..task("all told") }).unwrap();
-        let (_, q_told, _) = insert(&mut db, &file, New { parent: Some(q.clone()), ..done("c") }).unwrap();
-        assert_eq!(report(&mut db, &[told.clone(), p_told.clone(), q.clone()], false).unwrap(), 3);
+        let (_, open, _, _) = insert(&mut db, &file, task("open")).unwrap();
+        let (_, told, _, _) = insert(&mut db, &file, done("told")).unwrap();
+        let (_, untold, _, _) = insert(&mut db, &file, done("untold")).unwrap();
+        let (_, p, _, _) = insert(&mut db, &file, New { plan: true, pane_id: None, ..task("half") }).unwrap();
+        let (_, p_open, _, _) = insert(&mut db, &file, New { parent: Some(p.clone()), ..task("a") }).unwrap();
+        let (_, p_told, _, _) = insert(&mut db, &file, New { parent: Some(p.clone()), ..done("b") }).unwrap();
+        let (_, q, _, _) = insert(&mut db, &file, New { plan: true, pane_id: None, ..task("over") }).unwrap();
+        let (_, q_done, _, _) = insert(&mut db, &file, New { parent: Some(q.clone()), ..done("c") }).unwrap();
+        assert_eq!(report(&mut db, &[told.clone(), p_told.clone()], false).unwrap(), 2);
+        assert_eq!(close(&mut db, &[told.clone(), q.clone()]).unwrap(), 2);
         let s = |v: &[&String]| v.iter().map(|u| u.to_string()).collect::<Vec<_>>();
 
-        // A plan stays while one task stays, with only that task under it.
-        assert_eq!(listed(&db, View::Open, None), s(&[&open, &untold, &p, &p_open]));
-        assert_eq!(listed(&db, View::All, None), s(&[&open, &told, &untold, &p, &p_open, &p_told, &q, &q_told]));
-        assert_eq!(listed(&db, View::Reported, None), s(&[&told, &p, &p_told, &q, &q_told]));
-        assert_eq!(listed(&db, View::Open, Some("done")), s(&[&untold]));
-        assert_eq!(listed(&db, View::All, Some("done")), s(&[&told, &untold, &p_told, &q, &q_told]));
+        // Done work stays listed until it is closed, told or not.
+        assert_eq!(listed(&db, View::Open, None), s(&[&open, &untold, &p, &p_open, &p_told]));
+        assert_eq!(listed(&db, View::Closed, None), s(&[&told, &q, &q_done]));
+        assert_eq!(listed(&db, View::All, None), s(&[&open, &told, &untold, &p, &p_open, &p_told, &q, &q_done]));
+        // Close told the person of c.
+        assert_eq!(listed(&db, View::Unreported, None), s(&[&untold]));
+        assert_eq!(listed(&db, View::Open, Some("done")), s(&[&untold, &p_told]));
 
         // Interrupted and gone work is open.
         let mut list = rows(&db, "", None).unwrap();
@@ -1110,17 +1220,135 @@ mod tests {
     }
 
     #[test]
+    fn work_is_working_while_an_agent_is_on_a_task_else_open_until_closed() {
+        let dir = scratch("buckets");
+        let file = dir.join("ledger.db");
+        let mut db = open_at(&file).unwrap();
+        let (_, lone, _, _) = insert(&mut db, &file, task("lone")).unwrap();
+        let (_, p, _, _) = insert(&mut db, &file, New { plan: true, pane_id: None, ..task("p") }).unwrap();
+        let (_, p_on, _, _) = insert(&mut db, &file, New { parent: Some(p.clone()), ..task("a") }).unwrap();
+        insert(&mut db, &file, New { parent: Some(p.clone()), state: "pending".into(), ..task("b") }).unwrap();
+        let (_, q, _, _) = insert(&mut db, &file, New { state: "done".into(), ..task("q") }).unwrap();
+        close(&mut db, std::slice::from_ref(&q)).unwrap();
+        let mut list = rows(&db, "", None).unwrap();
+        list.iter_mut().find(|r| r.uid == p_on).unwrap().agent_on = true;
+        buckets(&mut list);
+        let b = |uid: &str| list.iter().find(|r| r.uid == uid).unwrap().bucket.unwrap();
+        // A plan and every task in it share one bucket.
+        assert!(list.iter().filter(|r| r.work() == p).all(|r| r.bucket == Some(WORKING)));
+        assert_eq!((b(&lone), b(&q)), (OPEN, skiff_client::ledger::FINISHED));
+        assert!(rank(Some(WORKING)) < rank(Some(OPEN)));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn close_takes_done_work_on_its_head_and_reopen_clears_it() {
+        let dir = scratch("close");
+        let file = dir.join("ledger.db");
+        let mut db = open_at(&file).unwrap();
+        let done = |t: &str| New { state: "done".into(), ..task(t) };
+        let (_, a, _, _) = insert(&mut db, &file, done("a")).unwrap();
+        let (_, open, _, _) = insert(&mut db, &file, New { state: "pending".into(), ..task("open") }).unwrap();
+        let (_, p, _, _) = insert(&mut db, &file, New { plan: true, pane_id: None, ..task("p") }).unwrap();
+        let (_, p_done, _, _) = insert(&mut db, &file, New { parent: Some(p.clone()), ..done("c") }).unwrap();
+        let closed = |db: &Connection, uid: &str| one(db, uid).unwrap().closed_at;
+
+        // Work with a task that is not done refuses the lot.
+        let err = close(&mut db, &[a.clone(), open.clone()]).unwrap_err().to_string();
+        assert_eq!(err, format!("task {open} is pending, not done. Set it done or remove it first. Nothing changed"));
+        assert!(closed(&db, &a).is_none());
+        // A task in a plan is not a work head.
+        let err = close(&mut db, std::slice::from_ref(&p_done)).unwrap_err().to_string();
+        assert_eq!(err, format!("task {p_done} is in plan {p}. Name the plan. Nothing changed"));
+        // The stamp goes on the head, and the person was told of its tasks.
+        assert_eq!(close(&mut db, &[a.clone(), p.clone()]).unwrap(), 2);
+        assert!(closed(&db, &p).is_some() && closed(&db, &p_done).is_none());
+        assert!(one(&db, &p_done).unwrap().reported_at.is_some() && one(&db, &a).unwrap().reported_at.is_some());
+        assert!(one(&db, &p).unwrap().reported_at.is_none());
+        // A first stamp stays.
+        db.execute("UPDATE tasks SET closed_at = '2020-01-01T00:00:00Z' WHERE uid = ?1", [&a]).unwrap();
+        assert_eq!(close(&mut db, std::slice::from_ref(&a)).unwrap(), 0);
+        assert_eq!(closed(&db, &a).as_deref(), Some("2020-01-01T00:00:00Z"));
+
+        assert_eq!(reopen(&mut db, &[a.clone(), open.clone()]).unwrap(), 1);
+        assert!(closed(&db, &a).is_none());
+        // A task set back from done opens its work again.
+        close(&mut db, std::slice::from_ref(&a)).unwrap();
+        restate(&db, &one(&db, &p_done).unwrap(), Some("sent")).unwrap();
+        assert!(closed(&db, &p).is_none() && one(&db, &p_done).unwrap().reported_at.is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_follow_up_joins_its_work_and_a_lone_task_gets_a_plan() {
+        let dir = scratch("join");
+        let file = dir.join("ledger.db");
+        let mut db = open_at(&file).unwrap();
+        let date: String = db.query_row("SELECT date('now', 'localtime')", [], |r| r.get(0)).unwrap();
+        let first = New { state: "done".into(), title: Some("Build 177".into()), reference: Some("#177".into()), task_type: Some("build".into()), ..task("Build issue 177") };
+        let (_, lone, lone_path, none) = insert(&mut db, &file, first).unwrap();
+        assert_eq!(none, None);
+        close(&mut db, std::slice::from_ref(&lone)).unwrap();
+
+        // The follow-up wraps the lone task in a plan, and the closed work opens.
+        let (_, check, check_path, plan) = insert(&mut db, &file, New { parent: Some(lone.clone()), ..task("Check the app") }).unwrap();
+        let p = one(&db, plan.as_deref().unwrap()).unwrap();
+        let t = one(&db, &lone).unwrap();
+        assert!(p.is_plan() && p.closed_at.is_none() && t.closed_at.is_none());
+        assert_eq!((p.task.as_str(), p.title.as_deref(), p.reference.as_deref(), p.task_type.as_deref()), ("Build issue 177", Some("Build 177"), Some("#177"), Some("build")));
+        assert_eq!((t.parent.as_deref(), t.result_path.as_deref()), (Some(p.uid.as_str()), Some(lone_path.as_str())));
+        let folder = dir.join("results").join(format!("{date}-{}-build-issue-177", p.uid));
+        assert_eq!(p.result_path.as_deref(), Some(folder.join("plan.md").to_str().unwrap()));
+        assert_eq!(check_path, folder.join(format!("{check}-check-the-app.md")).display().to_string());
+
+        // A second follow-up names the plan, and a closed plan opens.
+        db.execute("UPDATE tasks SET state = 'done' WHERE uid = ?1", [&check]).unwrap();
+        close(&mut db, std::slice::from_ref(&p.uid)).unwrap();
+        let (_, _, _, again) = insert(&mut db, &file, New { parent: Some(p.uid.clone()), ..task("Commit it") }).unwrap();
+        assert_eq!(again.as_deref(), Some(p.uid.as_str()));
+        assert!(one(&db, &p.uid).unwrap().closed_at.is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_version_6_ledger_takes_closed_at_in_place_and_all_work_stays_open() {
+        let dir = scratch("v6");
+        let file = dir.join("ledger.db");
+        {
+            let v6 = TASKS.replace(",\n  closed_at   TEXT", "");
+            assert!(!v6.contains("closed_at"));
+            let db = Connection::open(&file).unwrap();
+            db.execute_batch(&v6).unwrap();
+            db.execute_batch(UIDS).unwrap();
+            db.execute_batch(OWNER).unwrap();
+            db.execute_batch(
+                "INSERT INTO tasks (uid, kind, pane_id, task, sent_at, state, updated_at, socket, reported_at, title) VALUES ('a1b2c3d4', 'task', 'abc', 'told', 'x', 'done', 'x', '/tmp/s.sock', 'y', 'Told');
+                 INSERT INTO tasks (uid, kind, pane_id, task, sent_at, state, updated_at, socket) VALUES ('e5f6a7b8', 'task', 'abc', 'live', 'x', 'sent', 'x', '/tmp/s.sock');
+                 PRAGMA user_version = 6;",
+            )
+            .unwrap();
+        }
+        let db = open_at(&file).unwrap();
+        let list = rows(&db, "", None).unwrap();
+        assert_eq!(list.iter().map(|r| (r.uid.as_str(), r.closed_at.as_deref())).collect::<Vec<_>>(), [("a1b2c3d4", None), ("e5f6a7b8", None)]);
+        assert_eq!((list[0].reported_at.as_deref(), list[0].title.as_deref()), (Some("y"), Some("Told")));
+        assert_eq!(db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), VERSION);
+        assert_eq!(listed(&db, View::Open, None).len(), 2);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn report_stamps_done_rows_once_and_refuses_open_ones() {
         let dir = scratch("report");
         let file = dir.join("ledger.db");
         let mut db = open_at(&file).unwrap();
         let done = |t: &str| New { state: "done".into(), ..task(t) };
-        let (_, a, _) = insert(&mut db, &file, done("a")).unwrap();
-        let (_, b, _) = insert(&mut db, &file, done("b")).unwrap();
-        let (_, open, _) = insert(&mut db, &file, task("open")).unwrap();
-        let (_, p, _) = insert(&mut db, &file, New { plan: true, pane_id: None, ..task("p") }).unwrap();
-        let (_, p_done, _) = insert(&mut db, &file, New { parent: Some(p.clone()), ..done("c") }).unwrap();
-        let (_, p_open, _) = insert(&mut db, &file, New { parent: Some(p.clone()), ..task("d") }).unwrap();
+        let (_, a, _, _) = insert(&mut db, &file, done("a")).unwrap();
+        let (_, b, _, _) = insert(&mut db, &file, done("b")).unwrap();
+        let (_, open, _, _) = insert(&mut db, &file, task("open")).unwrap();
+        let (_, p, _, _) = insert(&mut db, &file, New { plan: true, pane_id: None, ..task("p") }).unwrap();
+        let (_, p_done, _, _) = insert(&mut db, &file, New { parent: Some(p.clone()), ..done("c") }).unwrap();
+        let (_, p_open, _, _) = insert(&mut db, &file, New { parent: Some(p.clone()), ..task("d") }).unwrap();
         let stamp = |db: &Connection, uid: &str| one(db, uid).unwrap().reported_at;
         assert_eq!(unreported_at(&file).unwrap(), 3);
 
@@ -1144,47 +1372,47 @@ mod tests {
         assert_eq!(unreported_at(&file).unwrap(), 0);
 
         // A task that opens again loses its stamp.
-        reopen(&db, one(&db, &b).unwrap().id, Some("done")).unwrap();
+        restate(&db, &one(&db, &b).unwrap(), Some("done")).unwrap();
         assert!(stamp(&db, &b).is_some());
-        reopen(&db, one(&db, &b).unwrap().id, None).unwrap();
+        restate(&db, &one(&db, &b).unwrap(), None).unwrap();
         assert!(stamp(&db, &b).is_some());
-        reopen(&db, one(&db, &b).unwrap().id, Some("pending")).unwrap();
+        restate(&db, &one(&db, &b).unwrap(), Some("pending")).unwrap();
         assert!(stamp(&db, &b).is_none());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn prune_takes_only_old_reported_rows_and_a_plan_with_its_last_task() {
+    fn prune_takes_only_work_closed_long_ago_with_its_tasks() {
         let dir = scratch("prune");
         let file = dir.join("ledger.db");
         let mut db = open_at(&file).unwrap();
         let done = |t: &str| New { state: "done".into(), ..task(t) };
-        let (_, old, _) = insert(&mut db, &file, done("old")).unwrap();
-        let (_, new, _) = insert(&mut db, &file, done("new")).unwrap();
-        let (_, untold, _) = insert(&mut db, &file, done("untold")).unwrap();
-        let (_, open, _) = insert(&mut db, &file, task("open")).unwrap();
-        let (_, p, _) = insert(&mut db, &file, New { plan: true, pane_id: None, ..task("p") }).unwrap();
-        let (_, p_old, _) = insert(&mut db, &file, New { parent: Some(p.clone()), ..done("a") }).unwrap();
-        let (_, q, _) = insert(&mut db, &file, New { plan: true, pane_id: None, ..task("q") }).unwrap();
-        let (_, q_old, _) = insert(&mut db, &file, New { parent: Some(q.clone()), ..done("b") }).unwrap();
-        let (_, q_untold, _) = insert(&mut db, &file, New { parent: Some(q.clone()), ..done("c") }).unwrap();
-        report(&mut db, std::slice::from_ref(&new), false).unwrap();
-        for uid in [&old, &p_old, &q_old] {
-            db.execute("UPDATE tasks SET reported_at = '2020-01-01T00:00:00Z' WHERE uid = ?1", [uid]).unwrap();
+        let (_, old, _, _) = insert(&mut db, &file, done("old")).unwrap();
+        let (_, new, _, _) = insert(&mut db, &file, done("new")).unwrap();
+        let (_, told, _, _) = insert(&mut db, &file, done("told, still open")).unwrap();
+        let (_, open, _, _) = insert(&mut db, &file, task("open")).unwrap();
+        let (_, p, _, _) = insert(&mut db, &file, New { plan: true, pane_id: None, ..task("p") }).unwrap();
+        let (_, p_a, _, _) = insert(&mut db, &file, New { parent: Some(p.clone()), ..done("a") }).unwrap();
+        let (_, p_b, _, _) = insert(&mut db, &file, New { parent: Some(p.clone()), ..done("b") }).unwrap();
+        close(&mut db, &[old.clone(), new.clone(), p.clone()]).unwrap();
+        report(&mut db, std::slice::from_ref(&told), false).unwrap();
+        for uid in [&old, &p] {
+            db.execute("UPDATE tasks SET closed_at = '2020-01-01T00:00:00Z' WHERE uid = ?1", [uid]).unwrap();
         }
+        db.execute("UPDATE tasks SET reported_at = '2020-01-01T00:00:00Z' WHERE uid = ?1", [&told]).unwrap();
         let uids = |rows: Vec<Row>| rows.into_iter().map(|r| r.uid).collect::<Vec<_>>();
         let all = || uids(rows(&open_at(&file).unwrap(), "", None).unwrap());
         let before = all();
 
         // A dry run lists and changes nothing.
-        let want = vec![old.clone(), p.clone(), p_old.clone(), q_old.clone()];
+        let want = vec![old.clone(), p.clone(), p_a.clone(), p_b.clone()];
         assert_eq!(uids(prune(&mut db, 7 * 86_400, false).unwrap()), want);
         assert_eq!(all(), before);
         assert_eq!(uids(prune(&mut db, 7 * 86_400, true).unwrap()), want);
-        // q keeps its unreported task, so q stays.
-        assert_eq!(all(), [new.clone(), untold.clone(), open.clone(), q.clone(), q_untold.clone()]);
+        // Work told long ago but not closed stays.
+        assert_eq!(all(), [new.clone(), told.clone(), open.clone()]);
         // A short window takes the new one too.
-        db.execute("UPDATE tasks SET reported_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-2 hours') WHERE uid = ?1", [&new]).unwrap();
+        db.execute("UPDATE tasks SET closed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-2 hours') WHERE uid = ?1", [&new]).unwrap();
         assert!(prune(&mut db, age("7d").unwrap(), true).unwrap().is_empty());
         assert_eq!(uids(prune(&mut db, age("1h").unwrap(), true).unwrap()), [new]);
         assert_eq!(age("30m").unwrap(), 1800);
@@ -1197,8 +1425,8 @@ mod tests {
         let dir = scratch("elsewhere");
         let file = dir.join("ledger.db");
         let mut db = open_at(&file).unwrap();
-        let (_, mine, _) = insert(&mut db, &file, task("mine")).unwrap();
-        let (_, theirs, _) = insert(&mut db, &file, New { socket: Some("/tmp/other.sock".into()), state: "pending".into(), ..task("theirs") }).unwrap();
+        let (_, mine, _, _) = insert(&mut db, &file, task("mine")).unwrap();
+        let (_, theirs, _, _) = insert(&mut db, &file, New { socket: Some("/tmp/other.sock".into()), state: "pending".into(), ..task("theirs") }).unwrap();
         let here = Path::new("/tmp/here.sock");
         let mut list = rows(&db, "", None).unwrap();
         // No daemon answers here, as for a pane on another socket.
@@ -1300,7 +1528,7 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         let mut last = 0;
         for i in 0..20 {
-            let (id, uid, _) = insert(&mut db, &file, task(&format!("t{i}"))).unwrap();
+            let (id, uid, _, _) = insert(&mut db, &file, task(&format!("t{i}"))).unwrap();
             assert!(id > last, "id {id} after {last}");
             assert!(seen.insert(uid.clone()), "uid {uid} again");
             assert!(uid.len() == 8 && uid.bytes().all(|b| b.is_ascii_hexdigit()) && !uid.bytes().all(|b| b.is_ascii_digit()));
@@ -1320,11 +1548,11 @@ mod tests {
         let file = dir.join("ledger.db");
         let mut db = open_at(&file).unwrap();
         let date: String = db.query_row("SELECT date('now', 'localtime')", [], |r| r.get(0)).unwrap();
-        let (_, lone, lone_path) = insert(&mut db, &file, task("Fix the login bug!")).unwrap();
+        let (_, lone, lone_path, _) = insert(&mut db, &file, task("Fix the login bug!")).unwrap();
         let plan_row = New { plan: true, pane_id: None, pane_gen: None, reference: Some("JIRA-12".into()), ..task("Release 0.7: notes & builds") };
-        let (pid, puid, plan_path) = insert(&mut db, &file, plan_row).unwrap();
-        let (_, a, a_path) = insert(&mut db, &file, New { parent: Some(puid.clone()), ..task("Write the release notes") }).unwrap();
-        let (_, b, b_path) = insert(&mut db, &file, New { parent: Some(pid.to_string()), ..task("Build the Linux packages") }).unwrap();
+        let (pid, puid, plan_path, _) = insert(&mut db, &file, plan_row).unwrap();
+        let (_, a, a_path, _) = insert(&mut db, &file, New { parent: Some(puid.clone()), ..task("Write the release notes") }).unwrap();
+        let (_, b, b_path, _) = insert(&mut db, &file, New { parent: Some(pid.to_string()), ..task("Build the Linux packages") }).unwrap();
         let results = dir.join("results");
         assert_eq!(lone_path, results.join(format!("{date}-{lone}-fix-the-login-bug.md")).display().to_string());
         let folder = results.join(format!("{date}-{puid}-release-0-7-notes-builds"));
@@ -1333,8 +1561,9 @@ mod tests {
         assert_eq!(b_path, folder.join(format!("{b}-build-the-linux-packages.md")).display().to_string());
         // `add` makes no file.
         assert!(!results.exists());
-        // A task is no plan.
-        assert!(insert(&mut db, &file, New { parent: Some(lone.clone()), ..task("x") }).is_err());
+        // A task in a plan is no work head.
+        let err = insert(&mut db, &file, New { parent: Some(a.clone()), ..task("x") }).unwrap_err().to_string();
+        assert_eq!(err, format!("task {a} is in plan {puid}. Name the plan. Nothing changed"));
 
         let shown: Vec<_> = tree(rows(&db, "", None).unwrap()).into_iter().map(|(r, child)| (r.uid, child)).collect();
         assert_eq!(shown, [(lone.clone(), false), (puid.clone(), false), (a, true), (b, true)]);
@@ -1391,8 +1620,8 @@ mod tests {
         let dir = scratch("send");
         let file = dir.join("ledger.db");
         let mut db = open_at(&file).unwrap();
-        let (_, uid, result) = insert(&mut db, &file, New { state: "pending".into(), ..task("fix the tests") }).unwrap();
-        let (_, plan_uid, _) = insert(&mut db, &file, New { plan: true, pane_id: None, ..task("p") }).unwrap();
+        let (_, uid, result, _) = insert(&mut db, &file, New { state: "pending".into(), ..task("fix the tests") }).unwrap();
+        let (_, plan_uid, _, _) = insert(&mut db, &file, New { plan: true, pane_id: None, ..task("p") }).unwrap();
         let mut r = one(&db, &uid).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
         let pane = |started_at: u64| -> SessionInfo {
@@ -1423,10 +1652,10 @@ mod tests {
         let dir = scratch("roll");
         let file = dir.join("ledger.db");
         let mut db = open_at(&file).unwrap();
-        let (_, p, _) = insert(&mut db, &file, New { plan: true, pane_id: None, ..task("p") }).unwrap();
-        let (_, a, _) = insert(&mut db, &file, New { parent: Some(p.clone()), ..task("a") }).unwrap();
+        let (_, p, _, _) = insert(&mut db, &file, New { plan: true, pane_id: None, ..task("p") }).unwrap();
+        let (_, a, _, _) = insert(&mut db, &file, New { parent: Some(p.clone()), ..task("a") }).unwrap();
         insert(&mut db, &file, New { parent: Some(p.clone()), state: "done".into(), ..task("b") }).unwrap();
-        let (_, empty, _) = insert(&mut db, &file, New { plan: true, pane_id: None, state: "blocked".into(), ..task("e") }).unwrap();
+        let (_, empty, _, _) = insert(&mut db, &file, New { plan: true, pane_id: None, state: "blocked".into(), ..task("e") }).unwrap();
         let mut list = rows(&db, "", None).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
         let st = |list: &[Row], uid: &str| list.iter().find(|r| r.uid == uid).unwrap().shown_state().to_string();

@@ -226,10 +226,11 @@ enum Cmd {
         cmd: OpenWithCmd,
     },
     /// The Skiff agent's task ledger: ledger.db in its folder.
-    #[command(after_help = "States: sent, pending (not delivered: the pane was working), blocked (the pane needs the user), done.\nls and show print interrupted for a sent or blocked task whose pane restarted since the send: a restore runs a new shell under the old pane id. They print gone for an open task whose pane no longer exists. A task sent on another daemon shows elsewhere in LIVE and its socket: it is never gone from here, and send refuses it. A plan with tasks shows done when every task is done, else sent.\nID is the row number or the 8-character uid that add prints. Neither is ever reused.\nResults: a task writes to results/<date>-<uid>-<slug>.md next to the ledger; a plan owns results/<date>-<uid>-<slug>/ with plan.md, and its tasks write <uid>-<slug>.md in that folder. add stores and prints the path and makes no file. rm and prune keep the files.\nReported: report stamps a done task once the person was told. ls hides it from then on. An update to a state other than done clears the stamp. prune removes reported rows after a while.\nThe ledger is ~/skiff-agent/ledger.db, or ledger.db in the [skiff_agent] folder override. On a socket other than the live one, it is in the socket's private state. SKIFF_LEDGER overrides the path.\nOne owner: add, send, update, report, prune and rm refuse unless the caller is the Skiff agent session that owns the ledger. skiff skipper and the agent's watcher record it; a new Skiff agent session on the owner's daemon, or on the live daemon, takes it over. The refusal names the owner and its socket. A shell pane is a person and may change rows. A shell outside Skiff has no SKIFF_SESSION, and an agent there looks the same, so it is refused too: a person there passes --person. ls and show work from anywhere.\nOn first use, an old ledger.md next to it is imported and kept as ledger.md.bak.")]
+    #[command(after_help = "States: sent, pending (not delivered: the pane was working), blocked (the pane needs the user), done.\nls and show print interrupted for a sent or blocked task whose pane restarted since the send: a restore runs a new shell under the old pane id. They print gone for an open task whose pane no longer exists. A task sent on another daemon shows elsewhere in LIVE and its socket: it is never gone from here, and send refuses it. A plan with tasks shows done when every task is done, else sent.\nID is the row number or the 8-character uid that add prints. Neither is ever reused.\nResults: a task writes to results/<date>-<uid>-<slug>.md next to the ledger; a plan owns results/<date>-<uid>-<slug>/ with plan.md, and its tasks write <uid>-<slug>.md in that folder. add stores and prints the path and makes no file. rm and prune keep the files.\nWork: a plan with its tasks, or a task with no plan. Work is working while an agent is on one of its tasks (the task is sent, and its pane works or ended its turn), open otherwise, and finished once closed. close stamps it on the person's word; reopen clears the stamp. A task added or moved under closed work, or set from done to another state, reopens it.\nReported: report stamps a done task once the person was told. An update to a state other than done clears the stamp. ls --unreported lists the done tasks not yet reported.\nThe ledger is ~/skiff-agent/ledger.db, or ledger.db in the [skiff_agent] folder override. On a socket other than the live one, it is in the socket's private state. SKIFF_LEDGER overrides the path.\nOne owner: add, send, update, report, close, reopen, prune and rm refuse unless the caller is the Skiff agent session that owns the ledger. skiff skipper and the agent's watcher record it; a new Skiff agent session on the owner's daemon, or on the live daemon, takes it over. The refusal names the owner and its socket. A shell pane is a person and may change rows. A shell outside Skiff has no SKIFF_SESSION, and an agent there looks the same, so it is refused too: a person there passes --person. ls and show work from anywhere.\nOn first use, an old ledger.md next to it is imported and kept as ledger.md.bak.")]
     Ledger {
         /// From a shell outside Skiff: I am a person, not an agent. Without
-        /// it, add, send, update, report, prune and rm refuse there.
+        /// it, add, send, update, report, close, reopen, prune and rm refuse
+        /// there.
         #[arg(long, global = true)]
         person: bool,
         #[command(subcommand)]
@@ -239,7 +240,8 @@ enum Cmd {
 
 #[derive(Subcommand)]
 pub enum LedgerCmd {
-    /// Add a task, or a plan with --plan. Prints its id, uid and result path.
+    /// Add a task, or a plan with --plan. Prints its id, uid and result
+    /// path, and the plan's uid for a task in a plan.
     Add {
         /// The pane the task went to: an id, a unique prefix or a name. It
         /// must exist. A plan has no pane.
@@ -254,7 +256,8 @@ pub enum LedgerCmd {
         /// A plan: a row with no pane that groups tasks under it.
         #[arg(long)]
         plan: bool,
-        /// The plan this task belongs to: its id or uid.
+        /// The work this task joins: a plan, or a task with no plan, which
+        /// a new plan then wraps. Its id or uid. Closed work opens again.
         #[arg(long, value_name = "ID", conflicts_with = "plan")]
         parent: Option<String>,
         /// Default: the project that holds the pane's folder.
@@ -317,7 +320,7 @@ pub enum LedgerCmd {
         pane: Option<String>,
         #[arg(long)]
         project: Option<String>,
-        /// Move the task under this plan: its id or uid.
+        /// Move the task into this work, as add --parent does.
         #[arg(long, value_name = "ID")]
         parent: Option<String>,
         #[arg(long = "ref", value_name = "TEXT")]
@@ -325,19 +328,23 @@ pub enum LedgerCmd {
         #[arg(long = "type", value_name = "TYPE")]
         task_type: Option<String>,
     },
-    /// List open work and done tasks not yet reported, oldest first, each
-    /// plan's tasks under it. LIVE says if the pane still exists.
-    #[command(after_help = "A plan shows while one of its tasks shows. --state filters inside the list: --state done lists the done tasks not yet reported.")]
+    /// List the work that is not closed: working first, then open, oldest
+    /// first, each plan's tasks under it. WORK names the group. LIVE says if
+    /// the pane still exists.
+    #[command(after_help = "--state filters inside the list. --json adds bucket (working, open or finished) and closed_at to each row.")]
     Ls {
         /// sent, pending, blocked, done, interrupted or gone.
         #[arg(long)]
         state: Option<String>,
-        /// Every row, reported ones included.
-        #[arg(long, conflicts_with = "reported")]
+        /// Every row, closed work included.
+        #[arg(long, conflicts_with_all = ["closed", "unreported"])]
         all: bool,
-        /// Only the reported rows.
+        /// Only closed work.
+        #[arg(long, conflicts_with = "unreported")]
+        closed: bool,
+        /// Only done tasks not yet reported, under their plans.
         #[arg(long)]
-        reported: bool,
+        unreported: bool,
         #[arg(long)]
         json: bool,
     },
@@ -347,7 +354,7 @@ pub enum LedgerCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Mark done tasks as told to the person. ls hides them from then on.
+    /// Mark done tasks as told to the person.
     #[command(
         after_help = "A task that is not done is refused, and nothing changes. A reported task keeps its first stamp.\nA plan's ID reports its done tasks and leaves its open ones."
     )]
@@ -358,17 +365,29 @@ pub enum LedgerCmd {
         #[arg(long, conflicts_with = "ids")]
         all: bool,
     },
-    /// Remove reported rows, and plans whose last tasks they are. Unreported
-    /// and open rows stay. Without --yes, it prints the rows and changes nothing.
+    /// Close work on the person's word: a plan, or a task with no plan. It
+    /// stamps the done tasks not yet reported too.
+    #[command(after_help = "Work with a task that is not done is refused, and nothing changes: set the task done or remove it first. A task in a plan is refused: close its plan. Closed work keeps its first stamp.")]
+    Close {
+        #[arg(required = true, value_name = "ID")]
+        ids: Vec<String>,
+    },
+    /// Open closed work again: a plan, or a task with no plan.
+    Reopen {
+        #[arg(required = true, value_name = "ID")]
+        ids: Vec<String>,
+    },
+    /// Remove closed work, with its tasks. Open work stays. Without --yes, it
+    /// prints the rows and changes nothing.
     Prune {
-        /// Remove rows reported longer ago than this: 7d, 12h, 30m.
+        /// Remove work closed longer ago than this: 7d, 12h, 30m.
         #[arg(long, value_name = "AGE", default_value = "7d")]
         older_than: String,
         #[arg(long)]
         yes: bool,
     },
     /// Take a row out of the ledger now. Its result file stays. For finished
-    /// work, use report, and later prune.
+    /// work, use close, and later prune.
     Rm { id: String },
 }
 

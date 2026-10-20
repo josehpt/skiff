@@ -33,6 +33,11 @@
 .lg-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .lg-pane { flex-shrink: 0; max-width: calc(140 * var(--u)); overflow: hidden; text-overflow: ellipsis; color: var(--text-dim); font-size: calc(11px * var(--zoom, 1)); }
 .lg-n { flex-shrink: 0; font-family: var(--mono); font-size: calc(11px * var(--zoom, 1)); color: var(--text-3); }
+/* Row actions: small icons at the right edge, only when they apply. Every row keeps room for two, so pane names line up. */
+.lg-acts { width: calc(34 * var(--u)); flex-shrink: 0; display: flex; justify-content: flex-end; gap: calc(2 * var(--u)); margin-right: calc(-4 * var(--u)); }
+.lg-ico { width: calc(16 * var(--u)); height: calc(20 * var(--u)); padding: 0; border: 0; background: none; display: grid; place-items: center; color: var(--text-dim); cursor: pointer; }
+.lg-ico:hover { color: var(--text); }
+.lg-ico svg { width: calc(9 * var(--u)); height: calc(9 * var(--u)); }
 .lg-dot { width: calc(7 * var(--u)); height: calc(7 * var(--u)); flex-shrink: 0; border-radius: 50%; }
 
 /* States. */

@@ -11,10 +11,11 @@
  * counts as one item. Rows slide to their new place, flash on a change and
  * fade in; a report slides the row down into Finished.
  *
- * A click on a queue task opens its pane; the row menu opens the result or
- * marks it reported, which runs `skiff ledger report`. Finished rows are
- * inert. The rows come read-only from the backend, again on each change to
- * `ledger.db`.
+ * A click on a row does the main action for its state: open the pane or the
+ * result. Small icons at the right edge do the rest, only when they apply:
+ * the pane, the result, and Mark reported, which runs `skiff ledger report`.
+ * No row has a menu. The rows come read-only from the backend, again on each
+ * change to `ledger.db`.
  */
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -25,9 +26,7 @@ import { shownIds } from "../app/stateQueries";
 import type { SessionInfo } from "../platform/types";
 import { openPath, previewOnScreen } from "../terminal/peek";
 import { showError } from "../ui/alerts";
-import { ctxMenu } from "../ui/contextMenu";
 import { h } from "../ui/dom";
-import type { MenuEntry } from "../ui/menu";
 import { isSlot } from "./layoutSlots";
 import { taskTitle } from "./model";
 import { keepRow } from "./selection";
@@ -233,64 +232,85 @@ function report(uids: string[]) {
   invoke("ledger_report", { uids }).then(loadLedger).catch(showError);
 }
 
-/** A click opens the pane of a live task. */
+/** The task's pane is live, so a click can open it. */
 const opens = (l: Look) => !!l.pane && l.st !== "gone";
 
-/**
- * The row menu: Open pane, Open result, Mark reported. A row that needs the
- * person says why in the title. `l` is the task; without it, the plan `u`.
- */
-function menu(u: Unit, l: Look | undefined, x: number, y: number) {
-  const r = l?.r ?? u.r;
-  const st = l?.st ?? u.st;
-  const todo = (l || !u.kids?.length ? [r] : u.kids.map((k) => k.r)).filter((k) => k.state === "done" && !k.reported_at);
-  const entries: MenuEntry[] = [];
-  if (l) entries.push({ icon: "code-terminal", label: "Open pane", disabled: !opens(l), run: () => l.pane && openPane(l.pane) });
-  entries.push({ icon: "indicators-square-arrow-out-up-right", label: "Open result", disabled: !r.result_exists, run: () => r.result_path && openPath(r.result_path) });
-  entries.push({
-    icon: "indicators-check",
-    label: "Mark reported",
-    disabled: st !== "done" || !todo.length,
-    run: () => report(todo.map((k) => k.uid)),
-  });
-  ctxMenu.open(x, y, WHY[st] ?? titleOf(r), entries);
+/** The row icons, at the stroke weight of the tree icons. */
+const ICON = {
+  pane: '<svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.3"><rect x=".65" y="1.15" width="8.7" height="7.7"/><path d="M2.6 3.8 4.2 5 2.6 6.2M5.2 6.4h2"/></svg>',
+  result: '<svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 .65h4L8.35 3v6.35H2z"/><path d="M5.8.65V3.2h2.55"/></svg>',
+  check: '<svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1.2 5.3 4 8 8.8 2"/></svg>',
+};
+
+/** What a row does: its click, its tooltip, and the icons at its right edge. */
+interface Acts {
+  click: (() => void) | null;
+  tip: string;
+  icons: [keyof typeof ICON, string, () => void][];
 }
 
-/** One 20px line. `fin`: a Finished row, which does nothing. */
-function line(r: Entry, st: State, label: string, o: { plan?: boolean; kid?: boolean; fin?: boolean; dead?: boolean }): HTMLElement {
+const result = (r: Entry) => (r.result_exists && r.result_path ? () => openPath(r.result_path!) : null);
+
+/**
+ * A task's actions. Running, approval, blocked, pending, exited: the click
+ * opens the pane. Restarted: the pane, and a result icon when the file
+ * exists. Gone: the result, else nothing. Done: the result, with icons for
+ * the pane and Mark reported. Finished: the result only.
+ */
+function taskActs(l: Look, fin: boolean): Acts {
+  const r = l.r;
+  const res = result(r);
+  const pane = opens(l) ? () => openPane(l.pane!) : null;
+  if (fin) return { click: res, tip: res ? "Open result" : "No result file", icons: [] };
+  if (l.st === "done") {
+    const icons: Acts["icons"] = [];
+    if (pane) icons.push(["pane", "Open pane", pane]);
+    if (!r.reported_at) icons.push(["check", "Mark reported", () => report([r.uid])]);
+    return { click: res, tip: res ? "Open result" : "No result file yet", icons };
+  }
+  if (l.st === "gone") return { click: res, tip: res ? "Open result" : "The pane is gone. No result yet.", icons: [] };
+  const icons: Acts["icons"] = l.st === "interrupted" && res ? [["result", "Open result", res]] : [];
+  return { click: pane, tip: pane ? "Open pane" : "The pane is on another daemon", icons };
+}
+
+/** One 20px line, with its actions. */
+function line(r: Entry, st: State, label: string, a: Acts, o: { plan?: boolean; kid?: boolean; fin?: boolean }): HTMLElement {
   const need = !o.fin && !!NEED[st];
-  const row = h("div", `lg-row s-${st}` + (need ? " need" : "") + (o.plan ? " plan" : "") + (o.kid ? " kid" : "") + (o.fin ? " fin" : "") + (o.dead || o.fin ? " dead" : ""));
+  const row = h("div", `lg-row s-${st}` + (need ? " need" : "") + (o.plan ? " plan" : "") + (o.kid ? " kid" : "") + (o.fin ? " fin" : "") + (a.click ? "" : " dead"));
   row.dataset.key = r.uid;
   row.dataset.look = o.fin ? "fin" : `${st}:${label}`;
-  if (!o.fin) row.title = WHY[st] ? `${r.task}\n\n${WHY[st]}` : r.task;
-  row.append(h("span", "lg-dot"), h("span", "lg-title", titleOf(r)), h("span", o.plan ? "lg-n" : "lg-pane", label));
+  const why = need && WHY[st] ? `${WHY[st]}\n` : "";
+  row.title = `${why}${a.tip}\n\n${r.task}`;
+  const acts = h("span", "lg-acts");
+  for (const [name, tip, run] of a.icons) {
+    const b = h("button", "lg-ico");
+    b.type = "button";
+    b.innerHTML = ICON[name];
+    b.title = tip;
+    b.setAttribute("aria-label", tip);
+    b.addEventListener("click", (e) => {
+      e.stopPropagation();
+      run();
+    });
+    acts.append(b);
+  }
+  row.append(h("span", "lg-dot"), h("span", "lg-title", titleOf(r)), h("span", o.plan ? "lg-n" : "lg-pane", label), acts);
+  if (a.click) row.addEventListener("click", a.click);
   return row;
 }
 
-function taskRow(u: Unit, l: Look, kid: boolean, fin: boolean): HTMLElement {
-  const row = line(l.r, l.st, (!fin && NEED[l.st]) || l.where, { kid, fin, dead: !opens(l) });
-  if (fin) return row;
-  if (opens(l)) row.addEventListener("click", () => openPane(l.pane!));
-  row.addEventListener("contextmenu", (e) => {
-    e.preventDefault();
-    menu(u, l, e.clientX, e.clientY);
-  });
-  return row;
+function taskRow(l: Look, kid: boolean, fin: boolean): HTMLElement {
+  return line(l.r, l.st, (!fin && NEED[l.st]) || l.where, taskActs(l, fin), { kid, fin });
 }
 
 function unitRows(u: Unit, fin: boolean): HTMLElement[] {
-  if (u.look) return [taskRow(u, u.look, false, fin)];
+  if (u.look) return [taskRow(u.look, false, fin)];
   const kids = u.kids ?? [];
   const n = kids.length ? `${kids.filter((k) => k.st === "done").length}/${kids.length}` : "";
-  // A plan row is a head for its tasks: a click does nothing.
-  const row = line(u.r, fin ? "done" : u.st, n, { plan: true, fin, dead: true });
-  if (!fin) {
-    row.addEventListener("contextmenu", (e) => {
-      e.preventDefault();
-      menu(u, undefined, e.clientX, e.clientY);
-    });
-  }
-  return [row, ...kids.map((k) => taskRow(u, k, true, fin))];
+  // A plan row is a head for its tasks: its click opens plan.md.
+  const res = result(u.r);
+  const row = line(u.r, fin ? "done" : u.st, n, { click: res, tip: res ? "Open plan.md" : "No plan.md yet", icons: [] }, { plan: true, fin });
+  return [row, ...kids.map((k) => taskRow(k, true, fin))];
 }
 
 /** What the list draws. The panel is rebuilt only when it changes. */

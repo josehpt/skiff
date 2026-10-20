@@ -1,5 +1,5 @@
-//! Open with: which command opens a diff or a file. Edits `[open]` in
-//! projects.toml, as the Settings dialog does.
+//! Open with: which command opens a diff or a file, and where. Edits `[open]`
+//! in projects.toml, as the Settings dialog does.
 
 use anyhow::{Result, bail};
 use skiff_core::config::{self, OPEN_KEYS};
@@ -11,6 +11,9 @@ struct Row {
     key: &'static str,
     /// The command set, or `None` for the default.
     command: Option<String>,
+    /// What selecting the file does: `peek` runs the command, `app` shows
+    /// an Open button. Settings › Open with › OPENS IN. A diff is always `peek`.
+    opens: &'static str,
 }
 
 fn rows() -> Result<Vec<Row>> {
@@ -25,12 +28,13 @@ fn rows() -> Result<Vec<Row>> {
                 _ => &o.html,
             };
             let command = cmd.as_deref().map(str::trim).filter(|c| !c.is_empty()).map(String::from);
-            Row { key, command }
+            let opens = if key == "diff" || o.peek.iter().any(|k| k == key) { "peek" } else { "app" };
+            Row { key, command, opens }
         })
         .collect())
 }
 
-/// Lists each row with its command.
+/// Lists each row with its command and where it opens.
 pub fn ls(json: bool) -> Result<()> {
     let rows = rows()?;
     if json {
@@ -44,23 +48,32 @@ pub fn ls(json: bool) -> Result<()> {
                 (None, "diff") => format!("{} (default)", skiff_core::git::DEFAULT_DIFF),
                 (None, _) => "(system default app)".to_string(),
             };
-            vec![r.key.to_string(), command]
+            vec![r.key.to_string(), command, r.opens.to_string()]
         })
         .collect();
-    print::table(&["KEY", "COMMAND"], &table);
+    print::table(&["KEY", "COMMAND", "OPENS IN"], &table);
     Ok(())
 }
 
 pub fn run(cmd: OpenWithCmd) -> Result<()> {
     match cmd {
         OpenWithCmd::Ls { json } => ls(json),
-        OpenWithCmd::Set { key, command } => {
+        OpenWithCmd::Set { key, command, peek, app } => {
             let key = key.name();
-            let c = command.trim();
-            if c.is_empty() {
-                bail!("the command is empty; use `skiff open-with clear {key}`");
+            if (peek || app) && key == "diff" {
+                bail!("diff always opens in the peek");
             }
-            config::set_open(key, Some(c))
+            if let Some(command) = command {
+                let c = command.trim();
+                if c.is_empty() {
+                    bail!("the command is empty; use `skiff open-with clear {key}`");
+                }
+                config::set_open(key, Some(c))?;
+            }
+            if peek || app {
+                config::set_open_peek(key, peek)?;
+            }
+            Ok(())
         }
         OpenWithCmd::Clear { key } => config::set_open(key.name(), None),
     }

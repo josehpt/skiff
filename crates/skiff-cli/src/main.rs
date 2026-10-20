@@ -219,7 +219,7 @@ enum Cmd {
     /// Show and set the command that opens a diff or a file.
     #[command(
         name = "open-with",
-        after_help = "Keys: diff, text, markdown, html. `{path}` in a command becomes the file; without it the file goes at the end. `{target}` in the diff command becomes what to compare.\nA terminal tool shows in the peek over the panes. An app with its own window just starts. A file with no command opens in the system's default app.\nChanges apply to the next file or diff the app opens."
+        after_help = "Keys: diff, text, markdown, html. `{path}` in a command becomes the file; without it the file goes at the end. `{target}` in the diff command becomes what to compare.\nA terminal tool shows in the peek over the panes. An app with its own window just starts. A file with no command opens in the system's default app.\nOPENS IN is what selecting a file does: peek runs the command, app shows an Open button. An explicit Open always runs it. diff always opens in the peek.\nChanges apply to the next file or diff the app opens."
     )]
     OpenWith {
         #[command(subcommand)]
@@ -460,12 +460,19 @@ enum OpenWithCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Set a key's command.
+    /// Set a key's command, where it opens, or both.
+    #[command(override_usage = "skiff open-with set <KEY> [COMMAND] [--peek | --app]", group = clap::ArgGroup::new("what").required(true).multiple(true).args(["command", "peek", "app"]))]
     Set {
         #[arg(value_enum)]
         key: OpenKey,
         /// The command, quoted as one argument.
-        command: String,
+        command: Option<String>,
+        /// Selecting the file runs the command in the peek.
+        #[arg(long, conflicts_with = "app")]
+        peek: bool,
+        /// Selecting the file shows an Open button.
+        #[arg(long)]
+        app: bool,
     },
     /// Clear a key. The default applies.
     Clear {

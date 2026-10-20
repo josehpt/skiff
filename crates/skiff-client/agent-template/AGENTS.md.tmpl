@@ -17,7 +17,7 @@ Do these steps when a conversation starts, before any other `skiff` command.
 3. Run `skiff ls --json` and `skiff group ls --json`.
 4. Rebuild your state from the ledger and the session list. A row that shows
    `gone` lost its pane: tell the user.
-5. Run `skiff ledger ls --state done`. Tell the user each result in it. Then
+5. Run `skiff ledger ls --unreported`. Tell the user each result in it. Then
    run `skiff ledger report UID...` for those rows.
 6. A row with `interrupted` is a pane that restarted after the send. Skiff
    restored it as a new shell, so the task does not run. Do these steps for
@@ -55,19 +55,32 @@ the commands:
 
 | Command | When |
 |---|---|
-| `skiff ledger add --pane S --task "..." --title "..." --send --enter [--parent UID] [--ref TEXT]` | You hand a task to a pane. It adds the row, sends the task with its result path, and prints the id, the uid and the result path. |
+| `skiff ledger add --pane S --task "..." --title "..." --send --enter [--parent UID] [--ref TEXT]` | You hand a task to a pane. It adds the row, sends the task with its result path, and prints the id, the uid and the result path. With `--parent`, it also prints the plan's uid. |
 | `skiff ledger send UID --enter` | A task is `pending` or `interrupted`. |
 | `skiff ledger add --plan --task "..." --title "..." [--ref TEXT]` | Work needs more than one task. It prints the plan's uid and its `plan.md`. |
 | `skiff ledger update ID --state S [--result PATH]` | You mark a task `blocked` or `done`. |
 | `skiff ledger ls [--state S] [--json]` | You start a turn or report on work. |
 | `skiff ledger show ID` | You need one row. |
 | `skiff ledger report UID...` | You told the user the result. Do it in the same turn. |
+| `skiff ledger close UID...` | The user says the work is over. |
+| `skiff ledger reopen UID...` | The user says closed work is not over. |
 
-- `ls` shows open work and done tasks not yet reported. `--all` shows every
-  row. `--reported` shows only reported rows.
+- Work is a plan with its tasks, or a task with no plan. `ls` shows the work
+  that is not closed, in two groups: `working` (an agent is on a task: it is
+  sent, and its pane works or ended its turn) and `open` (no agent is on it).
+  `--closed` shows closed work. `--all` shows every row. `--unreported` shows
+  the done tasks not yet reported.
 - `report` refuses a task that is not done. A plan's uid reports its done
-  tasks. A task set to another state than `done` is new work: it shows again.
-- `skiff ledger prune` removes rows reported more than 7 days ago. Run it only
+  tasks. A task set to another state than `done` is new work: it shows again,
+  and its work opens again.
+- `close` takes a plan's uid, or a task with no plan. It refuses work with a
+  task that is not done, and a task in a plan. It also reports the done tasks
+  of the work.
+- A follow-up on the same work joins it with `--parent UID`: the plan's uid,
+  or the uid of a task with no plan. That task then goes into a new plan,
+  and `add` prints the plan's uid. A task added under closed work opens it
+  again.
+- `skiff ledger prune` removes work closed more than 7 days ago. Run it only
   when the user asks.
 - Give every task and plan a `--title` of 3 to 6 words, such as
   `--title "Fix found-set count"`. The Ledger panel in the app shows it.
@@ -77,6 +90,7 @@ the commands:
   when you name a task to the user or in a file.
 - A plan has no pane. Put each of its tasks under it with `--parent UID`. `ls`
   shows the tasks under their plan, and the plan shows `done` when they are.
+  The plan is done, not closed: only `close` closes it.
 - `--ref` is optional free text that names the work somewhere else, such as a
   URL or a ticket key. Skiff does not read it. Nothing here needs a tracker,
   git or a network.

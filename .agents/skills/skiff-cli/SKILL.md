@@ -163,7 +163,7 @@ The Skiff agent (default name Skipper) is the normal coordinator. It is one agen
 
 The ledger is `ledger.db` in that folder. Use only `skiff ledger` to read or change it. Never open or edit the file.
 
-- Only the session that owns the ledger changes rows: `add`, `send`, `update`, `report`, `prune`, `rm`. `skiff skipper` records the owner. Another agent pane gets a refusal that names the owner. A shell outside Skiff is refused too, unless a person passes `--person`.
+- Only the session that owns the ledger changes rows: `add`, `send`, `update`, `report`, `close`, `reopen`, `prune`, `rm`. `skiff skipper` records the owner. Another agent pane gets a refusal that names the owner. A shell outside Skiff is refused too, unless a person passes `--person`.
 - `ls` and `show` work from anywhere.
 - Each row has an id and an 8-character uid. Neither is used again. Every ID argument takes both. Use the uid when you name a task.
 
@@ -175,6 +175,8 @@ Task states are `pending`, `sent`, `blocked` and `done`. `ls` and `show` also pr
 
 A plan shows `done` when every task in it is done, else `sent`.
 
+Work is a plan with its tasks, or a task with no plan. It is `working` while an agent is on one of its tasks (the task is `sent`, and its pane works or ended its turn), `open` otherwise, and `finished` once closed. Only `ledger close` closes work. Done is not closed.
+
 ### Ledger commands
 
 | Command | Use |
@@ -183,10 +185,12 @@ A plan shows `done` when every task in it is done, else `sent`.
 | `ledger add --plan --task "..." --title "..." [--ref TEXT]` | Add a plan for work with more than one task. |
 | `ledger send UID --enter` | Send a `pending` or `interrupted` task. |
 | `ledger update UID [--state S] [--pane S] [--title T] [--result PATH] [--parent UID] ...` | Change only the given fields. |
-| `ledger ls [--state S] [--all \| --reported] [--json]` | Show open work and done tasks not reported. |
+| `ledger ls [--state S] [--all \| --closed \| --unreported] [--json]` | Show the work that is not closed: working, then open. |
 | `ledger show UID [--json]` | Show one row. |
 | `ledger report UID... \| --all` | Mark done tasks as told to the person. |
-| `ledger prune [--older-than 7d] [--yes]` | Remove reported rows. Without `--yes` it only prints them. |
+| `ledger close UID...` | Close work on the person's word. |
+| `ledger reopen UID...` | Open closed work again. |
+| `ledger prune [--older-than 7d] [--yes]` | Remove closed work. Without `--yes` it only prints it. |
 | `ledger rm UID` | Remove one row now. |
 
 - `add` prints the id, the uid and the result path. It makes no file. A task needs `--pane`. A plan has none.
@@ -195,10 +199,12 @@ A plan shows `done` when every task in it is done, else `sent`.
 - `ledger send` exits 1 and types nothing for a task that is `sent`, `blocked` or `done`, for a plan, for a gone pane, or for a task on another daemon.
 - Give every task and plan a `--title` of 3 to 6 words, such as `--title "Fix found-set count"`. Without one, the Ledger panel uses the first sentence of the task.
 - `--type T` records the task type. `--ref TEXT` stores a URL or a ticket key. Skiff stores both and does not act on them.
-- `--parent UID` puts a task under a plan. A plan cannot be under a plan.
-- `ls --state` takes `sent`, `pending`, `blocked`, `done`, `interrupted` or `gone`. `ls --state done` lists the done tasks to report.
-- Run `ledger report` in the same turn as you tell the person. A plan's uid reports its done tasks. A task that is not done is refused. A state change away from `done` clears the mark.
-- `prune` never removes an open or unreported row. `rm` and `prune` keep the result files.
+- `--parent UID` joins a task to its work: a plan, or a task with no plan. A task with no plan goes into a new plan with its title, project, ref and type, and `add` prints the plan's uid. A plan cannot be under a plan. A task added or moved under closed work opens it again.
+- `ls` groups rows by work in its WORK column: `working`, then `open`. `--closed` shows closed work, `--all` every row. `--json` adds `bucket` and `closed_at`.
+- `ls --state` takes `sent`, `pending`, `blocked`, `done`, `interrupted` or `gone`. `ls --unreported` lists the done tasks to report.
+- Run `ledger report` in the same turn as you tell the person. A plan's uid reports its done tasks. A task that is not done is refused. A state change away from `done` clears the mark and opens the work again.
+- `ledger close` takes a plan, or a task with no plan. It refuses work with a task that is not done, and a task in a plan. It reports the done tasks of the work.
+- `prune` removes only closed work, with its tasks. `rm` and `prune` keep the result files.
 
 Result paths, in `results/` in the agent folder:
 
@@ -213,11 +219,11 @@ Result paths, in `results/` in the agent folder:
 1. Read each pane that a `[watch]` line names with `skiff peek`.
 2. Then run `skiff seen S`. An unread pane is named again on the next run.
 3. A gone pane cannot be marked seen. Reassign each open task with `skiff ledger update UID --pane S --state pending`, or set it to `done`.
-4. On `[watch] N done tasks not reported`, run `skiff ledger ls --state done` and report them.
+4. On `[watch] N done tasks not reported`, run `skiff ledger ls --unreported` and report them.
 
 ### The Ledger panel
 
-The app shows the ledger in a panel at the right of the Skiff agent's pane. The panel is read-only. It shows the queue on top: done and not reported, then in progress, then pending. Under it, Finished shows the last 20 reported items. A row that needs the person is amber. `ledger report` moves a row to Finished. The panel shows `--title`.
+The app shows the ledger in a panel at the right of the Skiff agent's pane. The panel is read-only. It shows three sections: Working, Open and Finished. Open lists the rows that need the person first, then done tasks, then the rest. Finished shows the last 20 closed work items. A row that needs the person is amber. `ledger close` moves work to Finished. The panel shows `--title`.
 
 ## Recipe
 

@@ -47,6 +47,10 @@
       <caption>A project with its sessions, changed files and file tree, and three agent sessions side by side</caption>
       <image type="source" width="1920" height="1080">https://raw.githubusercontent.com/solutionscay/skiff/main/.github/screenshot.png</image>
     </screenshot>
+    <screenshot>
+      <caption>The Skiff agent, Skipper, reports a release, with the Ledger panel of finished tasks beside it</caption>
+      <image type="source" width="1920" height="1080">https://raw.githubusercontent.com/solutionscay/skiff/main/.github/screenshot-skipper.png</image>
+    </screenshot>
   </screenshots>
 
   <content_rating type="oars-1.1"/>

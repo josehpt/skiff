@@ -199,7 +199,7 @@ Work is a plan with its tasks, or a task with no plan. It is `working` while an 
 - `ledger send` exits 1 and types nothing for a task that is `sent`, `blocked` or `done`, for a plan, for a gone pane, or for a task on another daemon.
 - Give every task and plan a `--title` of 3 to 6 words, such as `--title "Fix found-set count"`. Without one, the Ledger panel uses the first sentence of the task.
 - `--type T` records the task type. `--ref TEXT` stores a URL or a ticket key. Skiff stores both and does not act on them.
-- `--parent UID` joins a task to its work: a plan, or a task with no plan. A task with no plan goes into a new plan with its title, project, ref and type, and `add` prints the plan's uid. A plan cannot be under a plan. A task added or moved under closed work opens it again.
+- `--parent UID` joins a task to its work: a plan or any task in it, or a task with no plan. A task with no plan goes into a new plan with its title, project, ref and type, and `add` prints the plan's uid. A plan cannot be under a plan. A task added or moved under closed work opens it again.
 - `ls` groups rows by work in its WORK column: `working`, then `open`. `--closed` shows closed work, `--all` every row. `--json` adds `bucket` and `closed_at`.
 - `ls --state` takes `sent`, `pending`, `blocked`, `done`, `interrupted` or `gone`. `ls --unreported` lists the done tasks to report.
 - Run `ledger report` in the same turn as you tell the person. A plan's uid reports its done tasks. A task that is not done is refused. A state change away from `done` clears the mark and opens the work again.

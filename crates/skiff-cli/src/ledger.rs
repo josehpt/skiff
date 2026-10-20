@@ -291,12 +291,17 @@ fn head(db: &Connection, arg: &str) -> Result<Row> {
     Ok(r)
 }
 
-/// The plan a task joins with `--parent arg`: the plan `arg` names, or a new
-/// plan that wraps the task with no plan `arg` names. The new plan takes the
-/// task's text, title, project, ref, type, send time and close stamp. Closed
-/// work opens again: the task is new work in it. Run it in a transaction.
+/// The plan a task joins with `--parent arg`: the plan `arg` names or holds
+/// a task of, or a new plan that wraps the task with no plan `arg` names.
+/// The new plan takes the task's text, title, project, ref, type, send time
+/// and close stamp. Closed work opens again: the task is new work in it. Run
+/// it in a transaction.
 fn join(db: &Connection, file: &Path, arg: &str) -> Result<Row> {
-    let r = head(db, arg)?;
+    let r = one(db, arg)?;
+    let r = match &r.parent {
+        Some(p) => one(db, p)?,
+        None => r,
+    };
     if r.is_plan() {
         db.execute("UPDATE tasks SET closed_at = NULL WHERE id = ?1", [r.id])?;
         return one(db, &r.uid);
@@ -436,7 +441,7 @@ fn print_rows(rows: &[(Row, bool)], closed: bool) {
             if closed {
                 row.push(r.closed_at.clone().unwrap_or_default());
             }
-            row.push(r.task.clone());
+            row.push(one_line(&r.task));
             row
         })
         .collect();
@@ -455,6 +460,12 @@ fn print_rows(rows: &[(Row, bool)], closed: bool) {
     }
     header.push("TASK");
     print::table(&header, &table);
+}
+
+/// The text on one line, for a table cell: line breaks and runs of space
+/// become one space.
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// One row, a field per line, as `show` prints it. `closed`: the work
@@ -1561,9 +1572,10 @@ mod tests {
         assert_eq!(b_path, folder.join(format!("{b}-build-the-linux-packages.md")).display().to_string());
         // `add` makes no file.
         assert!(!results.exists());
-        // A task in a plan is no work head.
-        let err = insert(&mut db, &file, New { parent: Some(a.clone()), ..task("x") }).unwrap_err().to_string();
-        assert_eq!(err, format!("task {a} is in plan {puid}. Name the plan. Nothing changed"));
+        // A task in a plan names its plan.
+        let (_, x, _, plan) = insert(&mut db, &file, New { parent: Some(a.clone()), ..task("x") }).unwrap();
+        assert_eq!(plan.as_deref(), Some(puid.as_str()));
+        db.execute("DELETE FROM tasks WHERE uid = ?1", [&x]).unwrap();
 
         let shown: Vec<_> = tree(rows(&db, "", None).unwrap()).into_iter().map(|(r, child)| (r.uid, child)).collect();
         assert_eq!(shown, [(lone.clone(), false), (puid.clone(), false), (a, true), (b, true)]);
@@ -1572,6 +1584,11 @@ mod tests {
         // The watcher gets the open tasks, not the plan.
         assert_eq!(open_tasks_at(&file).unwrap().len(), 3);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_table_cell_takes_the_task_on_one_line() {
+        assert_eq!(one_line("Build #177.\n\nRead first:\r\n- the mock\t "), "Build #177. Read first: - the mock");
     }
 
     #[test]

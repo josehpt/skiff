@@ -256,8 +256,9 @@ pub enum LedgerCmd {
         /// A plan: a row with no pane that groups tasks under it.
         #[arg(long)]
         plan: bool,
-        /// The work this task joins: a plan, or a task with no plan, which
-        /// a new plan then wraps. Its id or uid. Closed work opens again.
+        /// The work this task joins: a plan or any task in it, or a task with
+        /// no plan, which a new plan then wraps. Its id or uid. Closed work
+        /// opens again.
         #[arg(long, value_name = "ID", conflicts_with = "plan")]
         parent: Option<String>,
         /// Default: the project that holds the pane's folder.

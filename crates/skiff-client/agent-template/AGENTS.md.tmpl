@@ -76,8 +76,8 @@ the commands:
 - `close` takes a plan's uid, or a task with no plan. It refuses work with a
   task that is not done, and a task in a plan. It also reports the done tasks
   of the work.
-- A follow-up on the same work joins it with `--parent UID`: the plan's uid,
-  or the uid of a task with no plan. That task then goes into a new plan,
+- A follow-up on the same work joins it with `--parent UID`: the uid of the
+  plan or of any task in it. A task with no plan then goes into a new plan,
   and `add` prints the plan's uid. A task added under closed work opens it
   again.
 - `skiff ledger prune` removes work closed more than 7 days ago. Run it only

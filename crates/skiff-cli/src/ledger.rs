@@ -81,7 +81,12 @@ fn open_at(file: &Path) -> Result<Connection> {
     db.execute_batch(UIDS)?;
     db.execute_batch(OWNER)?;
     migrate(&mut db)?;
-    db.pragma_update(None, "user_version", VERSION)?;
+    // Only up: an older skiff that opens the file stamps its own version, and
+    // must not undo a newer one's. The columns, not the stamp, tell the shape.
+    let v: i64 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    if v < VERSION {
+        db.pragma_update(None, "user_version", VERSION)?;
+    }
     Ok(db)
 }
 
@@ -996,6 +1001,11 @@ mod tests {
         assert_eq!(db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), VERSION);
         assert_eq!(owner(&db).unwrap(), None);
         assert!(!dir.join("ledger.db.old").exists());
+        // A newer skiff's stamp stays.
+        db.pragma_update(None, "user_version", VERSION + 1).unwrap();
+        drop(db);
+        let db = open_at(&file).unwrap();
+        assert_eq!(db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), VERSION + 1);
         // A second open changes nothing.
         drop(db);
         assert_eq!(rows(&open_at(&file).unwrap(), "", None).unwrap().len(), 2);

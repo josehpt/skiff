@@ -111,15 +111,17 @@ pub fn gen(s: &SessionInfo) -> Option<i64> {
 }
 
 /// Opens the ledger read-only, for a reader that must not change it: no
-/// migration, no new file. A file older than [`VERSION`] is refused: any
-/// `skiff ledger` command brings it up to date.
+/// migration, no new file. A file without `tasks.reported_at` (older than
+/// [`VERSION`]) is refused: any `skiff ledger` command brings it up to date.
+/// The columns decide, not `user_version`: a skiff from before version 5
+/// stamps its own lower version on a file that has every column.
 pub fn open_read(file: &Path) -> Result<Connection> {
     let db = Connection::open_with_flags(file, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)
         .with_context(|| format!("open {}", file.display()))?;
     db.busy_timeout(std::time::Duration::from_secs(2))?;
-    let v: i64 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
-    if v < VERSION {
-        bail!("the ledger is version {v}. Run any `skiff ledger` command to update it");
+    let n: i64 = db.query_row("SELECT count(*) FROM pragma_table_info('tasks') WHERE name = 'reported_at'", [], |r| r.get(0))?;
+    if n == 0 {
+        bail!("the ledger is older than version {VERSION}. Run any `skiff ledger` command to update it");
     }
     Ok(db)
 }
@@ -181,11 +183,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_reader_takes_only_the_current_version_and_writes_nothing() {
+    fn a_reader_goes_by_the_columns_and_writes_nothing() {
         let dir = std::env::temp_dir().join(format!("skiff-ledger-read-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("ledger.db");
+        // Version 4: no reported_at. Refused.
+        let db = Connection::open(&file).unwrap();
+        db.execute_batch("CREATE TABLE tasks (id INTEGER PRIMARY KEY, uid TEXT, socket TEXT); PRAGMA user_version = 4;").unwrap();
+        assert!(open_read(&file).unwrap_err().to_string().contains("skiff ledger"));
+        drop(db);
+        std::fs::remove_file(&file).unwrap();
+        // Every column, stamped down to 3 by an older skiff. Read.
         let db = Connection::open(&file).unwrap();
         db.execute_batch(&format!(
             "CREATE TABLE tasks (id INTEGER PRIMARY KEY, uid TEXT, kind TEXT, parent TEXT, pane_id TEXT, pane_gen INTEGER, project TEXT,
@@ -193,11 +202,9 @@ mod tests {
              INSERT INTO tasks (uid, kind, project, task, sent_at, state, updated_at) VALUES ('a1b2c3d4', 'plan', '', 'p', 'x', 'sent', 'x');
              INSERT INTO tasks (uid, kind, parent, project, task, sent_at, state, updated_at) VALUES ('e5f6a7b8', 'task', 'a1b2c3d4', '', 't', 'x', 'done', 'x');
              PRAGMA user_version = {};",
-            VERSION - 1
+            3
         ))
         .unwrap();
-        assert!(open_read(&file).unwrap_err().to_string().contains("skiff ledger"));
-        db.pragma_update(None, "user_version", VERSION).unwrap();
         let r = open_read(&file).unwrap();
         let mut list = rows(&r, "", None).unwrap();
         roll_up(&mut list);

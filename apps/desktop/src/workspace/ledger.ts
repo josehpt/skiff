@@ -1,7 +1,7 @@
 /**
  * The Ledger: Skipper's tasks, in a panel at the right of its pane. It shows
- * only while Skipper's pane is the one pane on screen. Focus mode and
- * maximize hide it with the other chrome.
+ * only while Skipper's pane is the one pane on screen. Focus mode keeps it;
+ * maximize hides it with the other chrome.
  *
  * Two parts, always visible. On top, the live queue: done and not reported
  * (oldest finished first, the next to leave), then the work in progress in
@@ -19,6 +19,7 @@
  *
  * The person can fold the panel to a rail: a chevron, and the amber count of
  * the tasks that need them. The fold stays in localStorage on this machine.
+ * A fold or an unfold slides the width; a saved fold at start does not.
  */
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -29,6 +30,7 @@ import { S, sessions } from "../app/state";
 import { shownIds } from "../app/stateQueries";
 import type { SessionInfo } from "../platform/types";
 import { openPath, previewOnScreen } from "../terminal/peek";
+import { holdFits, releaseFits } from "../terminal/terminal";
 import { h } from "../ui/dom";
 import { isSlot } from "./layoutSlots";
 import { taskTitle } from "./model";
@@ -226,9 +228,9 @@ function wanted(): boolean {
   return ids.length === 1 && ids[0] === s.id;
 }
 
-/** The panel is on screen: not hidden by focus mode or maximize. The fold acts only then. */
+/** The panel is on screen: focus mode keeps it, maximize hides it. The fold acts only then. */
 export function ledgerShown(): boolean {
-  return wanted() && !S.focusMode && !S.maximized;
+  return wanted() && !S.maximized;
 }
 
 const FOLD_KEY = "skiff.ledgerFolded";
@@ -251,7 +253,34 @@ export function toggleLedger() {
   } catch {
     /* the fold lasts for this run */
   }
+  slide();
   render();
+}
+
+/** As focus mode and maximize: 180ms, ease-out. */
+const SLIDE_MS = 180;
+/** A fold in progress: the open panel's rows stay, clipped, until the rail takes their place. */
+let folding = false;
+let slideEnd = 0;
+
+/**
+ * Slides the width to the new fold. Skipper's terminal keeps its size
+ * during the slide and fits once at the end.
+ */
+function slide() {
+  const panel = document.getElementById("ledger");
+  if (!panel || still()) return;
+  panel.classList.add("sliding");
+  folding = folded;
+  holdFits();
+  clearTimeout(slideEnd);
+  // A frame after the transition, so the fit reads the final width.
+  slideEnd = window.setTimeout(() => {
+    panel.classList.remove("sliding");
+    folding = false;
+    render();
+    releaseFits();
+  }, SLIDE_MS + 40);
 }
 
 /** The next draw of the open panel flashes the first row that needs the person. */
@@ -461,7 +490,7 @@ export function renderLedger() {
     return;
   }
   panel.classList.toggle("folded", folded);
-  if (folded) {
+  if (folded && !folding) {
     drawn = false;
     renderRail(panel);
     return;

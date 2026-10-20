@@ -198,7 +198,7 @@ function fitNextFrame() {
  * after the last resize too, so the panes end at the final size.
  */
 function fitSoon() {
-  if (fitFrame || fitTimer) return;
+  if (fitsHeld || fitFrame || fitTimer) return;
   const wait = FIT_MS - (performance.now() - lastFit);
   if (wait <= 0) {
     fitNextFrame();
@@ -211,6 +211,26 @@ function fitSoon() {
 }
 
 new ResizeObserver(() => fitSoon()).observe(host);
+
+/**
+ * A panel slide changes the terminal area's width on each frame. While the
+ * fits are held, the terminals keep their size, clipped or with room at the
+ * right, and do not reflow. The release fits them once, at the final size.
+ */
+let fitsHeld = false;
+
+export function holdFits() {
+  fitsHeld = true;
+  cancelAnimationFrame(fitFrame);
+  fitFrame = 0;
+  clearTimeout(fitTimer);
+  fitTimer = 0;
+}
+
+export function releaseFits() {
+  fitsHeld = false;
+  fitShown();
+}
 
 // The right button belongs to Skiff inside the terminal area. xterm.js and
 // the program behind it (which may paste on right-click) never see it.

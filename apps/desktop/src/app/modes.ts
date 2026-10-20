@@ -1,7 +1,8 @@
 /**
- * Focus mode and maximize. Focus mode hides the tree, the top bar,
- * the status bar and the Ledger beside Skipper: the panes of the current view fill the window. Maximize
- * shows only the focused pane, with the same chrome hidden. Ctrl+Shift+Up/Down
+ * Focus mode and maximize. Focus mode hides the tree, the top bar and
+ * the status bar: the panes of the current view fill the window. The Ledger
+ * beside Skipper stays, folded or open. Maximize shows only the focused pane,
+ * with the same chrome and the Ledger hidden. Ctrl+Shift+Up/Down
  * step through the panes of the view, as they step through its rows in the
  * tree. While maximized, the next pane is maximized in its place.
  * Ctrl+Shift+Left/Right do nothing. Keys that go to another view (Next
@@ -14,6 +15,7 @@ import { host } from "../terminal/terminalHost";
 import { currentRow } from "./keyboard";
 import type { Action } from "./keys";
 import { render } from "./render";
+import { isSkiffAgent } from "./skiffAgent";
 import { S } from "./state";
 import { shownIds } from "./stateQueries";
 
@@ -80,9 +82,17 @@ function stepPane(dir: 1 | -1) {
 /** The view has one pane: focus mode and maximize look the same, so they are one state. */
 const onePane = () => shownIds().filter((id) => !isSlot(id)).length === 1;
 
+/**
+ * Skipper's pane alone. Focus mode keeps the Ledger and maximize hides it, so
+ * the two look different and stay two states, as with many panes.
+ */
+const twoStates = () => !!S.focused && isSkiffAgent(S.focused) && shownIds().includes(S.focused);
+/** One pane where focus mode and maximize are one state. */
+const oneState = () => onePane() && !twoStates();
+
 export function toggleFocusMode() {
   // One pane: focus mode is maximize. A second press leaves it, never a step back to the other.
-  if (onePane() && !maxReturn.to) return hidden() ? leaveModes() : toggleMaximize();
+  if (oneState() && !maxReturn.to) return hidden() ? leaveModes() : toggleMaximize();
   // From maximize, focus mode shows the view's panes again with the chrome still hidden.
   if (S.maximized) {
     S.focusMode = true;
@@ -105,8 +115,8 @@ export function toggleMaximize() {
   if (S.maximized) {
     const back = maxReturn.to;
     maxReturn.to = null;
-    // One pane: out of maximize is out of focus mode too.
-    if (!back) return onePane() ? leaveModes() : restore();
+    // One pane: out of maximize is out of focus mode too. Else back to focus mode when it came from there.
+    if (!back) return oneState() ? leaveModes() : restore();
     back(() => {
       stillNext();
       restore();
@@ -115,7 +125,7 @@ export function toggleMaximize() {
   }
   if (!S.focused || !shownIds().includes(S.focused)) return;
   // One pane in focus mode already fills the window: the key leaves it.
-  if (onePane() && S.focusMode) return leaveModes();
+  if (oneState() && S.focusMode) return leaveModes();
   S.maximized = S.focused;
   enter();
 }
@@ -130,6 +140,8 @@ const SLIDE_MS = 180;
 const EASE = "cubic-bezier(.2, .7, .2, 1)";
 const reduced = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
 const chrome = () => [...document.querySelectorAll<HTMLElement>("#topbar, #sidebar, #statusbar, #ledger")];
+/** The chrome a mode hides: all of it, but focus mode keeps the Ledger. */
+const hides = (el: HTMLElement) => el.id !== "ledger" || !!S.maximized;
 const cells = () => [...host.querySelectorAll<HTMLElement>(".layout .cell, .mode-lift > .cell")];
 const motion: { animation: Animation; clean: () => void }[] = [];
 
@@ -268,15 +280,18 @@ export function renderModes() {
   const old = before;
   before = null;
   for (const el of chrome()) {
-    if (on && chromeChanged) {
+    const off = on && hides(el);
+    // The Ledger can go while the chrome stays hidden: from focus mode into maximize.
+    if (off && (chromeChanged || !el.inert)) {
       const r = old?.chrome.get(el)?.rect ?? el.getBoundingClientRect();
       Object.assign(el.style, { left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` });
-    } else if (!on) {
+    } else if (!off) {
       for (const prop of ["left", "top", "width", "height"]) el.style.removeProperty(prop);
     }
-    el.inert = on;
+    el.inert = off;
   }
   document.body.classList.toggle("focus-mode", on);
+  document.body.classList.toggle("maximize-mode", !!S.maximized);
   // Fit before the first animation frame. Animation never changes these dimensions.
   fitShown();
   if (!old || reduced()) return;
@@ -297,7 +312,7 @@ export function renderModes() {
       const from = previous.visible ? `translate(${previous.rect.left - r.left}px, ${previous.rect.top - r.top}px)` : away;
       animate(el, [
         { transform: from, opacity: previous.opacity, visibility: "visible" },
-        { transform: on ? away : "translate(0, 0)", opacity: on ? 0 : 1, visibility: "visible" },
+        { transform: on && hides(el) ? away : "translate(0, 0)", opacity: on && hides(el) ? 0 : 1, visibility: "visible" },
       ]);
     }
   }

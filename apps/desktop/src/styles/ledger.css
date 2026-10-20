@@ -1,4 +1,4 @@
-/* The Ledger beside Skipper's pane (#150): groups of 20px rows, one line each. */
+/* The Ledger beside Skipper's pane (#151): the live queue on top, the grey Finished list under it. One 20px line per row. */
 #ledger {
   width: calc(360 * var(--u)); flex-shrink: 0;
   display: flex; flex-direction: column;
@@ -9,51 +9,72 @@
 #ledger[hidden] { display: none; }
 .lg-head {
   height: var(--row); flex-shrink: 0;
-  display: flex; align-items: center; padding: 0 calc(16 * var(--u));
+  display: flex; align-items: center; gap: calc(8 * var(--u)); padding: 0 calc(16 * var(--u));
   border-bottom: 1px solid var(--rule);
   font-size: calc(13px * var(--zoom, 1)); font-weight: 600; color: var(--text);
 }
-.lg-list { flex-grow: 1; min-height: 0; overflow-y: auto; padding-bottom: calc(8 * var(--u)); }
-.lg-group {
-  height: calc(20 * var(--u)); margin-top: calc(12 * var(--u)); padding: 0 calc(16 * var(--u));
-  display: flex; align-items: center;
-  font-size: calc(11px * var(--zoom, 1)); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim);
-}
+.lg-name { flex: 1; }
+.lg-need { padding: 0; border: 0; background: none; cursor: pointer; font-family: var(--mono); font-size: calc(11px * var(--zoom, 1)); font-weight: 400; color: var(--state-waiting-text); }
+.lg-need[hidden] { display: none; }
+.lg-need:hover { text-decoration: underline; }
+.lg-list { position: relative; flex-grow: 1; min-height: 0; overflow-y: auto; padding: calc(6 * var(--u)) 0 calc(10 * var(--u)); }
 .lg-row {
+  position: relative;
   height: calc(20 * var(--u)); padding: 0 calc(16 * var(--u));
   display: flex; align-items: center; gap: calc(8 * var(--u));
   font-size: calc(12px * var(--zoom, 1)); color: var(--text-2); white-space: nowrap; cursor: pointer;
 }
 .lg-row:hover { background-image: linear-gradient(var(--hover), var(--hover)); }
-.lg-row.kid { padding-left: calc(36 * var(--u)); }
+/* A task under a plan: its dot sits under the plan's title. */
+.lg-row.kid { padding-left: calc(31 * var(--u)); }
 /* A row whose click does nothing does not light on hover. */
 .lg-row.dead { cursor: default; }
 .lg-row.dead:hover { background-image: none; }
-.lg-row.reported { color: var(--text-dim); }
 .lg-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.lg-pane { flex-shrink: 0; max-width: calc(130 * var(--u)); overflow: hidden; text-overflow: ellipsis; color: var(--text-dim); font-size: calc(11px * var(--zoom, 1)); }
-.lg-pane.gone { text-decoration: line-through; }
-.lg-dot { width: calc(7 * var(--u)); height: calc(7 * var(--u)); flex-shrink: 0; border-radius: 50%; background: var(--state-done); }
-.lg-dot.need { background: var(--state-waiting); }
-.lg-dot.run { background: var(--state-working); }
-.lg-dot.reported { background: transparent; box-shadow: inset 0 0 0 1px var(--state-done); }
-.lg-chev { width: calc(7 * var(--u)); flex-shrink: 0; display: grid; place-items: center; color: var(--text-3); }
-.lg-chev svg { transition: transform 120ms; }
-.lg-row[aria-expanded="true"] .lg-chev svg { transform: rotate(90deg); }
-@media (prefers-reduced-motion: reduce) { .lg-chev svg { transition: none; } }
-/* ⋯ takes the pane name's place on hover. */
-.lg-more { display: none; flex-shrink: 0; width: calc(18 * var(--u)); height: calc(20 * var(--u)); padding: 0; border: 0; background: none; color: var(--text-3); font: inherit; text-align: center; cursor: pointer; }
-.lg-row:hover .lg-more { display: block; }
-.lg-row:hover .lg-more ~ .lg-pane { display: none; }
-.lg-more:hover { color: var(--text); }
-.lg-empty { padding: calc(16 * var(--u)); font-size: calc(12px * var(--zoom, 1)); color: var(--text-dim); }
-.lg-foot {
-  display: block; margin: calc(12 * var(--u)) calc(16 * var(--u)) calc(6 * var(--u)); padding: 0;
-  border: 0; background: none; cursor: pointer;
-  font: inherit; font-size: calc(11px * var(--zoom, 1)); color: var(--text-3);
+.lg-pane { flex-shrink: 0; max-width: calc(140 * var(--u)); overflow: hidden; text-overflow: ellipsis; color: var(--text-dim); font-size: calc(11px * var(--zoom, 1)); }
+.lg-n { flex-shrink: 0; font-family: var(--mono); font-size: calc(11px * var(--zoom, 1)); color: var(--text-3); }
+.lg-dot { width: calc(7 * var(--u)); height: calc(7 * var(--u)); flex-shrink: 0; border-radius: 50%; }
+
+/* States. */
+.lg-row.s-pending .lg-dot { box-shadow: inset 0 0 0 1px var(--text-dim); }
+.lg-row.s-pending .lg-title { color: var(--text-3); }
+.lg-row.s-sent .lg-dot { background: var(--state-working); }
+.lg-row.s-done .lg-dot { background: var(--state-done); }
+.lg-row.s-done :is(.lg-title, .lg-pane, .lg-n) { color: var(--text-dim); }
+/* Needs the person: amber dot, amber ground, a 2px amber bar, the reason in place of the pane. */
+.lg-row.need { background-color: var(--state-waiting-bg); box-shadow: inset 2px 0 0 var(--state-waiting); }
+.lg-row.need:not(.dead):hover { background-image: none; background-color: color-mix(in srgb, var(--state-waiting) 18%, var(--bg-panel)); }
+.lg-row.need .lg-dot { background: var(--state-waiting); }
+.lg-row.need .lg-title { color: var(--text); }
+.lg-row.need .lg-pane { color: var(--state-waiting-text); }
+.lg-row:is(.s-interrupted, .s-gone).need .lg-dot { background: transparent; box-shadow: inset 0 0 0 1.5px var(--state-waiting); }
+
+/* Finished: a grey list under the queue, newest first. */
+.lg-fin-label {
+  height: calc(20 * var(--u)); margin-top: calc(10 * var(--u)); padding: 0 calc(16 * var(--u));
+  display: flex; align-items: center;
+  border-top: 1px solid var(--rule);
+  font-size: calc(11px * var(--zoom, 1)); color: var(--text-dim);
 }
-.lg-foot:hover { color: var(--text); text-decoration: underline; }
-.lg-foot:active:not(:disabled) { background-image: none; }
+.lg-row.fin { opacity: 0.55; }
+.lg-row.fin .lg-dot { background: var(--state-done); box-shadow: none; }
+.lg-row.fin :is(.lg-title, .lg-pane, .lg-n) { color: var(--text-dim); }
+.lg-empty { padding: calc(8 * var(--u)) calc(16 * var(--u)); font-size: calc(12px * var(--zoom, 1)); color: var(--text-dim); white-space: normal; }
+
+/* Movement: a row slides to its new place. A reported row slides into Finished, slower, so the eye can follow it. */
+.lg-row.moving { transition: transform 260ms ease; }
+.lg-row.moving.long { transition-duration: 520ms; }
+.lg-row.enter { animation: lg-enter 260ms ease; }
+@keyframes lg-enter { from { opacity: 0; transform: translateY(calc(8 * var(--u))); } }
+.lg-row.flash { animation: lg-flash 600ms ease; }
+@keyframes lg-flash { 0% { background-color: color-mix(in srgb, var(--accent) 22%, transparent); } }
+.lg-row.ghost { position: absolute; left: 0; right: 0; pointer-events: none; transition: opacity 360ms ease, transform 360ms ease; }
+.lg-row.ghost.out { opacity: 0; transform: translateY(calc(-14 * var(--u))); }
+@media (prefers-reduced-motion: reduce) {
+  .lg-row.moving, .lg-row.ghost { transition: none; }
+  .lg-row.enter, .lg-row.flash { animation: none; }
+}
+
 /* Skipper's row: one amber count while ledger tasks need the person. */
 .skiff-agent-row .ledger-count { flex-shrink: 0; font-family: var(--mono); font-size: calc(11px * var(--zoom, 1)); color: var(--state-waiting); }
 .skiff-agent-row .ledger-count::before {

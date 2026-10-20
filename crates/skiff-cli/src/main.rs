@@ -243,6 +243,10 @@ pub enum LedgerCmd {
         pane: Option<String>,
         #[arg(long)]
         task: String,
+        /// A short title for the app's Ledger panel: 3 to 6 words. Default:
+        /// the panel takes one from the task text.
+        #[arg(long, value_name = "TEXT")]
+        title: Option<String>,
         /// A plan: a row with no pane that groups tasks under it.
         #[arg(long)]
         plan: bool,
@@ -302,6 +306,9 @@ pub enum LedgerCmd {
         result: Option<String>,
         #[arg(long)]
         task: Option<String>,
+        /// The short title for the app's Ledger panel.
+        #[arg(long, value_name = "TEXT")]
+        title: Option<String>,
         #[arg(long)]
         pane: Option<String>,
         #[arg(long)]

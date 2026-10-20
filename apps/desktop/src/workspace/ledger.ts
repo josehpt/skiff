@@ -3,11 +3,18 @@
  * only while Skipper's pane is the one pane on screen. Focus mode and
  * maximize hide it with the other chrome.
  *
- * Three groups, each hidden when empty: Needs you, Running, Done (done and
- * not reported). One 20px line per row. A plan is one folded row. A click on
- * a task opens its pane; the row menu opens the result or marks it
- * reported, which runs `skiff ledger report`. The rows come read-only from
- * the backend, again on each change to `ledger.db`.
+ * Two parts, always visible. On top, the live queue: done and not reported
+ * (oldest finished first, the next to leave), then the work in progress in
+ * send order, then the pending work. A row that needs the person turns amber
+ * where it is. Under it, Finished: the reported items, newest first, the
+ * last 20. A plan is a head row with its tasks always open under it, and it
+ * counts as one item. Rows slide to their new place, flash on a change and
+ * fade in; a report slides the row down into Finished.
+ *
+ * A click on a queue task opens its pane; the row menu opens the result or
+ * marks it reported, which runs `skiff ledger report`. Finished rows are
+ * inert. The rows come read-only from the backend, again on each change to
+ * `ledger.db`.
  */
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -35,43 +42,63 @@ interface Entry {
   pane_id: string | null;
   pane_gen: number | null;
   task: string;
+  /** The short title Skipper gave it. */
+  title: string | null;
   state: "sent" | "pending" | "blocked" | "done";
   result_path: string | null;
+  updated_at: string;
   reported_at: string | null;
   /** The pane is on another daemon. */
   elsewhere?: boolean;
   result_exists: boolean;
 }
 
-const enum Group { Need, Run, Done }
-const GROUPS: [Group, string][] = [[Group.Need, "Needs you"], [Group.Run, "Running"], [Group.Done, "Done"]];
+/** Where a task stands, from its row and its pane. */
+type State = "pending" | "sent" | "approval" | "blocked" | "interrupted" | "gone" | "exited" | "done";
+
+/** The states that need the person, and the word that takes the pane name's place. */
+const NEED: Partial<Record<State, string>> = { approval: "asks approval", blocked: "blocked", interrupted: "restarted", gone: "pane gone", exited: "exited" };
+const WHY: Partial<Record<State, string>> = {
+  approval: "The agent asks approval in its pane.",
+  blocked: "The task is blocked. Skipper needs an answer.",
+  interrupted: "The pane restarted as a shell. The task stopped.",
+  gone: "The pane closed before the task finished.",
+  exited: "The pane's program ended before the task was done.",
+};
+/** The order of the needs, most urgent first: a plan shows the first its tasks have. */
+const URGENT: State[] = ["approval", "blocked", "interrupted", "gone", "exited"];
+
+/** The part of the queue a state sits in: 0 finished (top), 1 in progress, 2 not sent yet. */
+const zone = (st: State) => (st === "done" ? 0 : st === "pending" ? 2 : 1);
+
+/** Finished keeps this many items. A plan counts as one. */
+const KEEP = 20;
 
 /** A task as the panel shows it. */
 interface Look {
   r: Entry;
-  group: Group;
-  /** Why it needs the person. */
-  why: string | null;
+  st: State;
   /** Its pane, when a click can open it. */
   pane: SessionInfo | null;
   /** The pane name, or what stands for it. */
   where: string;
-  gone: boolean;
 }
 
-/** A line of the list: a task, or a plan with its shown tasks. */
+/** An item of the list: a task, or a plan with its tasks. */
 interface Unit {
   r: Entry;
-  group: Group;
+  st: State;
   look?: Look;
-  kids?: Entry[];
-  kept?: Look[];
+  kids?: Look[];
+  /** When it was reported. `null`: it is in the queue. */
+  reported: string | null;
+  /** When it finished: its last update, or its last task's. */
+  done: string;
 }
 
 let rows: Entry[] = [];
 let error: string | null = null;
-let showReported = false;
-const unfolded = new Set<string>();
+let loaded = false;
 
 export async function loadLedger() {
   try {
@@ -81,6 +108,7 @@ export async function loadLedger() {
     rows = [];
     error = String(e);
   }
+  loaded = true;
   render();
 }
 
@@ -114,52 +142,78 @@ export function shortTitle(text: string): string {
   return s.slice(0, cut > 0 ? cut : 80);
 }
 
-/** Where a task stands, from its row and its pane. */
+/** The title Skipper gave the row, else the one the task text gives. */
+const titleOf = (r: Entry) => r.title?.trim() || shortTitle(r.task);
+
 function look(r: Entry): Look {
   const s = r.pane_id ? sessions.get(r.pane_id) ?? null : null;
-  const short = r.pane_id?.slice(0, 8) ?? "";
-  const base = { r, why: null, pane: s, where: s ? taskTitle(s) : short, gone: false };
-  if (r.elsewhere) return { ...base, group: r.state === "done" ? Group.Done : Group.Run, pane: null, where: "elsewhere" };
-  if (!s) {
-    const why = r.state === "done" ? null : "Gone: the pane closed before the task finished.";
-    return { ...base, group: r.state === "done" ? Group.Done : Group.Need, why, gone: true };
-  }
-  if (r.state === "done") return { ...base, group: Group.Done };
+  const base = { r, pane: s, where: s ? taskTitle(s) : r.pane_id?.slice(0, 8) ?? "" };
+  if (r.elsewhere) return { ...base, st: r.state === "done" || r.state === "pending" ? r.state : "sent", pane: null, where: "elsewhere" };
+  if (r.state === "done") return { ...base, st: "done" };
+  if (!s) return { ...base, st: "gone" };
   const restarted = r.state !== "pending" && r.pane_gen !== null && !!s.started_at && s.started_at !== r.pane_gen;
-  if (restarted) return { ...base, group: Group.Need, why: "Interrupted: the pane restarted as a shell." };
-  if (r.state === "pending") return { ...base, group: Group.Need, why: "Not sent yet: the pane was working, or the task waits for a send." };
-  if (r.state === "blocked") return { ...base, group: Group.Need, why: "Blocked: the pane needs you." };
-  if (s.state === "waiting") return { ...base, group: Group.Need, why: "Waiting: the pane asks for approval." };
-  if (s.state === "done") return { ...base, group: Group.Need, why: "Exited: the pane's program ended before the task was done." };
-  return { ...base, group: Group.Run };
+  if (restarted) return { ...base, st: "interrupted" };
+  if (r.state === "pending" || r.state === "blocked") return { ...base, st: r.state };
+  if (s.state === "waiting") return { ...base, st: "approval" };
+  if (s.state === "done") return { ...base, st: "exited" };
+  return { ...base, st: "sent" };
 }
 
-const shows = (r: Entry, all: boolean) => r.state !== "done" || !r.reported_at || all;
+/** A plan's state from its tasks: the most urgent need shows. */
+function planState(kids: Look[]): State {
+  for (const st of URGENT) if (kids.some((k) => k.st === st)) return st;
+  if (kids.every((k) => k.st === "done")) return "done";
+  if (kids.every((k) => k.st === "pending")) return "pending";
+  return "sent";
+}
 
-/** The lines of the list, in ledger order. */
-function units(all: boolean): Unit[] {
+const latest = (xs: string[]) => xs.reduce((a, b) => (b > a ? b : a), "");
+
+/** Every item, in ledger order. */
+function units(): Unit[] {
   const plans = new Set(rows.filter((r) => r.kind === "plan").map((r) => r.uid));
   const out: Unit[] = [];
   for (const r of rows) {
     if (r.kind === "plan") {
-      const kids = rows.filter((k) => k.kind === "task" && k.parent === r.uid);
+      const kids = rows.filter((k) => k.kind === "task" && k.parent === r.uid).map(look);
       if (!kids.length) {
-        if (shows(r, all)) out.push({ r, group: r.state === "done" ? Group.Done : Group.Run, kids, kept: [] });
+        // A plan with no task stands by its own state.
+        const st: State = r.state === "done" || r.state === "pending" || r.state === "blocked" ? r.state : "sent";
+        out.push({ r, st, kids, reported: st === "done" ? r.reported_at : null, done: r.updated_at });
         continue;
       }
-      const kept = kids.filter((k) => shows(k, all)).map(look);
-      if (kept.length) out.push({ r, group: Math.min(...kept.map((k) => k.group)), kids, kept });
-    } else if ((!r.parent || !plans.has(r.parent)) && shows(r, all)) {
+      const all = kids.every((k) => k.r.state === "done" && k.r.reported_at);
+      out.push({ r, st: planState(kids), kids, reported: all ? latest(kids.map((k) => k.r.reported_at!)) : null, done: latest(kids.map((k) => k.r.updated_at)) });
+    } else if (!r.parent || !plans.has(r.parent)) {
       const l = look(r);
-      out.push({ r, group: l.group, look: l });
+      out.push({ r, st: l.st, look: l, reported: r.state === "done" ? r.reported_at : null, done: r.updated_at });
     }
   }
   return out;
 }
 
-/** The tasks that need the person: the count on Skipper's row. */
+/** The queue: done first, oldest finished on top; then in progress and pending, in send order. */
+function queue(us: Unit[]): Unit[] {
+  const key = (u: Unit) => (u.st === "done" ? u.done : "");
+  return us.filter((u) => !u.reported).sort((a, b) => zone(a.st) - zone(b.st) || key(a).localeCompare(key(b)) || a.r.id - b.r.id);
+}
+
+/** Finished: the reported items, newest first, the last [`KEEP`]. */
+function finished(us: Unit[]): Unit[] {
+  return us
+    .filter((u) => u.reported)
+    .sort((a, b) => b.reported!.localeCompare(a.reported!) || b.r.id - a.r.id)
+    .slice(0, KEEP);
+}
+
+/** The tasks in the queue that need the person. */
+function needing(q: Unit[]): number {
+  return q.flatMap((u) => u.kids ?? (u.look ? [u.look] : [])).filter((l) => NEED[l.st]).length;
+}
+
+/** The count on Skipper's row. */
 export function ledgerNeeds(): number {
-  return rows.filter((r) => r.kind === "task" && r.state !== "done" && look(r).group === Group.Need).length;
+  return needing(queue(units()));
 }
 
 /** The panel shows while Skipper's pane is the one pane on screen. */
@@ -179,97 +233,120 @@ function report(uids: string[]) {
   invoke("ledger_report", { uids }).then(loadLedger).catch(showError);
 }
 
+/** A click opens the pane of a live task. */
+const opens = (l: Look) => !!l.pane && l.st !== "gone";
+
 /**
- * The row menu: Open pane, Open result, Mark reported. A waiting row's title
- * says why. `l` is the task the menu is for; without it, the plan `u`.
+ * The row menu: Open pane, Open result, Mark reported. A row that needs the
+ * person says why in the title. `l` is the task; without it, the plan `u`.
  */
 function menu(u: Unit, l: Look | undefined, x: number, y: number) {
   const r = l?.r ?? u.r;
-  const plan = !l;
-  const todo = (plan && u.kids?.length ? u.kids : [r]).filter((k) => k.state === "done" && !k.reported_at);
+  const st = l?.st ?? u.st;
+  const todo = (l || !u.kids?.length ? [r] : u.kids.map((k) => k.r)).filter((k) => k.state === "done" && !k.reported_at);
   const entries: MenuEntry[] = [];
-  if (!plan) entries.push({ icon: "code-terminal", label: "Open pane", disabled: !l?.pane || l.gone, run: () => l?.pane && openPane(l.pane) });
+  if (l) entries.push({ icon: "code-terminal", label: "Open pane", disabled: !opens(l), run: () => l.pane && openPane(l.pane) });
   entries.push({ icon: "indicators-square-arrow-out-up-right", label: "Open result", disabled: !r.result_exists, run: () => r.result_path && openPath(r.result_path) });
   entries.push({
     icon: "indicators-check",
-    label: todo.length > 1 ? `Mark ${todo.length} reported` : "Mark reported",
-    disabled: !todo.length,
+    label: "Mark reported",
+    disabled: st !== "done" || !todo.length,
     run: () => report(todo.map((k) => k.uid)),
   });
-  ctxMenu.open(x, y, l?.why ?? shortTitle(r.task), entries);
+  ctxMenu.open(x, y, WHY[st] ?? titleOf(r), entries);
 }
 
-function dot(group: Group, reported: boolean): HTMLElement {
-  return h("span", "lg-dot" + (reported ? " reported" : group === Group.Need ? " need" : group === Group.Run ? " run" : ""));
-}
-
-/** The ⋯ button and the right-click both open the menu. */
-function withMenu(row: HTMLElement, open: (x: number, y: number) => void) {
-  const more = h("button", "lg-more", "⋯");
-  more.type = "button";
-  more.title = "More";
-  more.addEventListener("click", (e) => {
-    e.stopPropagation();
-    const b = more.getBoundingClientRect();
-    open(b.left, b.bottom);
-  });
-  row.addEventListener("contextmenu", (e) => {
-    e.preventDefault();
-    open(e.clientX, e.clientY);
-  });
-  return more;
-}
-
-function taskRow(u: Unit, l: Look, kid: boolean): HTMLElement {
-  const r = l.r;
-  const reported = !!r.reported_at;
-  const live = !!l.pane && !l.gone;
-  const row = h("div", "lg-row" + (kid ? " kid" : "") + (live ? "" : " dead") + (reported ? " reported" : ""));
-  row.title = l.why ? `${r.task}\n\n${l.why}` : r.task;
-  const more = withMenu(row, (x, y) => menu(u, l, x, y));
-  row.append(dot(l.group, reported), h("span", "lg-title", shortTitle(r.task)), more, h("span", "lg-pane" + (l.gone ? " gone" : ""), l.where));
-  if (live) row.addEventListener("click", () => openPane(l.pane!));
+/** One 20px line. `fin`: a Finished row, which does nothing. */
+function line(r: Entry, st: State, label: string, o: { plan?: boolean; kid?: boolean; fin?: boolean; dead?: boolean }): HTMLElement {
+  const need = !o.fin && !!NEED[st];
+  const row = h("div", `lg-row s-${st}` + (need ? " need" : "") + (o.plan ? " plan" : "") + (o.kid ? " kid" : "") + (o.fin ? " fin" : "") + (o.dead || o.fin ? " dead" : ""));
+  row.dataset.key = r.uid;
+  row.dataset.look = o.fin ? "fin" : `${st}:${label}`;
+  if (!o.fin) row.title = WHY[st] ? `${r.task}\n\n${WHY[st]}` : r.task;
+  row.append(h("span", "lg-dot"), h("span", "lg-title", titleOf(r)), h("span", o.plan ? "lg-n" : "lg-pane", label));
   return row;
 }
 
-function planRow(u: Unit): HTMLElement[] {
-  const r = u.r;
+function taskRow(u: Unit, l: Look, kid: boolean, fin: boolean): HTMLElement {
+  const row = line(l.r, l.st, (!fin && NEED[l.st]) || l.where, { kid, fin, dead: !opens(l) });
+  if (fin) return row;
+  if (opens(l)) row.addEventListener("click", () => openPane(l.pane!));
+  row.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    menu(u, l, e.clientX, e.clientY);
+  });
+  return row;
+}
+
+function unitRows(u: Unit, fin: boolean): HTMLElement[] {
+  if (u.look) return [taskRow(u, u.look, false, fin)];
   const kids = u.kids ?? [];
-  const open = unfolded.has(r.uid) && !!u.kept?.length;
-  const reported = kids.length ? kids.every((k) => !!k.reported_at) : !!r.reported_at;
-  const row = h("div", "lg-row plan" + (reported ? " reported" : ""));
-  row.title = r.task;
-  if (kids.length) {
-    row.setAttribute("aria-expanded", String(open));
-    const chev = h("span", "lg-chev");
-    chev.innerHTML = '<svg width="8" height="8" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 1 5.5 4l-3 3"/></svg>';
-    row.append(chev);
-    row.addEventListener("click", () => {
-      if (!unfolded.delete(r.uid)) unfolded.add(r.uid);
-      render();
+  const n = kids.length ? `${kids.filter((k) => k.st === "done").length}/${kids.length}` : "";
+  // A plan row is a head for its tasks: a click does nothing.
+  const row = line(u.r, fin ? "done" : u.st, n, { plan: true, fin, dead: true });
+  if (!fin) {
+    row.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      menu(u, undefined, e.clientX, e.clientY);
     });
-  } else {
-    // A plan with no task has nothing to fold: no chevron, no click.
-    row.classList.add("dead");
-    row.append(dot(u.group, reported));
   }
-  if (u.group === Group.Need) row.append(dot(Group.Need, false));
-  const more = withMenu(row, (x, y) => menu(u, undefined, x, y));
-  const done = kids.filter((k) => k.state === "done").length;
-  row.append(h("span", "lg-title", shortTitle(r.task)), more, h("span", "lg-pane", kids.length ? `${done}/${kids.length}` : ""));
-  const out: HTMLElement[] = [row];
-  if (open) for (const k of u.kept ?? []) out.push(taskRow(u, k, true));
-  return out;
+  return [row, ...kids.map((k) => taskRow(u, k, true, fin))];
 }
 
 /** What the list draws. The panel is rebuilt only when it changes. */
-function signature(us: Unit[]): string {
-  return JSON.stringify([
-    error, showReported, [...unfolded],
-    us.map((u) => [u.r.id, u.r.state, u.r.reported_at, u.r.result_exists, u.group, u.look ? [u.look.where, u.look.why, u.look.gone] : null,
-      u.kept?.map((k) => [k.r.id, k.r.state, k.r.reported_at, k.r.result_exists, k.group, k.where, k.why, k.gone])]),
-  ]);
+function signature(q: Unit[], f: Unit[]): string {
+  const look = (l: Look) => [l.r.id, l.r.state, l.r.title, l.r.task, l.r.reported_at, l.r.result_exists, l.st, l.where, opens(l)];
+  const unit = (u: Unit) => [u.r.id, u.st, u.r.title, u.r.task, u.r.result_exists, u.look ? look(u.look) : null, u.kids?.map(look)];
+  return JSON.stringify([error, q.map(unit), f.map(unit)]);
 }
+
+const still = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/**
+ * Moves the rows of `list` from their places in `before`: a row that stays
+ * slides from its old place, a row with a new look flashes, a new row fades
+ * in, a row that left fades up and out. A row that moved into Finished
+ * slides slower and does not flash.
+ */
+function animate(list: HTMLElement, before: Map<string, { top: number; el: HTMLElement }>) {
+  const after = new Set<string>();
+  for (const r of list.querySelectorAll<HTMLElement>(".lg-row[data-key]")) {
+    const k = r.dataset.key!;
+    after.add(k);
+    const b = before.get(k);
+    if (!b) {
+      r.classList.add("enter");
+      continue;
+    }
+    const intoFin = r.classList.contains("fin") && !b.el.classList.contains("fin");
+    if (b.el.dataset.look !== r.dataset.look && !intoFin) r.classList.add("flash");
+    const dy = b.top - r.offsetTop;
+    if (!dy) continue;
+    r.style.transform = `translateY(${dy}px)`;
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        r.classList.add("moving");
+        if (intoFin) r.classList.add("long");
+        r.style.transform = "";
+      }),
+    );
+  }
+  for (const [k, b] of before) {
+    if (after.has(k)) continue;
+    const g = b.el.cloneNode(true) as HTMLElement;
+    g.classList.remove("moving", "long", "enter", "flash");
+    g.classList.add("ghost");
+    g.removeAttribute("data-key");
+    g.style.top = `${b.top}px`;
+    g.style.transform = "";
+    list.append(g);
+    requestAnimationFrame(() => requestAnimationFrame(() => g.classList.add("out")));
+    setTimeout(() => g.remove(), 420);
+  }
+}
+
+/** The panel's list was on screen at the last render, so a change can move. */
+let drawn = false;
 
 /** Runs on each render, before the modes: shows, hides and fills the panel. */
 export function renderLedger() {
@@ -277,28 +354,50 @@ export function renderLedger() {
   if (!panel) return;
   const show = wanted();
   panel.hidden = !show;
-  if (!show) return;
-  const us = units(showReported);
-  const sig = signature(us);
-  if (panel.dataset.sig === sig) return;
-  panel.dataset.sig = sig;
-  const list = h("div", "lg-list");
-  for (const [g, name] of GROUPS) {
-    const part = us.filter((u) => u.group === g);
-    if (!part.length) continue;
-    list.append(h("div", "lg-group", name));
-    for (const u of part) list.append(...(u.look ? [taskRow(u, u.look, false)] : planRow(u)));
+  if (!show) {
+    drawn = false;
+    return;
   }
-  if (error) list.append(h("div", "lg-empty", error));
-  else if (!us.length) list.append(h("div", "lg-empty", "Nothing open."));
-  const foot = h("button", "lg-foot", showReported ? "Hide reported" : "Show reported");
-  foot.type = "button";
-  foot.addEventListener("click", () => {
-    showReported = !showReported;
-    render();
-  });
-  list.append(foot);
-  const top = panel.querySelector(".lg-list")?.scrollTop ?? 0;
-  panel.replaceChildren(h("div", "lg-head", "Ledger"), list);
-  list.scrollTop = top;
+  const us = units();
+  const q = queue(us);
+  const f = finished(us);
+  const sig = signature(q, f);
+  if (drawn && panel.dataset.sig === sig) return;
+  panel.dataset.sig = sig;
+
+  let list = panel.querySelector<HTMLElement>(".lg-list");
+  let need = panel.querySelector<HTMLElement>(".lg-need");
+  if (!list || !need) {
+    need = h("button", "lg-need");
+    (need as HTMLButtonElement).type = "button";
+    need.title = "Go to the first row that needs you";
+    need.addEventListener("click", () => {
+      const r = panel.querySelector<HTMLElement>(".lg-list .lg-row.need");
+      if (!r) return;
+      r.scrollIntoView({ block: "nearest" });
+      r.classList.remove("flash");
+      void r.offsetWidth;
+      r.classList.add("flash");
+    });
+    const head = h("div", "lg-head");
+    head.append(h("span", "lg-name", "Ledger"), need);
+    list = h("div", "lg-list");
+    panel.replaceChildren(head, list);
+  }
+  const n = needing(q);
+  need.hidden = !n;
+  need.textContent = `${n} need${n === 1 ? "s" : ""} you`;
+
+  const move = drawn && loaded && !still();
+  const before = new Map<string, { top: number; el: HTMLElement }>();
+  if (move) for (const r of list.querySelectorAll<HTMLElement>(".lg-row[data-key]")) before.set(r.dataset.key!, { top: r.offsetTop, el: r });
+
+  const out: HTMLElement[] = [];
+  if (error) out.push(h("div", "lg-empty", error));
+  for (const u of q) out.push(...unitRows(u, false));
+  out.push(h("div", "lg-fin-label", "Finished"));
+  for (const u of f) out.push(...unitRows(u, true));
+  list.replaceChildren(...out);
+  if (move) animate(list, before);
+  drawn = loaded;
 }

@@ -80,6 +80,10 @@ attach.
 - A plan groups tasks: `skiff ledger add --plan --task "..."` makes a row with
   no pane, and `--parent UID` puts a task under it. `ls` shows each plan's tasks
   under it. A plan's notes and its tasks' results go in the plan's own folder.
+- `--title TEXT` on `ledger add` and `ledger update` stores a short title for
+  the app's Ledger panel. Give every task and plan a title of 3 to 6 words,
+  such as `--title "Fix found-set count"`. Without one, the panel takes the
+  first sentence of the task text.
 - `--ref TEXT` is optional free text, such as a URL or a ticket key. Skiff
   stores it and does not read it. The ledger needs no tracker, no git and no
   network.

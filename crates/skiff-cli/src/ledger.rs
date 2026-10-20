@@ -34,7 +34,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   updated_at  TEXT NOT NULL,
   type        TEXT,
   socket      TEXT,
-  reported_at TEXT
+  reported_at TEXT,
+  title       TEXT
 );
 ";
 
@@ -96,12 +97,15 @@ fn open_at(file: &Path) -> Result<Connection> {
 ///   only one with a Skiff agent.
 /// - 4 to 5: `reported_at`. Every row stays not reported: the migration
 ///   cannot tell what the person saw.
+/// - 5 to 6: `title`. Every row stays with none: the app takes one from the
+///   task text.
 fn migrate(db: &mut Connection) -> Result<()> {
     add_column(db, "socket", |tx| {
         tx.execute("UPDATE tasks SET socket = ?1 WHERE kind = 'task'", [state::live_socket().display().to_string()])?;
         Ok(())
     })?;
-    add_column(db, "reported_at", |_| Ok(()))
+    add_column(db, "reported_at", |_| Ok(()))?;
+    add_column(db, "title", |_| Ok(()))
 }
 
 /// Adds the column `name TEXT` to `tasks` and runs `fill`, unless it is
@@ -435,6 +439,9 @@ fn print_one(r: &Row) {
     if let Some(p) = &r.result_path {
         f.push(("result", p.clone()));
     }
+    if let Some(x) = &r.title {
+        f.push(("title", x.clone()));
+    }
     if let Some(x) = &r.reference {
         f.push(("ref", x.clone()));
     }
@@ -454,6 +461,7 @@ struct New {
     pane_gen: Option<i64>,
     project: String,
     task: String,
+    title: Option<String>,
     state: String,
     result: Option<String>,
     reference: Option<String>,
@@ -477,10 +485,10 @@ fn insert(db: &mut Connection, file: &Path, n: New) -> Result<(i64, String, Stri
     };
     tx.execute(
         &format!(
-            "INSERT INTO tasks (uid, kind, parent, pane_id, pane_gen, project, task, sent_at, state, result_path, ref, updated_at, type, socket)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, {NOW}, ?8, ?9, ?10, {NOW}, ?11, ?12)"
+            "INSERT INTO tasks (uid, kind, parent, pane_id, pane_gen, project, task, sent_at, state, result_path, ref, updated_at, type, socket, title)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, {NOW}, ?8, ?9, ?10, {NOW}, ?11, ?12, ?13)"
         ),
-        params![uid, if n.plan { "plan" } else { "task" }, parent.map(|p| p.uid), n.pane_id, n.pane_gen, n.project, n.task, n.state, result, n.reference, n.task_type, n.socket],
+        params![uid, if n.plan { "plan" } else { "task" }, parent.map(|p| p.uid), n.pane_id, n.pane_gen, n.project, n.task, n.state, result, n.reference, n.task_type, n.socket, n.title],
     )?;
     let id = tx.last_insert_rowid();
     tx.commit()?;
@@ -776,7 +784,7 @@ fn add_state(st: Option<&str>, plan: bool, send: bool) -> Result<&str> {
 /// The exit code: `send`'s for `send` and `add --send`, else 0.
 pub async fn run(socket: &Path, cmd: LedgerCmd) -> Result<i32> {
     match cmd {
-        LedgerCmd::Add { pane: p, task, plan: is_plan, parent, project, state: st, result, reference, task_type, send, enter, shell } => {
+        LedgerCmd::Add { pane: p, task, title, plan: is_plan, parent, project, state: st, result, reference, task_type, send, enter, shell } => {
             let task_type = task_type.as_deref().map(skiff_core::tasks::check_name).transpose()?.map(str::to_string);
             let st = add_state(st.as_deref(), is_plan, send)?.to_string();
             let (pane_id, pane_gen, project) = match p {
@@ -789,7 +797,7 @@ pub async fn run(socket: &Path, cmd: LedgerCmd) -> Result<i32> {
             };
             let file = path()?;
             let here = pane_id.as_ref().map(|_| socket.display().to_string());
-            let new = New { plan: is_plan, parent, pane_id, pane_gen, project, task, state: st, result, reference, task_type, socket: here };
+            let new = New { plan: is_plan, parent, pane_id, pane_gen, project, task, title, state: st, result, reference, task_type, socket: here };
             let mut db = open_at(&file)?;
             check_writer(socket, &db).await?;
             let (id, uid, result) = insert(&mut db, &file, new)?;
@@ -805,7 +813,7 @@ pub async fn run(socket: &Path, cmd: LedgerCmd) -> Result<i32> {
             let row = one(&db, &id)?;
             return send_row(socket, &db, &row, SendOpts { text, enter, shell }).await;
         }
-        LedgerCmd::Update { id, state: st, result, task, pane: p, project, parent, reference, task_type } => {
+        LedgerCmd::Update { id, state: st, result, task, title, pane: p, project, parent, reference, task_type } => {
             let st = st.as_deref().map(state).transpose()?;
             let task_type = task_type.as_deref().map(skiff_core::tasks::check_name).transpose()?;
             let db = open()?;
@@ -835,9 +843,9 @@ pub async fn run(socket: &Path, cmd: LedgerCmd) -> Result<i32> {
                 &format!(
                     "UPDATE tasks SET state = coalesce(?2, state), result_path = coalesce(?3, result_path), task = coalesce(?4, task),
                      pane_id = coalesce(?5, pane_id), project = coalesce(?6, project), parent = coalesce(?7, parent), ref = coalesce(?8, ref),
-                     pane_gen = CASE WHEN ?9 THEN ?10 ELSE pane_gen END, type = coalesce(?11, type), socket = coalesce(?12, socket), updated_at = {NOW} WHERE id = ?1"
+                     pane_gen = CASE WHEN ?9 THEN ?10 ELSE pane_gen END, type = coalesce(?11, type), socket = coalesce(?12, socket), title = coalesce(?13, title), updated_at = {NOW} WHERE id = ?1"
                 ),
-                params![row.id, st, result, task, pane_id, project, parent, reference, gen.is_some(), gen.flatten(), task_type, here],
+                params![row.id, st, result, task, pane_id, project, parent, reference, gen.is_some(), gen.flatten(), task_type, here, title],
             )?;
             reopen(&db, row.id, st)?;
         }
@@ -951,6 +959,7 @@ mod tests {
             pane_gen: Some(1000),
             project: "app".into(),
             task: t.into(),
+            title: None,
             state: "sent".into(),
             result: None,
             reference: None,
@@ -980,7 +989,7 @@ mod tests {
         let dir = scratch("v3");
         let file = dir.join("ledger.db");
         {
-            let v3 = TASKS.replace("type        TEXT,\n  socket      TEXT,\n  reported_at TEXT", "type        TEXT");
+            let v3 = TASKS.replace("type        TEXT,\n  socket      TEXT,\n  reported_at TEXT,\n  title       TEXT", "type        TEXT");
             assert!(!v3.contains("socket"));
             let db = Connection::open(&file).unwrap();
             db.execute_batch(&v3).unwrap();
@@ -1013,12 +1022,12 @@ mod tests {
     }
 
     #[test]
-    fn a_version_4_ledger_takes_reported_at_in_place_and_keeps_its_rows() {
+    fn a_version_4_ledger_takes_reported_at_and_title_in_place_and_keeps_its_rows() {
         let dir = scratch("v4");
         let file = dir.join("ledger.db");
         {
-            let v4 = TASKS.replace(",\n  reported_at TEXT", "");
-            assert!(!v4.contains("reported_at"));
+            let v4 = TASKS.replace(",\n  reported_at TEXT,\n  title       TEXT", "");
+            assert!(!v4.contains("reported_at") && !v4.contains("title"));
             let db = Connection::open(&file).unwrap();
             db.execute_batch(&v4).unwrap();
             db.execute_batch(UIDS).unwrap();
@@ -1035,8 +1044,11 @@ mod tests {
         assert_eq!(list.iter().map(|r| (r.uid.as_str(), r.reported_at.as_deref())).collect::<Vec<_>>(), [("a1b2c3d4", None), ("e5f6a7b8", None)]);
         // The v4 socket stays as it was.
         assert_eq!(list[0].socket.as_deref(), Some("/tmp/s.sock"));
-        assert_eq!(db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 5);
+        assert_eq!(db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), VERSION);
         assert_eq!(unreported_at(&file).unwrap(), 1);
+        assert!(list.iter().all(|r| r.title.is_none()));
+        db.execute("UPDATE tasks SET title = 'Old work' WHERE uid = 'a1b2c3d4'", []).unwrap();
+        assert_eq!(one(&db, "a1b2c3d4").unwrap().title.as_deref(), Some("Old work"));
         // A second open adds nothing.
         drop(db);
         let db = open_at(&file).unwrap();

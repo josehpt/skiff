@@ -1091,6 +1091,7 @@ mod tests {
             task_type: None,
             socket: None,
             reported_at: None,
+            title: None,
             elsewhere: false,
             live: None,
             interrupted: None,

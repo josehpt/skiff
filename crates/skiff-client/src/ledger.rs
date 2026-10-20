@@ -16,11 +16,11 @@ pub const INTERRUPTED: &str = "interrupted";
 pub const GONE: &str = "gone";
 
 /// The schema version, in `user_version`. 4 added `tasks.socket` and
-/// `owner`, 5 added `tasks.reported_at`; an older file from version 3 on
-/// takes each in place, with its rows.
-pub const VERSION: i64 = 5;
+/// `owner`, 5 added `tasks.reported_at`, 6 added `tasks.title`; an older
+/// file from version 3 on takes each in place, with its rows.
+pub const VERSION: i64 = 6;
 
-pub const COLUMNS: &str = "id, uid, kind, parent, pane_id, pane_gen, project, task, sent_at, state, result_path, ref, updated_at, type, socket, reported_at";
+pub const COLUMNS: &str = "id, uid, kind, parent, pane_id, pane_gen, project, task, sent_at, state, result_path, ref, updated_at, type, socket, reported_at, title";
 
 #[derive(Serialize, Clone)]
 pub struct Row {
@@ -51,6 +51,9 @@ pub struct Row {
     pub socket: Option<String>,
     /// When the person was told the result. `None`: not yet. Open work has none.
     pub reported_at: Option<String>,
+    /// A short title, 3 to 6 words, for the app's panel. `None`: the panel
+    /// takes one from the task text.
+    pub title: Option<String>,
     /// The socket is not this skiff's: no check of the pane was made.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub elsewhere: bool,
@@ -111,15 +114,15 @@ pub fn gen(s: &SessionInfo) -> Option<i64> {
 }
 
 /// Opens the ledger read-only, for a reader that must not change it: no
-/// migration, no new file. A file without `tasks.reported_at` (older than
+/// migration, no new file. A file without `tasks.title` (older than
 /// [`VERSION`]) is refused: any `skiff ledger` command brings it up to date.
-/// The columns decide, not `user_version`: a skiff from before version 5
-/// stamps its own lower version on a file that has every column.
+/// The columns decide, not `user_version`: an older skiff stamps its own
+/// lower version on a file that has every column.
 pub fn open_read(file: &Path) -> Result<Connection> {
     let db = Connection::open_with_flags(file, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)
         .with_context(|| format!("open {}", file.display()))?;
     db.busy_timeout(std::time::Duration::from_secs(2))?;
-    let n: i64 = db.query_row("SELECT count(*) FROM pragma_table_info('tasks') WHERE name = 'reported_at'", [], |r| r.get(0))?;
+    let n: i64 = db.query_row("SELECT count(*) FROM pragma_table_info('tasks') WHERE name = 'title'", [], |r| r.get(0))?;
     if n == 0 {
         bail!("the ledger is older than version {VERSION}. Run any `skiff ledger` command to update it");
     }
@@ -147,6 +150,7 @@ pub fn rows(db: &Connection, where_: &str, arg: Option<&dyn rusqlite::ToSql>) ->
             task_type: r.get(13)?,
             socket: r.get(14)?,
             reported_at: r.get(15)?,
+            title: r.get(16)?,
             elsewhere: false,
             live: None,
             interrupted: None,
@@ -188,9 +192,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("ledger.db");
-        // Version 4: no reported_at. Refused.
+        // Version 5: no title. Refused.
         let db = Connection::open(&file).unwrap();
-        db.execute_batch("CREATE TABLE tasks (id INTEGER PRIMARY KEY, uid TEXT, socket TEXT); PRAGMA user_version = 4;").unwrap();
+        db.execute_batch("CREATE TABLE tasks (id INTEGER PRIMARY KEY, uid TEXT, socket TEXT, reported_at TEXT); PRAGMA user_version = 5;").unwrap();
         assert!(open_read(&file).unwrap_err().to_string().contains("skiff ledger"));
         drop(db);
         std::fs::remove_file(&file).unwrap();
@@ -198,7 +202,7 @@ mod tests {
         let db = Connection::open(&file).unwrap();
         db.execute_batch(&format!(
             "CREATE TABLE tasks (id INTEGER PRIMARY KEY, uid TEXT, kind TEXT, parent TEXT, pane_id TEXT, pane_gen INTEGER, project TEXT,
-               task TEXT, sent_at TEXT, state TEXT, result_path TEXT, ref TEXT, updated_at TEXT, type TEXT, socket TEXT, reported_at TEXT);
+               task TEXT, sent_at TEXT, state TEXT, result_path TEXT, ref TEXT, updated_at TEXT, type TEXT, socket TEXT, reported_at TEXT, title TEXT);
              INSERT INTO tasks (uid, kind, project, task, sent_at, state, updated_at) VALUES ('a1b2c3d4', 'plan', '', 'p', 'x', 'sent', 'x');
              INSERT INTO tasks (uid, kind, parent, project, task, sent_at, state, updated_at) VALUES ('e5f6a7b8', 'task', 'a1b2c3d4', '', 't', 'x', 'done', 'x');
              PRAGMA user_version = {};",

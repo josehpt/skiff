@@ -55,9 +55,9 @@ the commands:
 
 | Command | When |
 |---|---|
-| `skiff ledger add --pane S --task "..." --send --enter [--parent UID] [--ref TEXT]` | You hand a task to a pane. It adds the row, sends the task with its result path, and prints the id, the uid and the result path. |
+| `skiff ledger add --pane S --task "..." --title "..." --send --enter [--parent UID] [--ref TEXT]` | You hand a task to a pane. It adds the row, sends the task with its result path, and prints the id, the uid and the result path. |
 | `skiff ledger send UID --enter` | A task is `pending` or `interrupted`. |
-| `skiff ledger add --plan --task "..." [--ref TEXT]` | Work needs more than one task. It prints the plan's uid and its `plan.md`. |
+| `skiff ledger add --plan --task "..." --title "..." [--ref TEXT]` | Work needs more than one task. It prints the plan's uid and its `plan.md`. |
 | `skiff ledger update ID --state S [--result PATH]` | You mark a task `blocked` or `done`. |
 | `skiff ledger ls [--state S] [--json]` | You start a turn or report on work. |
 | `skiff ledger show ID` | You need one row. |
@@ -69,6 +69,9 @@ the commands:
   tasks. A task set to another state than `done` is new work: it shows again.
 - `skiff ledger prune` removes rows reported more than 7 days ago. Run it only
   when the user asks.
+- Give every task and plan a `--title` of 3 to 6 words, such as
+  `--title "Fix found-set count"`. The Ledger panel in the app shows it.
+  Change it with `skiff ledger update ID --title "..."`.
 - `--pane` takes a pane id, a prefix or a name.
 - ID is the row id or the uid. Neither is used again after a row goes. Use the uid
   when you name a task to the user or in a file.

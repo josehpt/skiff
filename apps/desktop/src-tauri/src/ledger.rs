@@ -1,10 +1,9 @@
 //! Skipper's ledger for the panel beside its pane. The app reads `ledger.db`
-//! read-only with the CLI's read code, and reports rows through the CLI,
-//! which owns every write.
+//! read-only with the CLI's read code. It never writes: only Skipper changes
+//! rows, through the CLI.
 
 use std::{path::Path, time::Duration};
 
-use anyhow::{bail, Context};
 use serde::Serialize;
 use skiff_client::ledger::{self, Row};
 use tauri::{AppHandle, Emitter};
@@ -50,33 +49,6 @@ fn read() -> anyhow::Result<Vec<Entry>> {
             Entry { row, result_exists }
         })
         .collect())
-}
-
-/// Marks `uids` reported with `skiff ledger report`. The app runs outside
-/// any pane, so the owner check takes it for a person.
-#[tauri::command]
-pub async fn ledger_report(uids: Vec<String>) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || report(&uids)).await.map_err(|e| e.to_string())?.map_err(err)
-}
-
-fn report(uids: &[String]) -> anyhow::Result<()> {
-    if uids.is_empty() {
-        return Ok(());
-    }
-    let out = std::process::Command::new(crate::skiff_agent::cli())
-        .args(["ledger", "report"])
-        .args(uids)
-        .env("SKIFF_SOCKET", skiff_core::state::socket())
-        .env("SKIFF_LEDGER", ledger::path()?)
-        // An app started from a Skiff pane is still a person.
-        .env_remove("SKIFF_SESSION")
-        .output()
-        .context("run skiff ledger report")?;
-    if !out.status.success() {
-        let msg = String::from_utf8_lossy(&out.stderr);
-        bail!("{}", msg.trim().trim_start_matches("skiff: "));
-    }
-    Ok(())
 }
 
 /// What the watcher compares: the size and mtime of the file and its WAL.

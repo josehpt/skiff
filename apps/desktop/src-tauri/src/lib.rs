@@ -84,7 +84,6 @@ pub fn run() {
             skiff_agent::preview_skiff_folder,
             skiff_agent::change_skiff_folder,
             ledger::ledger_rows,
-            ledger::ledger_report,
             commands::list_sessions,
             commands::create_session,
             commands::pty_write,

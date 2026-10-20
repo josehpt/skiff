@@ -13,7 +13,7 @@
  *
  * A click on a row does the main action for its state: open the pane or the
  * result. Small icons at the right edge do the rest, only when they apply:
- * the pane, the result, and Mark reported, which runs `skiff ledger report`.
+ * the pane or the result. The panel never writes: only Skipper changes rows.
  * No row has a menu. The rows come read-only from the backend, again on each
  * change to `ledger.db`.
  */
@@ -25,7 +25,6 @@ import { sessions } from "../app/state";
 import { shownIds } from "../app/stateQueries";
 import type { SessionInfo } from "../platform/types";
 import { openPath, previewOnScreen } from "../terminal/peek";
-import { showError } from "../ui/alerts";
 import { h } from "../ui/dom";
 import { isSlot } from "./layoutSlots";
 import { taskTitle } from "./model";
@@ -228,10 +227,6 @@ function openPane(s: SessionInfo) {
   requestAnimationFrame(() => keepRow(s.id));
 }
 
-function report(uids: string[]) {
-  invoke("ledger_report", { uids }).then(loadLedger).catch(showError);
-}
-
 /** The task's pane is live, so a click can open it. */
 const opens = (l: Look) => !!l.pane && l.st !== "gone";
 
@@ -239,7 +234,6 @@ const opens = (l: Look) => !!l.pane && l.st !== "gone";
 const ICON = {
   pane: '<svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.3"><rect x=".65" y="1.15" width="8.7" height="7.7"/><path d="M2.6 3.8 4.2 5 2.6 6.2M5.2 6.4h2"/></svg>',
   result: '<svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 .65h4L8.35 3v6.35H2z"/><path d="M5.8.65V3.2h2.55"/></svg>',
-  check: '<svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1.2 5.3 4 8 8.8 2"/></svg>',
 };
 
 /** What a row does: its click, its tooltip, and the icons at its right edge. */
@@ -254,8 +248,8 @@ const result = (r: Entry) => (r.result_exists && r.result_path ? () => openPath(
 /**
  * A task's actions. Running, approval, blocked, pending, exited: the click
  * opens the pane. Restarted: the pane, and a result icon when the file
- * exists. Gone: the result, else nothing. Done: the result, with icons for
- * the pane and Mark reported. Finished: the result only.
+ * exists. Gone: the result, else nothing. Done: the result, with a pane
+ * icon. Finished: the result only.
  */
 function taskActs(l: Look, fin: boolean): Acts {
   const r = l.r;
@@ -265,7 +259,6 @@ function taskActs(l: Look, fin: boolean): Acts {
   if (l.st === "done") {
     const icons: Acts["icons"] = [];
     if (pane) icons.push(["pane", "Open pane", pane]);
-    if (!r.reported_at) icons.push(["check", "Mark reported", () => report([r.uid])]);
     return { click: res, tip: res ? "Open result" : "No result file yet", icons };
   }
   if (l.st === "gone") return { click: res, tip: res ? "Open result" : "The pane is gone. No result yet.", icons: [] };

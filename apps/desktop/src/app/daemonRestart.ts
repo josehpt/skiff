@@ -5,13 +5,14 @@ import { muteInput } from "../terminal/terminalRuntime";
 import { showError } from "../ui/alerts";
 import { dialogFrame } from "../ui/dialogParts";
 import { $, button, h } from "../ui/dom";
+import { opensAtOnce } from "./daemonNotice";
 import { branchName, taskTitle } from "../workspace/model";
 import { sessions } from "./state";
 import { place } from "./stateQueries";
 
 /** Badge text and panel title per warning. */
 const WARNINGS: Record<DaemonWarning["kind"], [string, string]> = {
-  outdated: ["Update pending", "Restart skiffd to finish the update"],
+  outdated: ["Update pending", "The skiffd update is not finished"],
   protocol: ["skiffd incompatible", "skiffd does not match this app"],
   newer: ["skiffd newer", "skiffd is newer than this app"],
   hung: ["skiffd not responding", "skiffd is not responding"],
@@ -35,7 +36,8 @@ async function restartNow() {
   } catch (e) {
     muteInput(false);
     showError(e);
-    daemonBadge(shown);
+    // The user asked for this restart: a daemon it left hung or lost opens its panel.
+    daemonBadge(shown, true);
   }
 }
 
@@ -46,10 +48,11 @@ export function restartIfIdle() {
 
 /**
  * A cell in the top bar, beside Settings. It opens a panel that says what a
- * restart costs, so the restart stays the user's call. A daemon the app
- * cannot work with opens the panel at once.
+ * restart costs, so the restart stays the user's call. The panel opens on
+ * its own only when `requested`: after a step the user asked for. A warning
+ * from the launch's own checks waits in the badge.
  */
-export function daemonBadge(warning: DaemonWarning | null) {
+export function daemonBadge(warning: DaemonWarning | null, requested = false) {
   shown = warning;
   document.getElementById("daemon-badge")?.remove();
   document.getElementById("daemon-pop")?.remove();
@@ -108,7 +111,7 @@ export function daemonBadge(warning: DaemonWarning | null) {
     close();
     badge.focus();
   });
-  if (!whenIdle && (warning.kind === "protocol" || warning.kind === "hung" || warning.kind === "failed")) requestAnimationFrame(open);
+  if (!whenIdle && opensAtOnce(warning.kind, requested)) requestAnimationFrame(open);
 }
 
 /** The sessions a restart stops, by project and worktree, with what each one does. */

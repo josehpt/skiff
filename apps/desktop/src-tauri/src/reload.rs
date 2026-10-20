@@ -58,12 +58,13 @@ impl From<String> for NoPlan {
     }
 }
 
-/// A reload onto the bundled skiffd, or why there is none.
-pub(crate) async fn plan(info: &DaemonInfo) -> Result<Plan, NoPlan> {
-    plan_with(info, &daemon_binary()).await
+/// A reload onto the bundled skiffd, or why there is none. `same`: the
+/// daemon is another build of the same version, so the same version is new.
+pub(crate) async fn plan(info: &DaemonInfo, same: bool) -> Result<Plan, NoPlan> {
+    plan_with(info, &daemon_binary(), same).await
 }
 
-async fn plan_with(info: &DaemonInfo, binary: &Path) -> Result<Plan, NoPlan> {
+async fn plan_with(info: &DaemonInfo, binary: &Path, same: bool) -> Result<Plan, NoPlan> {
     let (Some(state), Some(pid)) = (info.reload_state, info.pid) else {
         return Err(NoPlan::Other("it predates reload".into()));
     };
@@ -79,7 +80,8 @@ async fn plan_with(info: &DaemonInfo, binary: &Path) -> Result<Plan, NoPlan> {
         .filter(|_| out.status.success())
         .ok_or_else(|| format!("{} does not support reload", binary.display()))?;
     let version = target["version"].as_str().unwrap_or_default().to_string();
-    if !compare_versions(&version, &info.version).is_gt() {
+    let order = compare_versions(&version, &info.version);
+    if !(order.is_gt() || (same && order.is_eq())) {
         return Err(NoPlan::Stale(version));
     }
     let reads = target["handover"].as_array().is_some_and(|v| v.iter().any(|h| h.as_u64() == Some(state as u64)));
@@ -117,19 +119,23 @@ pub(crate) struct Reloaded {
 /// reports the status.
 #[tauri::command]
 pub(crate) async fn reload_daemon(app: State<'_, App>) -> Result<Reloaded, String> {
+    Ok(reload_planned(&app).await)
+}
+
+async fn reload_planned(app: &App) -> Reloaded {
     let plan = app.reload.lock().await.take();
     let mut out = Outcome::default();
     if let Some(plan) = plan {
         app.reload_tried.store(true, Ordering::Relaxed);
-        out = run(&app, &plan).await;
+        out = run(app, &plan).await;
     }
-    Ok(Reloaded {
-        status: status_now(&app).await,
+    Reloaded {
+        status: status_now(app).await,
         error: out.error,
         reconnected: out.reconnected,
         missing: out.missing,
         lost: out.lost,
-    })
+    }
 }
 
 #[derive(Default)]
@@ -145,6 +151,16 @@ type Listed = HashMap<String, (Option<u32>, bool)>;
 
 fn listed(list: &[SessionInfo]) -> Listed {
     list.iter().map(|s| (s.id.clone(), (s.pid, s.state != SessionState::Done))).collect()
+}
+
+/// Keeps the pids of registered watchers: the reload drops the registrations.
+pub(crate) fn note_watchers(app: &App, list: &[SessionInfo]) {
+    let mut kept = app.watch_pids.lock().unwrap();
+    for pid in list.iter().filter_map(|s| s.watch.as_ref()).flat_map(|w| w.pids.iter()) {
+        if !kept.contains(pid) {
+            kept.push(*pid);
+        }
+    }
 }
 
 /// What the user calls each session, for the messages. The id when unknown.
@@ -179,7 +195,10 @@ async fn run(app: &App, plan: &Plan) -> Outcome {
     // ahead of the reload request, and skiffd drains it into the PTYs.
     app.input.close_gate();
     let (before, name) = match old.list_sessions().await {
-        Ok(l) => (listed(&l), naming(&l)),
+        Ok(l) => {
+            note_watchers(app, &l);
+            (listed(&l), naming(&l))
+        }
         Err(e) => {
             let lost = app.input.open_gate(Some(&old), |_| true);
             let why = format!("skiffd did not list its sessions: {e:#}");
@@ -325,7 +344,11 @@ fn alive(pid: u32) -> bool {
 mod tests {
     use super::*;
     use crate::connection::ensure_client;
+    use skiff_client::skipper;
     use skiff_core::session::SessionSpec;
+
+    /// The tests that set `SKIFF_SOCKET` run one at a time.
+    static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// A bundled skiffd no newer than the daemon is stale, before the
     /// handover check: a restart onto it would ask again.
@@ -340,13 +363,16 @@ mod tests {
         let info = |version: &str| DaemonInfo { version: version.into(), protocol: skiff_core::PROTOCOL, reload_state: Some(2), pid: Some(1), debug: Some(true) };
         let rt = tokio::runtime::Runtime::new().unwrap();
         for running in ["0.6.19", "0.6.20"] {
-            match rt.block_on(plan_with(&info(running), &bin)) {
+            match rt.block_on(plan_with(&info(running), &bin, false)) {
                 Err(NoPlan::Stale(v)) => assert_eq!(v, "0.6.19"),
                 _ => panic!("skiffd {running}: not stale"),
             }
         }
         // Newer, but it cannot read handover 2.
-        assert!(matches!(rt.block_on(plan_with(&info("0.6.18"), &bin)), Err(NoPlan::Other(_))));
+        assert!(matches!(rt.block_on(plan_with(&info("0.6.18"), &bin, false)), Err(NoPlan::Other(_))));
+        // Another build of the same version moves on; an older one never does.
+        assert!(matches!(rt.block_on(plan_with(&info("0.6.19"), &bin, true)), Err(NoPlan::Other(_))));
+        assert!(matches!(rt.block_on(plan_with(&info("0.6.20"), &bin, true)), Err(NoPlan::Stale(_))));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -354,6 +380,7 @@ mod tests {
     /// Each line reaches the shell once, in order, and the pid stays.
     #[test]
     fn held_input_survives_a_reload() {
+        let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
         let bin = std::env::var_os("SKIFF_TEST_DAEMON")
             .map(PathBuf::from)
             .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../target/debug/skiffd"));
@@ -380,6 +407,7 @@ mod tests {
             .unwrap();
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rt.block_on(async {
+            wait_for(&socket).await;
             let app = App::default();
             let (c, _) = ensure_client(&app).await.unwrap();
             let pid = c.daemon_info().await.unwrap().pid.unwrap();
@@ -471,5 +499,271 @@ mod tests {
         }
         result.unwrap();
         assert!(stopped, "private test daemon did not stop; shutdown: {shutdown:?}; files: {}", dir.display());
+    }
+
+    /// Waits until the fixture daemon listens, so `ensure_client` never starts
+    /// a second daemon of its own.
+    async fn wait_for(socket: &Path) {
+        let until = Instant::now() + Duration::from_secs(10);
+        while Client::connect(socket).await.is_err() {
+            assert!(Instant::now() < until, "the test daemon did not listen on {}", socket.display());
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+
+    fn built(name: &str, var: &str) -> PathBuf {
+        let bin = std::env::var_os(var)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../target/debug").join(name));
+        assert!(bin.is_file(), "build {name} first with cargo build -p skiffd -p skiff-cli; set {var} for a custom target directory: {}", bin.display());
+        bin.canonicalize().unwrap()
+    }
+
+    /// Quit, install, open, against fixtures only: a private socket and
+    /// command folder, and the state, workspace and ledger that the socket
+    /// selects. The daemon reports an older version until it reloads. The
+    /// command folder holds a checkout's link, a live session and a ledger
+    /// row exist, and an older watcher holds the lock with a record from
+    /// before the version field. The launch goes through the app's own steps:
+    /// the status plans the reload, the page's reload runs it, and two
+    /// watcher checks at once, as a start and a restore, replace the watcher
+    /// once. The `skiff` a shell finds on PATH then reaches the same daemon
+    /// and ledger, with no ledger override. A second launch changes nothing,
+    /// and the ledger reads with the daemon gone. Skipped without python3 or
+    /// mkfifo, which make the stand-in watcher.
+    #[test]
+    fn one_launch_finishes_the_update() {
+        let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let skiffd = built("skiffd", "SKIFF_TEST_DAEMON");
+        let skiff = built("skiff", "SKIFF_TEST_CLI");
+        let dir = std::env::temp_dir().join(format!("skiff-app-update-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::create_dir_all(dir.join("checkout/target/debug")).unwrap();
+        if !std::process::Command::new("mkfifo").arg(dir.join("watch")).status().is_ok_and(|s| s.success()) {
+            return;
+        }
+        let dir = dir.canonicalize().unwrap();
+        let bin = dir.join("bin");
+
+        // The command folder: a checkout's link where the app's should be.
+        let checkout = dir.join("checkout/target/debug/skiff");
+        std::fs::write(&checkout, "checkout").unwrap();
+        std::os::unix::fs::symlink(&checkout, bin.join("skiff")).unwrap();
+
+        // The app's context: its socket and bundled skiffd. The socket stands
+        // in for the default one, which a test cannot move on macOS. Nothing
+        // names a ledger, state or config file: the socket selects them.
+        let socket = dir.join("skiffd.sock");
+        const CONTEXT: [&str; 6] = ["SKIFF_SOCKET", "SKIFF_DAEMON", "SKIFF_LEDGER", "SKIFF_STATE", "SKIFF_CONFIG", "SKIFF_REAL_STATE"];
+        let saved = CONTEXT.map(|k| (k, std::env::var_os(k)));
+        for k in &CONTEXT[2..] {
+            std::env::remove_var(k);
+        }
+        std::env::set_var("SKIFF_SOCKET", &socket);
+        std::env::set_var("SKIFF_DAEMON", &skiffd);
+        let mut daemon = std::process::Command::new(&skiffd)
+            .env("SKIFF_TEST_REPORT_VERSION", "0.0.1")
+            .env("SKIFF_SHELL_ENV", "0")
+            .env("SHELL", "/bin/sh")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(std::fs::File::create(dir.join("daemon.log")).unwrap())
+            .spawn()
+            .unwrap();
+        // The `skiff` a shell finds on PATH, as from Termius or a pane.
+        let shell = |args: &[&str]| {
+            let out = std::process::Command::new("skiff")
+                .args(args)
+                .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+                .env("HOME", &dir)
+                .env_remove("SKIFF_SESSION")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "skiff {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8(out.stdout).unwrap()
+        };
+        let mut standin: Option<std::process::Child> = None;
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rt.block_on(async {
+            wait_for(&socket).await;
+            let app = App::default();
+            // The launch, as main.ts runs it: the status first.
+            let status = serde_json::to_value(status_now(&app).await).unwrap();
+            assert_eq!((&status["version"], &status["reload"]), (&"0.0.1".into(), &true.into()), "{status}");
+            assert!(status["warning"].is_null(), "{status}");
+            let c = app.live.lock().unwrap().clone().unwrap();
+            let pid = c.daemon_info().await.unwrap().pid.unwrap();
+            let agent = c
+                .coordinator(skiff_client::Coordinator {
+                    spec: Some(SessionSpec { label: "Skipper".into(), command: Some("/bin/sh".into()), cwd: Some(dir.clone()), cols: 80, rows: 24, ..Default::default() }),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+                .unwrap()
+                .session;
+            // The Skiff agent's folder, as the app makes it, and work from
+            // before the update, by the CLI that ran then.
+            skipper::ensure(&skiff_core::config::load().unwrap()).unwrap();
+            let out = std::process::Command::new(&skiff)
+                .args(["ledger", "add", "--person", "--pane", &agent.id, "--task", "keep me", "--project", "p"])
+                .env("HOME", &dir)
+                .env_remove("SKIFF_SESSION")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            // The socket's own ledger, not the person's.
+            let ledger = skiff_client::ledger::path().unwrap();
+            assert!(ledger.starts_with(socket.with_extension("state")) && ledger.is_file(), "{}", ledger.display());
+            let rows = || {
+                let db = skiff_client::ledger::open_read(&ledger).unwrap();
+                serde_json::to_string(&skiff_client::ledger::rows(&db, "", None).unwrap()).unwrap()
+            };
+            let before_rows = rows();
+            let uid = serde_json::from_str::<serde_json::Value>(&before_rows).unwrap()[0]["uid"].as_str().unwrap().to_string();
+            let result_path = ledger.parent().unwrap().join("results/kept.md");
+            std::fs::create_dir_all(result_path.parent().unwrap()).unwrap();
+            std::fs::write(&result_path, "result").unwrap();
+
+            // An older watcher: it holds the lock, wrote a record without a
+            // version, shows as `skiff watch` and never registers.
+            let script = r#"
+import fcntl, json, os, sys, time
+lock, sock = sys.argv[1], sys.argv[2]
+fd = os.open(lock, os.O_WRONLY | os.O_CREAT)
+os.set_inheritable(fd, True)
+fcntl.flock(fd, fcntl.LOCK_EX)
+os.ftruncate(fd, 0)
+os.write(fd, json.dumps({"pid": os.getpid(), "socket": sock, "started_at": int(time.time() * 1000)}).encode())
+os.chdir(os.path.dirname(lock))
+os.execv("/bin/cat", ["skiff", "watch"])
+"#;
+            let Ok(child) = std::process::Command::new("python3")
+                .args(["-c", script])
+                .arg(skipper::watch_lock(&socket))
+                .arg(&socket)
+                .stdin(Stdio::null())
+                .spawn()
+            else {
+                return None;
+            };
+            let old_watcher = child.id();
+            standin = Some(child);
+            let until = Instant::now() + Duration::from_secs(5);
+            while skipper::watch_status(&socket).unwrap().holder.is_none_or(|h| h.pid != old_watcher) {
+                assert!(Instant::now() < until, "the stand-in watcher did not start: {:?} {:?}", skipper::watch_status(&socket), standin.as_mut().map(|c| c.try_wait()));
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+
+            // The command, as the app's launch fixes it.
+            assert!(matches!(crate::cli_path::reconcile(&[bin.as_path()], &skiff, false).unwrap(), crate::cli_path::Linked::Updated(_)));
+            assert_eq!(std::fs::read_link(bin.join("skiff")).unwrap(), skiff);
+            assert_eq!(std::fs::read_to_string(&checkout).unwrap(), "checkout");
+
+            // The reload the status planned, as the page starts it.
+            let before = c.list_sessions().await.unwrap();
+            drop(c);
+            let r = reload_planned(&app).await;
+            assert_eq!(r.error, None);
+            assert!(r.missing.is_empty() && r.lost.is_empty());
+            let status = serde_json::to_value(&r.status).unwrap();
+            assert_eq!((&status["version"], &status["replaced"], &status["reload"]), (&skiff_core::VERSION.into(), &"0.0.1".into(), &false.into()), "{status}");
+            assert!(status["warning"].is_null(), "{status}");
+            let c = app.live.lock().unwrap().clone().unwrap();
+            assert_eq!(c.daemon_info().await.unwrap().pid, Some(pid));
+            let after = c.list_sessions().await.unwrap();
+            let ids = |l: &[SessionInfo]| l.iter().map(|s| (s.id.clone(), s.pid)).collect::<Vec<_>>();
+            assert_eq!(ids(&before), ids(&after));
+
+            // The watcher, from a start and a restore at once.
+            let (a, b) = tokio::join!(
+                crate::skiff_agent::ensure_watch(&app, skiff.clone(), agent.id.clone()),
+                crate::skiff_agent::ensure_watch(&app, skiff.clone(), agent.id.clone()),
+            );
+            assert!(a.clone().unwrap() || b.clone().unwrap(), "no watcher started: {a:?} {b:?}");
+            // The stand-in got SIGTERM and ended, not SIGKILL.
+            let status = standin.take().unwrap().wait().unwrap();
+            use std::os::unix::process::ExitStatusExt;
+            assert_eq!(status.signal(), Some(libc::SIGTERM));
+            // One watcher of this CLI writes itself into the lock and registers.
+            let until = Instant::now() + Duration::from_secs(10);
+            let holder = loop {
+                let h = skipper::watch_status(&socket).unwrap().holder.filter(|h| h.version.is_some());
+                let registered = c.list_sessions().await.unwrap().into_iter().find(|s| s.id == agent.id).and_then(|s| s.watch).map(|w| w.pids);
+                if let (Some(h), Some(pids)) = (&h, &registered) {
+                    if pids == &vec![h.pid] {
+                        break h.clone();
+                    }
+                }
+                assert!(Instant::now() < until, "no current watcher registered: {h:?} {registered:?}");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            };
+            assert_eq!(holder.version.as_deref(), Some(skipper::CLI_VERSION));
+            assert_eq!(holder.exe.as_deref().map(PathBuf::from), Some(skiff.clone()));
+
+            // The `skiff` a shell finds is this CLI, on the same daemon and ledger.
+            assert!(shell(&["ls", "--json"]).contains(&agent.id));
+            assert!(shell(&["ledger", "ls", "--json"]).contains(&uid));
+
+            // The next launch, a new app run, changes nothing.
+            let next = App::default();
+            let status = serde_json::to_value(status_now(&next).await).unwrap();
+            assert_eq!((&status["reload"], &status["replaced"]), (&false.into(), &serde_json::Value::Null), "{status}");
+            assert!(status["warning"].is_null(), "{status}");
+            assert!(matches!(crate::cli_path::reconcile(&[bin.as_path()], &skiff, false).unwrap(), crate::cli_path::Linked::Current(_)));
+            assert_eq!(crate::skiff_agent::ensure_watch(&next, skiff.clone(), agent.id.clone()).await, Ok(false));
+            assert_eq!(skipper::watch_status(&socket).unwrap().holder.map(|h| h.pid), Some(holder.pid));
+            let same = next.live.lock().unwrap().clone().unwrap();
+            assert_eq!(same.daemon_info().await.unwrap().pid, Some(pid));
+
+            assert_eq!(rows(), before_rows);
+            assert_eq!(std::fs::read_to_string(&result_path).unwrap(), "result");
+            // The watcher ends with SIGTERM too.
+            unsafe { libc::kill(holder.pid as i32, libc::SIGTERM) };
+            Some(uid)
+        })));
+        if let Some(mut child) = standin {
+            unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
+            let _ = child.wait();
+        }
+        let shutdown = rt.block_on(async {
+            tokio::time::timeout(Duration::from_secs(5), async { Client::connect(&socket).await?.shutdown().await }).await
+        });
+        let until = Instant::now() + Duration::from_secs(5);
+        let stopped = loop {
+            match daemon.try_wait() {
+                Ok(Some(_)) => break true,
+                Err(_) => break false,
+                Ok(None) if Instant::now() >= until => break false,
+                Ok(None) => std::thread::sleep(Duration::from_millis(25)),
+            }
+        };
+        // Offline: the same command still reads the ledger, as structured output.
+        let offline = match &result {
+            Ok(Some(uid)) if stopped => Some(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                assert!(shell(&["ledger", "ls", "--json"]).contains(uid.as_str()));
+            }))),
+            _ => None,
+        };
+        for (key, old) in saved {
+            match old {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+        if result.is_err() || !stopped {
+            eprintln!("{}", std::fs::read_to_string(dir.join("daemon.log")).unwrap_or_default());
+            eprintln!("{}", std::fs::read_to_string(socket.with_extension("watch.log")).unwrap_or_default());
+        }
+        if stopped {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        result.unwrap();
+        assert!(stopped, "private test daemon did not stop; shutdown: {shutdown:?}; files: {}", dir.display());
+        if let Some(offline) = offline {
+            offline.unwrap();
+        }
     }
 }

@@ -456,7 +456,16 @@ pub struct WatchHolder {
     pub socket: String,
     /// Unix time in milliseconds.
     pub started_at: u64,
+    /// The CLI version it runs. `None` from a watcher older than this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// Its executable, with links resolved. `None` from an older watcher.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exe: Option<String>,
 }
+
+/// The CLI version this crate builds with: the app's and the CLI's.
+pub const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The watch lock beside the socket, as [`watch_status`] reads it.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -477,7 +486,14 @@ pub fn watch_lock(socket: &Path) -> PathBuf {
 /// stale-watcher check and Restart. The lock stays on the file.
 pub fn write_holder(f: &mut std::fs::File, socket: &Path) -> Result<()> {
     use std::io::{Seek, Write};
-    let me = WatchHolder { pid: std::process::id(), socket: socket.display().to_string(), started_at: skiff_core::session::now_ms() };
+    let exe = std::env::current_exe().ok().map(|e| e.canonicalize().unwrap_or(e).display().to_string());
+    let me = WatchHolder {
+        pid: std::process::id(),
+        socket: socket.display().to_string(),
+        started_at: skiff_core::session::now_ms(),
+        version: Some(CLI_VERSION.to_string()),
+        exe,
+    };
     f.set_len(0)?;
     f.seek(std::io::SeekFrom::Start(0))?;
     f.write_all(serde_json::to_string(&me)?.as_bytes())?;
@@ -567,6 +583,90 @@ pub fn restart_watch(socket: &Path, cli: &Path, session: &str) -> Result<bool> {
         }
     }
     start_watch(socket, cli, session)
+}
+
+/// What [`ensure_watch`] did.
+#[derive(Debug, Clone, PartialEq)]
+pub enum WatchOutcome {
+    /// A watcher of this CLI, or of a newer one, holds the lock.
+    Current,
+    /// None ran. It started one.
+    Started,
+    /// It stopped an older watcher with SIGTERM and started one.
+    Replaced { pid: u32 },
+    /// An older watcher holds the lock and keeps running: it is not proven to
+    /// be a `skiff watch` for this socket, or it did not stop. Why, for logs.
+    Kept(String),
+}
+
+/// The watcher in `h` runs another build than `cli` at `version`: an older
+/// version, a record from before the version, or the same version from
+/// another executable. A newer watcher is never replaced.
+pub fn stale_holder(h: &WatchHolder, cli: &Path, version: &str) -> bool {
+    let Some(v) = &h.version else { return true };
+    match skiff_core::compare_versions(v, version) {
+        std::cmp::Ordering::Less => true,
+        std::cmp::Ordering::Greater => false,
+        std::cmp::Ordering::Equal => {
+            let real = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+            h.exe.as_deref().is_some_and(|e| real(Path::new(e)) != real(cli))
+        }
+    }
+}
+
+/// Makes one current watcher run for `session`, without the user. `cli` is
+/// the bundled `skiff`, at `version`. A free lock gets a watcher. A stale
+/// holder ([`stale_holder`]) is stopped and replaced when it is a live
+/// `skiff watch` for `socket`: the pid its record names, or for a record
+/// from before the pid, the one pid in `known`. `known` holds the watcher
+/// pids skiffd registered for `socket`, from its peer credentials.
+///
+/// `tried` allows one attempt: it is set before the signal, and a set flag
+/// stops any later signal, from this call or one that runs beside it. `None`
+/// never signals. It sends SIGTERM only and waits up to [`RESTART_WAIT`]
+/// for the lock; it never takes a held lock. A watcher it cannot prove, or
+/// that does not stop, keeps running, and the outcome says why.
+#[cfg(unix)]
+pub fn ensure_watch(socket: &Path, cli: &Path, version: &str, session: &str, known: &[u32], tried: Option<&std::sync::atomic::AtomicBool>) -> Result<WatchOutcome> {
+    let st = watch_status(socket)?;
+    if !st.held {
+        return Ok(if start_watch(socket, cli, session)? { WatchOutcome::Started } else { WatchOutcome::Current });
+    }
+    let pid = match &st.holder {
+        Some(h) if !stale_holder(h, cli, version) => return Ok(WatchOutcome::Current),
+        Some(h) => {
+            if let Some(why) = not_stoppable(h, socket) {
+                return Ok(WatchOutcome::Kept(why));
+            }
+            h.pid
+        }
+        None => {
+            let mut live: Vec<u32> = known.iter().copied().filter(|p| command_of(*p).is_some_and(|c| is_watch_command(&c))).collect();
+            live.sort();
+            live.dedup();
+            match live[..] {
+                [pid] => pid,
+                _ => return Ok(WatchOutcome::Kept("A watcher from an older Skiff holds the lock, and its process is not known. It keeps running.".into())),
+            }
+        }
+    };
+    // The attempt is taken before the signal, so a timeout keeps it taken.
+    if tried.is_none_or(|t| t.swap(true, std::sync::atomic::Ordering::SeqCst)) {
+        return Ok(WatchOutcome::Kept(format!("The watcher (pid {pid}) is older. A replacement was tried once this run, so it keeps running.")));
+    }
+    // SAFETY: a plain syscall to a checked pid.
+    if unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) } != 0 {
+        return Ok(WatchOutcome::Kept(format!("Cannot signal the watcher (pid {pid}): {}", std::io::Error::last_os_error())));
+    }
+    let until = std::time::Instant::now() + RESTART_WAIT;
+    while watch_status(socket)?.held {
+        if std::time::Instant::now() >= until {
+            return Ok(WatchOutcome::Kept(format!("The watcher (pid {pid}) did not stop within 5 seconds. It keeps running.")));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    start_watch(socket, cli, session)?;
+    Ok(WatchOutcome::Replaced { pid })
 }
 
 /// A new, empty watch log. The last one moves to `<log>.1`, so the log of a
@@ -674,6 +774,7 @@ pub fn detach(cmd: &mut std::process::Command) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicBool;
 
     /// The lock tests run one at a time: a process another test forks holds
     /// a copy of each open file until it execs, and with it a lock.
@@ -733,7 +834,7 @@ mod tests {
         let err = restart_watch(&socket, &cli, "abc").unwrap_err().to_string();
         assert!(err.contains("is not skiff watch"), "{err}");
         // Another socket's record is refused before any process check.
-        let other = WatchHolder { pid: std::process::id(), socket: "/elsewhere.sock".into(), started_at: 0 };
+        let other = WatchHolder { pid: std::process::id(), socket: "/elsewhere.sock".into(), started_at: 0, version: None, exe: None };
         assert!(not_stoppable(&other, &socket).unwrap().contains("another socket"));
         assert!(watch_status(&socket).unwrap().held);
         drop(f);
@@ -788,6 +889,133 @@ os.execv("/bin/cat", ["skiff", "watch"])
         assert_eq!(std::os::unix::process::ExitStatusExt::signal(&code), Some(libc::SIGTERM));
         assert!(!watch_status(&socket).unwrap().held);
         assert!(socket.with_extension("watch.log").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Which holder is stale: no version (a watcher from before the field),
+    /// an older one, or the same version from another executable. A newer
+    /// watcher, or this CLI's own, is current. Old records still read.
+    #[test]
+    fn tells_a_stale_watcher_by_its_record() {
+        let cli = Path::new("/Applications/Skiff.app/Contents/MacOS/skiff");
+        let h = |version: Option<&str>, exe: Option<&str>| WatchHolder {
+            pid: 1,
+            socket: "/s.sock".into(),
+            started_at: 0,
+            version: version.map(Into::into),
+            exe: exe.map(Into::into),
+        };
+        assert!(stale_holder(&h(None, None), cli, "1.6.5"));
+        assert!(stale_holder(&h(Some("1.6.4"), Some(cli.to_str().unwrap())), cli, "1.6.5"));
+        assert!(stale_holder(&h(Some("1.6.5"), Some("/src/skiff/target/debug/skiff")), cli, "1.6.5"));
+        assert!(!stale_holder(&h(Some("1.6.5"), Some(cli.to_str().unwrap())), cli, "1.6.5"));
+        assert!(!stale_holder(&h(Some("1.7.0"), Some("/elsewhere/skiff")), cli, "1.6.5"));
+        let legacy: WatchHolder = serde_json::from_str(r#"{"pid":7,"socket":"/s.sock","started_at":3}"#).unwrap();
+        assert_eq!((legacy.version, legacy.exe), (None, None));
+    }
+
+    /// A held lock with no record, and no registered `skiff watch` to name
+    /// its process, stays as it is: nothing is signalled, nothing starts. The
+    /// same with a known pid that is not a watcher, and with an older record
+    /// whose pid is not `skiff watch`.
+    #[test]
+    #[cfg(unix)]
+    fn keeps_a_watcher_it_cannot_prove() {
+        let _one = LOCKS.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("skiff-watch-ensure-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("s.sock");
+        let mut f = std::fs::File::options().create(true).truncate(false).write(true).open(watch_lock(&socket)).unwrap();
+        f.lock().unwrap();
+        let cli = Path::new("/usr/bin/true");
+        for known in [&[][..], &[std::process::id()][..]] {
+            let out = ensure_watch(&socket, cli, CLI_VERSION, "abc", known, Some(&AtomicBool::new(false))).unwrap();
+            assert!(matches!(out, WatchOutcome::Kept(_)), "{out:?}");
+        }
+        // This process, as a holder from an older CLI: not a watcher, so it stays.
+        write_holder(&mut f, &socket).unwrap();
+        let old = WatchHolder { version: Some("0.0.1".into()), ..watch_status(&socket).unwrap().holder.unwrap() };
+        f.set_len(0).unwrap();
+        std::io::Seek::seek(&mut f, std::io::SeekFrom::Start(0)).unwrap();
+        std::io::Write::write_all(&mut f, serde_json::to_string(&old).unwrap().as_bytes()).unwrap();
+        let out = ensure_watch(&socket, cli, CLI_VERSION, "abc", &[], Some(&AtomicBool::new(false))).unwrap();
+        assert!(matches!(&out, WatchOutcome::Kept(w) if w.contains("is not skiff watch")), "{out:?}");
+        // This CLI's own record: current, and nothing changes.
+        write_holder(&mut f, &socket).unwrap();
+        let me = std::env::current_exe().unwrap();
+        assert_eq!(ensure_watch(&socket, &me, CLI_VERSION, "abc", &[], Some(&AtomicBool::new(false))).unwrap(), WatchOutcome::Current);
+        assert!(watch_status(&socket).unwrap().held);
+        assert!(!socket.with_extension("watch.log").exists());
+        drop(f);
+        // A free lock gets a watcher.
+        assert_eq!(ensure_watch(&socket, cli, CLI_VERSION, "abc", &[], Some(&AtomicBool::new(false))).unwrap(), WatchOutcome::Started);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// One attempt per flag. A stale watcher that ignores SIGTERM holds the
+    /// lock past the wait: the outcome is Kept, and it keeps running. Two
+    /// calls at once, as from a start and a restore, and every call after
+    /// the timeout, share the flag: the watcher gets one SIGTERM in all, and
+    /// no second watcher starts. Skipped without python3, which takes the lock.
+    #[test]
+    #[cfg(unix)]
+    fn a_watcher_that_does_not_stop_gets_one_signal() {
+        let _one = LOCKS.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("skiff-watch-once-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let socket = dir.join("s.sock");
+        // `skiff watch` to ps: a shell named skiff that reads the script `watch`.
+        std::os::unix::fs::symlink("/bin/sh", dir.join("skiff")).unwrap();
+        std::fs::write(dir.join("watch"), "trap 'echo term >> count' TERM\nwhile :; do sleep 0.1; done\n").unwrap();
+        let script = r#"
+import fcntl, json, os, sys, time
+lock, sock, exe = sys.argv[1], sys.argv[2], sys.argv[3]
+fd = os.open(lock, os.O_WRONLY | os.O_CREAT)
+fcntl.flock(fd, fcntl.LOCK_EX)
+os.ftruncate(fd, 0)
+os.write(fd, json.dumps({"pid": os.getpid(), "socket": sock, "started_at": int(time.time() * 1000)}).encode())
+os.set_inheritable(fd, True)
+os.execv(exe, ["skiff", "watch"])
+"#;
+        let Ok(mut child) = std::process::Command::new("python3")
+            .args(["-c", script])
+            .arg(watch_lock(&socket))
+            .arg(&socket)
+            .arg(dir.join("skiff"))
+            .current_dir(&dir)
+            .spawn()
+        else {
+            return;
+        };
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !watch_status(&socket).unwrap().held || !command_of(child.id()).is_some_and(|c| is_watch_command(&c)) {
+            assert!(std::time::Instant::now() < until, "the stand-in watcher did not start");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let tried = AtomicBool::new(false);
+        let cli = Path::new("/usr/bin/true");
+        let both = std::thread::scope(|s| {
+            let calls: Vec<_> = (0..2).map(|_| s.spawn(|| ensure_watch(&socket, cli, CLI_VERSION, "abc", &[], Some(&tried)).unwrap())).collect();
+            calls.into_iter().map(|c| c.join().unwrap()).collect::<Vec<_>>()
+        });
+        let later = ensure_watch(&socket, cli, CLI_VERSION, "abc", &[], Some(&tried)).unwrap();
+        // A trap runs between sleeps: give a late one time to show.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let signals = std::fs::read_to_string(dir.join("count")).unwrap_or_default().lines().count();
+        let running = child.try_wait().unwrap().is_none();
+        let held = watch_status(&socket).unwrap().held;
+        unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGKILL) };
+        let _ = child.wait();
+        let kept = |o: &WatchOutcome, what: &str| matches!(o, WatchOutcome::Kept(w) if w.contains(what));
+        assert_eq!(both.iter().filter(|o| kept(o, "did not stop")).count(), 1, "{both:?}");
+        assert_eq!(both.iter().filter(|o| kept(o, "tried once")).count(), 1, "{both:?}");
+        assert!(kept(&later, "tried once"), "{later:?}");
+        assert_eq!(signals, 1);
+        assert!(running && held, "the watcher keeps running and holds the lock");
+        assert!(!socket.with_extension("watch.log").exists(), "a second watcher started");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

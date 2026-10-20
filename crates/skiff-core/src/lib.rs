@@ -25,6 +25,12 @@ pub use project::{Project, Worktree};
 /// no restart.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Orders dotted versions by number. A part that is not a number counts as 0.
+pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    let parts = |v: &str| -> Vec<u64> { v.split(['.', '-', '+']).take(3).map(|p| p.parse().unwrap_or(0)).collect() };
+    parts(a).cmp(&parts(b))
+}
+
 /// The daemon's wire contract. An app that sees another number asks the user
 /// to restart skiffd, which stops every session, so raise it only when a new
 /// app cannot use the daemon that ran before it:

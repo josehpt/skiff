@@ -30,6 +30,7 @@ fn main() -> Result<()> {
     };
     // Before the runtime starts any thread: it sets environment variables.
     // A reload kept the environment it set before.
+    server::take_test_version();
     if let Start::Fresh = start {
         shellenv::import();
     }

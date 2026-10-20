@@ -66,7 +66,7 @@ Download the latest [release](https://github.com/solutionscay/skiff/releases/lat
 - Linux (x86_64): `.deb`, `.rpm` or AppImage
 - macOS (Apple Silicon): `.dmg`, signed and notarized
 
-The `skiff` command drives sessions and groups from a shell or an agent. It ships with the app and updates with it. The `.deb` and `.rpm` install it to `/usr/bin`. The AppImage copies it to `~/.local/bin` when it starts. The macOS app links it into `/usr/local/bin`, or `/opt/homebrew/bin` when it can write there. Otherwise run Help › Install skiff command… once. See the [wiki CLI page](https://github.com/solutionscay/skiff/wiki/CLI).
+The `skiff` command drives sessions and groups from a shell or an agent. It ships with the app and updates with it. The `.deb` and `.rpm` install it to `/usr/bin`. The AppImage copies it to `~/.local/bin` when it starts. The macOS app links it into `/usr/local/bin`, or `/opt/homebrew/bin` when it can write there. Otherwise run Help › Install skiff command… once. At each start the release app points a `skiff` link there at itself again, also one that a checkout build left, so the command updates with the app. It replaces only the link, never the file the link points at or a file of yours. See the [wiki CLI page](https://github.com/solutionscay/skiff/wiki/CLI).
 
 ## Themes
 
@@ -168,14 +168,23 @@ app version. At launch the app compares the running daemon's version and protoco
   after the app sees the same daemon pid, the new version, and each session with the
   same child pid. Sessions keep running. The protocol may differ: the reload request
   and the handover keep their own format.
-- A daemon that predates reload, or that the bundled skiffd cannot adopt, keeps the
-  restart flow. With no live session the app replaces it without asking. With live
-  sessions it shows a "Restart skiffd" button instead.
-- A newer daemon stays. The app never downgrades it.
+- A checkout's daemon of the same version on a release app's socket counts as another
+  build, and reloads the same way.
+- A daemon that predates reload, or that the bundled skiffd cannot adopt, keeps
+  running. With no live session the app stops it with SIGTERM, never SIGKILL, and
+  starts the bundled one. Otherwise the badge says the update is not finished; a
+  restart stays your choice.
+- A newer daemon stays, whatever its protocol. The app never downgrades it.
+
+The Skiff agent's watcher writes its CLI version and executable into its lock
+(`skiffd.watch.lock`). After an update the app stops an older watcher with SIGTERM and
+starts the bundled CLI's, only when the lock's record, or the daemon's registration
+from before the reload, proves it is this socket's `skiff watch`. It tries once per
+run. A watcher it cannot prove, or that does not stop, keeps running.
 
 A failed reload never stops a session on its own. Before exec, the old daemon carries
-on and the app offers the restart. After exec, the app reports the failure and offers
-the restart.
+on. After exec, the app reports the failure. Either way the badge and the status bar
+show the outcome, and no dialog opens: the restart stays your choice.
 
 A dev build has the same version as the daemon it replaces, so the app does not reload
 it. Run `skiff daemon reload` after `cargo build -p skiffd`, as above.

@@ -8,7 +8,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "bundle": "tauri build --config src-tauri/tauri.bundle.json"
+    "bundle": "tauri build --config src-tauri/tauri.bundle.json",
+    "test": "node --experimental-strip-types --test tests/daemonNotice.test.ts"
   },
   "dependencies": {
     "@fontsource/jetbrains-mono": "^5.3.0",

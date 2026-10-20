@@ -45,10 +45,43 @@ fn cli() -> PathBuf {
 }
 
 /// Starts `skiff watch` for the agent's session, unless one runs for this
-/// daemon. The page calls it on every start and every restore.
+/// daemon. The page calls it on every start and every restore. True when it
+/// started one.
 #[tauri::command]
-pub async fn start_skiff_watch(session: String) -> Result<bool, String> {
-    blocking(move || skipper::start_watch(&skiff_core::socket::socket_path(), &cli(), &session)).await
+pub async fn start_skiff_watch(app: State<'_, App>, session: String) -> Result<bool, String> {
+    ensure_watch(&app, cli(), session).await
+}
+
+/// One current watcher for the agent's session. A watcher of an older CLI,
+/// as after an update, gets one replacement attempt per app run when it is
+/// proven to be this daemon's `skiff watch`. One that is not, or that does
+/// not stop, keeps running, and only the log says so: the update is not
+/// finished, and nothing asks the user. One check runs at a time.
+pub(crate) async fn ensure_watch(app: &App, cli: PathBuf, session: String) -> Result<bool, String> {
+    let _one = app.watch_gate.lock().await;
+    let mut known = app.watch_pids.lock().unwrap().clone();
+    if let Ok((c, _)) = ensure_client(app).await {
+        if let Ok(list) = c.list_sessions().await {
+            known.extend(list.iter().filter(|s| s.id == session).filter_map(|s| s.watch.as_ref()).flat_map(|w| w.pids.iter().copied()));
+        }
+    }
+    // Only the bundled CLI replaces a watcher: a bare `skiff` from PATH is
+    // not known to be this app's build.
+    let tried = cli.is_absolute().then(|| app.watch_tried.clone());
+    let socket = skiff_core::socket::socket_path();
+    let out = blocking(move || skipper::ensure_watch(&socket, &cli, skipper::CLI_VERSION, &session, &known, tried.as_deref())).await?;
+    match out {
+        skipper::WatchOutcome::Started => Ok(true),
+        skipper::WatchOutcome::Current => Ok(false),
+        skipper::WatchOutcome::Replaced { pid } => {
+            eprintln!("skiff watch: replaced the older watcher (pid {pid})");
+            Ok(true)
+        }
+        skipper::WatchOutcome::Kept(why) => {
+            eprintln!("skiff watch not updated: {why}");
+            Ok(false)
+        }
+    }
 }
 
 /// The watch log beside the socket, for the row's Open watch log.
@@ -79,8 +112,7 @@ pub async fn open_skiff_agent(app: State<'_, App>, restore: Option<u64>) -> Resu
         None => skipper::Open::Start,
     };
     let Some(found) = skipper::open(&c, how).await.map_err(err)? else { return Ok(None) };
-    let id = found.session.id.clone();
-    let watch_error = blocking(move || skipper::start_watch(&skiff_core::socket::socket_path(), &cli(), &id)).await.err();
+    let watch_error = ensure_watch(&app, cli(), found.session.id.clone()).await.err();
     if let Some(e) = &watch_error {
         eprintln!("skiff watch: {e}");
     }

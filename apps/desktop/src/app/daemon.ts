@@ -12,6 +12,7 @@ import { $, h } from "../ui/dom";
 import { rune } from "../ui/runes";
 import { showError } from "../ui/alerts";
 import { daemonBadge, restartIfIdle } from "./daemonRestart";
+import { reloadNote } from "./daemonNotice";
 import { loadChangesSetting, reloadChanges } from "../workspace/changes";
 import { loadProjectThemes } from "../appearance/themes";
 import { loadFilesSetting } from "../workspace/files";
@@ -63,6 +64,8 @@ export async function subscribeEvents() {
  * Moves an older skiffd onto the app's own, with its sessions. Rust holds
  * terminal input meanwhile and sends it on once the reload is proven. The
  * page, layout, focus and scroll stay; shown panes redraw from a snapshot.
+ * The launch starts it, not the user: an update it leaves unfinished shows
+ * in the badge and the status bar, with no dialog.
  */
 export async function reloadDaemon(): Promise<DaemonStatus> {
   $("daemon-label").textContent = "Reloading skiffd…";
@@ -79,11 +82,9 @@ export async function reloadDaemon(): Promise<DaemonStatus> {
       reattachPanes();
     }
     setDaemon(r.status);
-    const end = (t: string) => (t.endsWith(".") ? t : `${t}.`);
-    const lines: string[] = [];
-    if (r.error) lines.push(end(r.missing.length ? `${r.error}: ${r.missing.join(", ")}` : r.error));
-    if (r.lost.length) lines.push(`Input typed during the reload did not reach ${r.lost.join(", ")}.`);
-    if (lines.length) showError(lines.join(" "));
+    const note = reloadNote(r);
+    $("daemon").title = note ?? "";
+    if (note) console.warn(`skiffd reload: ${note}`);
     render();
     return r.status;
   } finally {

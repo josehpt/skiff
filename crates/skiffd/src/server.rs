@@ -40,6 +40,24 @@ fn slow_ms(since: Instant) -> Option<u128> {
 /// Numbers each client connection, for the watcher registry.
 static CONNECTIONS: AtomicU64 = AtomicU64::new(1);
 
+/// What `ping` reports in place of the version, from [`take_test_version`].
+static TEST_VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// A debug build started with `SKIFF_TEST_REPORT_VERSION` reports that
+/// version to `ping`, so the app's update tests meet an older daemon. It
+/// takes the variable out of the environment: the image a reload execs, and
+/// every session, see none, and the reloaded daemon reports its own version.
+/// Call it before any thread starts. A release build ignores the variable.
+pub fn take_test_version() {
+    const VAR: &str = "SKIFF_TEST_REPORT_VERSION";
+    if cfg!(debug_assertions) {
+        if let Some(v) = std::env::var_os(VAR) {
+            let _ = TEST_VERSION.set(v.to_string_lossy().into_owned());
+            std::env::remove_var(VAR);
+        }
+    }
+}
+
 /// Ends the connection's watcher registration, on every way out of [`handle`].
 struct Unwatch {
     pool: Arc<SessionPool>,
@@ -152,7 +170,7 @@ pub async fn handle(stream: UnixStream, pool: Arc<SessionPool>) -> Result<()> {
         let name = env.request.name();
         let response = match env.request {
             Request::Ping => Response::Pong {
-                version: skiff_core::VERSION.to_string(),
+                version: TEST_VERSION.get().map_or(skiff_core::VERSION, |v| v.as_str()).to_string(),
                 protocol: skiff_core::PROTOCOL,
                 reload_state: Some(crate::session::reload::HANDOVER),
                 pid: Some(std::process::id()),

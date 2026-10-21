@@ -8,6 +8,7 @@ that entry. This intentionally over-reports client-policy adapters during M0.
 import argparse
 import hashlib
 import json
+import posixpath
 from pathlib import Path
 import re
 import tomllib
@@ -20,9 +21,10 @@ RUST_HOST = {"skiff_core", "config", "ledger", "skipper", "agent_folder", "skiff
 JS_IO = {"invoke", "fetch", "XMLHttpRequest", "WebSocket", "require", "Deno", "Bun"}
 
 
-def tokens(source, rust=False):
+def tokens(source, rust=False, _expression=False):
     """Keep string import specifiers; skip comments, including nested Rust ones."""
     out, i = [], 0
+    braces = 0
     while i < len(source):
         if source[i].isspace():
             i += 1
@@ -42,6 +44,39 @@ def tokens(source, rust=False):
                 end = source.find('"' + (raw[1] or ''), start)
                 i = len(source) if end < 0 else end + 1 + len(raw[1] or '')
                 out.append(("string", source[start:end]))
+            elif (_expression and source[i] == "/" and
+                  (not out or out[-1][1] in {"(", "[", "{", "=", ":", ",", ";", "!", "?", "&", "|", ">", "return", "throw"})):
+                # Regex literals may contain braces/backticks. Distinguish the
+                # common expression-start positions from arithmetic division.
+                i += 1
+                character_class = False
+                while i < len(source):
+                    if source[i] == "\\": i += 2; continue
+                    if source[i] == "[": character_class = True
+                    elif source[i] == "]": character_class = False
+                    elif source[i] == "/" and not character_class:
+                        i += 1
+                        break
+                    i += 1
+                out.append(("regex", ""))
+            elif not rust and source[i] == "`":
+                # Literal chunks are inert; ${...} is executable code, including
+                # nested templates, strings, comments and object/block braces.
+                i += 1
+                start = i
+                while i < len(source) and source[i] != "`":
+                    if source[i] == "\\":
+                        i += 2
+                    elif source.startswith("${", i):
+                        out.append(("string", source[start:i]))
+                        nested, consumed = tokens(source[i + 2:], _expression=True)
+                        out.extend(nested)
+                        i += 2 + consumed
+                        start = i
+                    else:
+                        i += 1
+                out.append(("string", source[start:i]))
+                i += 1
             elif source[i] in '\"\'`' and not (rust and source[i] == "'" and not re.match(r"'(?:\\.|[^'\\])'", source[i:])):
                 quote, start = source[i], i + 1
                 i += 1
@@ -54,8 +89,13 @@ def tokens(source, rust=False):
                 if word:
                     out.append(("word", word[0])); i += len(word[0])
                 else:
+                    if _expression:
+                        if source[i] == "}" and braces == 0:
+                            return out, i + 1
+                        if source[i] == "{": braces += 1
+                        elif source[i] == "}": braces -= 1
                     out.append(("punct", source[i])); i += 1
-    return out
+    return (out, i) if _expression else out
 
 
 def risks(source, suffix):
@@ -80,17 +120,75 @@ def risks(source, suffix):
     return sorted(found)
 
 
+def rust_modules(lexed):
+    modules = {}
+    for file, ts in lexed.items():
+        if file.suffix != ".rs": continue
+        name = file.parent.name if file.stem == "mod" else file.stem
+        if name not in {"lib", "main"}:
+            modules.setdefault(name, set()).add(file)
+        # Inline modules can re-export adapters just like file modules.
+        for i in range(len(ts) - 2):
+            if ts[i] == ("word", "mod") and ts[i + 2] == ("punct", "{"):
+                modules.setdefault(ts[i + 1][1], set()).add(file)
+    return modules
+
+
+def local_edges(file, lexed, files, modules):
+    """Conservative module-level edges, not symbol/type resolution.
+
+    Follow literal TS paths (including barrels) and Rust local module names,
+    including qualified/grouped uses and re-exports. Module declarations alone
+    do not make their parent a caller. Ambiguous Rust names over-report safely.
+    """
+    edges = set()
+    if file.suffix != ".rs":
+        for kind, value in lexed:
+            if kind != "string" or not value.startswith("."): continue
+            path = Path(posixpath.normpath(str(file.parent / value)))
+            candidates = [path]
+            # Bundler resolution permits explicit .ts and emitted .js imports.
+            base = path.with_suffix("") if path.suffix in {".js", ".jsx", ".mjs", ".cjs"} else path
+            candidates += [Path(str(base) + ext) for ext in (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")]
+            candidates += [path / ("index" + ext) for ext in (".ts", ".tsx", ".js", ".jsx")]
+            edges.update(p for p in candidates if p in files)
+    else:
+        for i, (kind, value) in enumerate(lexed):
+            if kind != "word": continue
+            if i and lexed[i - 1] == ("word", "mod"): continue
+            edges.update(modules.get(value, ()))
+            # Root-level symbol re-exports need the crate root as their provider.
+            if value in {"crate", "self", "super"} and [v for _, v in lexed[i + 1:i + 3]] == [":", ":"]:
+                # Conservatively include ancestor modules too: a symbol may be
+                # re-exported under the same name as a file module.
+                edges.update(p for p in files if p.suffix == ".rs" and
+                             (p.name == "lib.rs" or p.parent in file.parents and
+                              p.name == "mod.rs"))
+    return edges - {file}
+
+
 def inventory(root):
-    result = {}
+    result, sources = {}, {}
     for folder in ["apps/desktop/src", "apps/desktop/src-tauri/src"]:
         for file in sorted((root / folder).rglob("*")):
-            if file.suffix not in {".rs", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}: continue
-            text = file.read_text()
-            reasons = risks(text, file.suffix)
-            if reasons:
-                result[str(file.relative_to(root))] = {
-                    "sha256": hashlib.sha256(file.read_bytes()).hexdigest(), "reasons": reasons,
-                }
+            if file.suffix in {".rs", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}:
+                sources[file.relative_to(root)] = file.read_text()
+    reasons = {p: risks(source, p.suffix) for p, source in sources.items()}
+    lexed = {p: tokens(source, rust=p.suffix == ".rs") for p, source in sources.items()}
+    modules = rust_modules(lexed)
+    edges = {p: local_edges(p, ts, sources, modules) for p, ts in lexed.items()}
+    # Fixed point includes callers of callers and barrel/re-export chains.
+    flagged = {p for p, found in reasons.items() if found}
+    while True:
+        expanded = flagged | {p for p, deps in edges.items() if deps & flagged}
+        if expanded == flagged: break
+        flagged = expanded
+    for file in sorted(flagged):
+        providers = sorted(str(p) for p in edges[file] & flagged)
+        result[str(file)] = {
+            "sha256": hashlib.sha256((root / file).read_bytes()).hexdigest(),
+            "reasons": reasons[file] or ["local provider: " + p for p in providers],
+        }
     # A new dependency or alias must not introduce an uninspected I/O provider.
     for name in ["apps/desktop/src-tauri/Cargo.toml", "apps/desktop/package.json"]:
         result[name] = {"sha256": hashlib.sha256((root / name).read_bytes()).hexdigest(), "reasons": ["dependency surface"]}
@@ -102,7 +200,7 @@ def compare(actual, baseline):
     for file, entry in actual.items():
         old = baseline.get(file)
         if old is None or old["sha256"] != entry["sha256"]:
-            errors.append(f"{file}: new/changed direct boundary access ({', '.join(entry['reasons'])}); use HostConnection or explicitly review the exact legacy baseline")
+            errors.append(f"{file}: new/changed boundary access ({', '.join(entry['reasons'])}); use HostConnection or explicitly review the exact legacy baseline")
     for file in baseline.keys() - actual.keys():
         errors.append(f"{file}: obsolete exemption; remove it from the baseline")
     return errors
@@ -139,7 +237,7 @@ def main():
         }
         for file, entry in actual.items():
             client = file in client_files
-            entry["ownership"] = old.get(file, {}).get("ownership", "client policy: exact existing adapter only" if client else "legacy local adapter: migrate behind Host API in M1–M6")
+            entry["ownership"] = old.get(file, {}).get("ownership", "client policy: exact existing adapter only" if client else "legacy local adapter/caller: migrate behind Host API in M1–M6")
         BASELINE.write_text(json.dumps(actual, indent=2, sort_keys=True) + "\n")
     baseline = json.loads(BASELINE.read_text())
     errors = compare(actual, baseline) + api_errors(ROOT)

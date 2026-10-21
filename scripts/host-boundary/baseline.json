@@ -121,6 +121,13 @@
     ],
     "sha256": "688aba8f3ece814c84bfc3d4824c6b39d5c23cc6938cb6ffabc67c2ef432c93d"
   },
+  "apps/desktop/src-tauri/src/quit.rs": {
+    "ownership": "client policy: exact existing adapter only",
+    "reasons": [
+      "local provider: apps/desktop/src-tauri/src/lib.rs"
+    ],
+    "sha256": "d6e3667fd140a82df7397542f288398986030f825df09b2c969052f310357c76"
+  },
   "apps/desktop/src-tauri/src/reload.rs": {
     "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
     "reasons": [
@@ -213,6 +220,41 @@
     ],
     "sha256": "f3d62e6451b52b58537e23d55ef0ac67f6cf0434dfa6c952cdff41de53ea8496"
   },
+  "apps/desktop/src/app/keyboard.ts": {
+    "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
+    "reasons": [
+      "local provider: apps/desktop/src/app/modes.ts",
+      "local provider: apps/desktop/src/app/panels.ts",
+      "local provider: apps/desktop/src/app/render.ts",
+      "local provider: apps/desktop/src/app/skiffAgent.ts",
+      "local provider: apps/desktop/src/app/state.ts",
+      "local provider: apps/desktop/src/terminal/peek.ts",
+      "local provider: apps/desktop/src/ui/contextMenu.ts",
+      "local provider: apps/desktop/src/workspace/ledger.ts",
+      "local provider: apps/desktop/src/workspace/menus.ts",
+      "local provider: apps/desktop/src/workspace/projectClose.ts",
+      "local provider: apps/desktop/src/workspace/rename.ts",
+      "local provider: apps/desktop/src/workspace/selection.ts",
+      "local provider: apps/desktop/src/workspace/sidebarLines.ts",
+      "local provider: apps/desktop/src/workspace/tree.ts",
+      "local provider: apps/desktop/src/workspace/view.ts"
+    ],
+    "sha256": "5eaca98678aa2594b30b58a89fd1dbdf09940d6c4440af6a481bfc3d3f42d9f5"
+  },
+  "apps/desktop/src/app/modes.ts": {
+    "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
+    "reasons": [
+      "local provider: apps/desktop/src/app/actions.ts",
+      "local provider: apps/desktop/src/app/keyboard.ts",
+      "local provider: apps/desktop/src/app/render.ts",
+      "local provider: apps/desktop/src/app/skiffAgent.ts",
+      "local provider: apps/desktop/src/app/state.ts",
+      "local provider: apps/desktop/src/app/stateQueries.ts",
+      "local provider: apps/desktop/src/terminal/terminal.ts",
+      "local provider: apps/desktop/src/workspace/view.ts"
+    ],
+    "sha256": "d552c8b69cd1d28ccd024f0522d442cafcf774a1611b0fcbdbaa1bb531f743cb"
+  },
   "apps/desktop/src/app/panels.ts": {
     "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
     "reasons": [
@@ -220,6 +262,28 @@
       "invoke"
     ],
     "sha256": "1c2ef48e71682d097859b21641b5fb1eb518e7a8b119ef6cb796fa0983a84598"
+  },
+  "apps/desktop/src/app/render.ts": {
+    "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
+    "reasons": [
+      "local provider: apps/desktop/src/app/commands.ts",
+      "local provider: apps/desktop/src/app/keyboard.ts",
+      "local provider: apps/desktop/src/app/modes.ts",
+      "local provider: apps/desktop/src/app/seen.ts",
+      "local provider: apps/desktop/src/app/state.ts",
+      "local provider: apps/desktop/src/appearance/backdrop.ts",
+      "local provider: apps/desktop/src/appearance/themes.ts",
+      "local provider: apps/desktop/src/terminal/peek.ts",
+      "local provider: apps/desktop/src/terminal/terminal.ts",
+      "local provider: apps/desktop/src/workspace/fleets.ts",
+      "local provider: apps/desktop/src/workspace/header.ts",
+      "local provider: apps/desktop/src/workspace/ledger.ts",
+      "local provider: apps/desktop/src/workspace/selection.ts",
+      "local provider: apps/desktop/src/workspace/sidebar.ts",
+      "local provider: apps/desktop/src/workspace/sidebarLines.ts",
+      "local provider: apps/desktop/src/workspace/status.ts"
+    ],
+    "sha256": "3edcde30e2367ef87cbdc4c755c8a733dbcb971567ab60a6782baf38d070e842"
   },
   "apps/desktop/src/app/seen.ts": {
     "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
@@ -236,6 +300,29 @@
       "invoke"
     ],
     "sha256": "9580d02875616934be05162327fcb89b6f0a1546dc8f462861c32a100df8b76a"
+  },
+  "apps/desktop/src/app/state.ts": {
+    "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
+    "reasons": [
+      "local provider: apps/desktop/src/app/skiffAgent.ts"
+    ],
+    "sha256": "2741158f6692aa4ff402a87aec1cbc738db6c7371f6fe6591cb6cc2e7cdbe9ca"
+  },
+  "apps/desktop/src/app/stateQueries.ts": {
+    "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
+    "reasons": [
+      "local provider: apps/desktop/src/app/state.ts",
+      "local provider: apps/desktop/src/appearance/appTheme.ts"
+    ],
+    "sha256": "cff6d2b34983a4320111e2c68fd8f66d67a912edf4883d910e8a4c26d3f2aba8"
+  },
+  "apps/desktop/src/appearance/agentIcon.ts": {
+    "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
+    "reasons": [
+      "local provider: apps/desktop/src/appearance/appTheme.ts",
+      "local provider: apps/desktop/src/appearance/themes.ts"
+    ],
+    "sha256": "dc12700ed30f5b896bc27eba2e962f259a6f36b734944197f5637e498e7b869c"
   },
   "apps/desktop/src/appearance/appTheme.ts": {
     "ownership": "client policy: exact existing adapter only",
@@ -352,6 +439,33 @@
     ],
     "sha256": "394dab5eebfad6e9cca555d8589f9434a50cd58e569e7f662aad789cfb5131bb"
   },
+  "apps/desktop/src/terminal/osc52.ts": {
+    "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
+    "reasons": [
+      "local provider: apps/desktop/src/platform/clipboard.ts"
+    ],
+    "sha256": "9b3809100fbf3f4eb8d27f0ec1d6ee3c1d7054070bc3ae35d93f46c9ae680f37"
+  },
+  "apps/desktop/src/terminal/paneActions.ts": {
+    "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
+    "reasons": [
+      "local provider: apps/desktop/src/workspace/view.ts"
+    ],
+    "sha256": "3a13e07bc725eb59107f40ed6b4c97ebef9d6b6acafc5ffa81a216489f1ac558"
+  },
+  "apps/desktop/src/terminal/paneHeader.ts": {
+    "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
+    "reasons": [
+      "local provider: apps/desktop/src/app/modes.ts",
+      "local provider: apps/desktop/src/app/state.ts",
+      "local provider: apps/desktop/src/app/stateQueries.ts",
+      "local provider: apps/desktop/src/appearance/agentIcon.ts",
+      "local provider: apps/desktop/src/terminal/paneActions.ts",
+      "local provider: apps/desktop/src/terminal/resume.ts",
+      "local provider: apps/desktop/src/workspace/canvas.ts"
+    ],
+    "sha256": "1b5f78427b7e6003c060e88b7617c026d17a20404d0d812e3c0294816b01a726"
+  },
   "apps/desktop/src/terminal/peek.ts": {
     "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
     "reasons": [
@@ -377,6 +491,14 @@
     ],
     "sha256": "aa1be40b2d0cb91c4f7f2cde79c9ded5c5a14ae52ecd215e43efb460707d7f4c"
   },
+  "apps/desktop/src/terminal/terminalClipboard.ts": {
+    "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
+    "reasons": [
+      "local provider: apps/desktop/src/app/state.ts",
+      "local provider: apps/desktop/src/platform/clipboard.ts"
+    ],
+    "sha256": "4bc3ebc3ac422aa5a6d4a45e09dda23e96ccc3f865bd515df2a1c041cb13114f"
+  },
   "apps/desktop/src/terminal/terminalFont.ts": {
     "ownership": "client policy: exact existing adapter only",
     "reasons": [
@@ -393,6 +515,27 @@
     ],
     "sha256": "b71a9aa6e8e58b0a048db8dc03a9c52014357294ffb96f7dd9f22da28a2dab09"
   },
+  "apps/desktop/src/terminal/terminalSearch.ts": {
+    "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
+    "reasons": [
+      "local provider: apps/desktop/src/app/state.ts"
+    ],
+    "sha256": "3ffdca7dac465d41a3e1cb53c9f262662922d7aca0629d00803bf4975a8dcedb"
+  },
+  "apps/desktop/src/ui/contextMenu.ts": {
+    "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
+    "reasons": [
+      "local provider: apps/desktop/src/workspace/view.ts"
+    ],
+    "sha256": "f8803b159b62815c4991f50e1d7aa0ca91aa59cc6dc2e9d4b93661a3ec2fc7b6"
+  },
+  "apps/desktop/src/ui/fieldClipboard.ts": {
+    "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
+    "reasons": [
+      "local provider: apps/desktop/src/platform/clipboard.ts"
+    ],
+    "sha256": "e3f2df15dc7001566e815e679a662f1a719f27298959d17b9b6acf22232cc32c"
+  },
   "apps/desktop/src/ui/infoDialogs.ts": {
     "ownership": "client policy: exact existing adapter only",
     "reasons": [
@@ -402,6 +545,14 @@
     ],
     "sha256": "e2ec23d1077f10aabef49016d1d97c3ac7ac3285626738ee3e3bec0ad0623cf6"
   },
+  "apps/desktop/src/ui/launchMenu.ts": {
+    "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
+    "reasons": [
+      "local provider: apps/desktop/src/app/stateQueries.ts",
+      "local provider: apps/desktop/src/appearance/agentIcon.ts"
+    ],
+    "sha256": "5c9099ee8093ff135a1be327a7309dfdf9bc7fd09065ddec7f245933c74e2321"
+  },
   "apps/desktop/src/workspace/addProject.ts": {
     "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
     "reasons": [
@@ -410,6 +561,20 @@
       "invoke"
     ],
     "sha256": "1254a16ea6e0646b5a52797c04241e7491d61ed4d1c0d6e9d11011055bf65878"
+  },
+  "apps/desktop/src/workspace/canvas.ts": {
+    "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
+    "reasons": [
+      "local provider: apps/desktop/src/app/daemon.ts",
+      "local provider: apps/desktop/src/app/groups.ts",
+      "local provider: apps/desktop/src/app/render.ts",
+      "local provider: apps/desktop/src/app/state.ts",
+      "local provider: apps/desktop/src/app/stateQueries.ts",
+      "local provider: apps/desktop/src/appearance/agentIcon.ts",
+      "local provider: apps/desktop/src/terminal/peek.ts",
+      "local provider: apps/desktop/src/workspace/view.ts"
+    ],
+    "sha256": "838245494b4c5f47e7fad1bdfefecb56273b0912f0411974a5a0a40af001758f"
   },
   "apps/desktop/src/workspace/changes.ts": {
     "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
@@ -436,6 +601,14 @@
       "invoke"
     ],
     "sha256": "3e9d4bc2aae863cdd34ee1c4943366d3fba50b3009d20624ca989f335a5e31aa"
+  },
+  "apps/desktop/src/workspace/header.ts": {
+    "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
+    "reasons": [
+      "local provider: apps/desktop/src/app/state.ts",
+      "local provider: apps/desktop/src/app/stateQueries.ts"
+    ],
+    "sha256": "2e3fbc2470227bea3bb509325528217d41072421ffc7ddf18ae62ff02835e845"
   },
   "apps/desktop/src/workspace/ledger.ts": {
     "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
@@ -464,6 +637,16 @@
     ],
     "sha256": "d03d5fe9a383e66724f33765c20b2024ee8422c66924d9fa39b31a75985671b2"
   },
+  "apps/desktop/src/workspace/missionMotion.ts": {
+    "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
+    "reasons": [
+      "local provider: apps/desktop/src/app/modes.ts",
+      "local provider: apps/desktop/src/app/state.ts",
+      "local provider: apps/desktop/src/workspace/missionControl.ts",
+      "local provider: apps/desktop/src/workspace/view.ts"
+    ],
+    "sha256": "777b0b7e0e9f885123db08567523fef4d97d70260ff0cc6b575b118e711d802d"
+  },
   "apps/desktop/src/workspace/profile.ts": {
     "ownership": "client policy: exact existing adapter only",
     "reasons": [
@@ -490,5 +673,109 @@
       "invoke"
     ],
     "sha256": "f24c18310ea5e2c1450e71377cbb532edbc212586dd2fe21bec21e6c64341f27"
+  },
+  "apps/desktop/src/workspace/selection.ts": {
+    "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
+    "reasons": [
+      "local provider: apps/desktop/src/app/keyboard.ts",
+      "local provider: apps/desktop/src/app/render.ts",
+      "local provider: apps/desktop/src/app/state.ts",
+      "local provider: apps/desktop/src/app/stateQueries.ts",
+      "local provider: apps/desktop/src/workspace/view.ts"
+    ],
+    "sha256": "6a4e1a0dfe511ce8191c0f528679a601609b17d2fa5ed32f6a30d059ac21af41"
+  },
+  "apps/desktop/src/workspace/sidebar.ts": {
+    "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
+    "reasons": [
+      "local provider: apps/desktop/src/app/keyboard.ts",
+      "local provider: apps/desktop/src/app/panels.ts",
+      "local provider: apps/desktop/src/app/skiffAgent.ts",
+      "local provider: apps/desktop/src/app/state.ts",
+      "local provider: apps/desktop/src/app/stateQueries.ts",
+      "local provider: apps/desktop/src/appearance/agentIcon.ts",
+      "local provider: apps/desktop/src/appearance/appTheme.ts",
+      "local provider: apps/desktop/src/appearance/themes.ts",
+      "local provider: apps/desktop/src/terminal/peek.ts",
+      "local provider: apps/desktop/src/workspace/changes.ts",
+      "local provider: apps/desktop/src/workspace/files.ts",
+      "local provider: apps/desktop/src/workspace/ledger.ts",
+      "local provider: apps/desktop/src/workspace/menus.ts",
+      "local provider: apps/desktop/src/workspace/profile.ts",
+      "local provider: apps/desktop/src/workspace/rename.ts",
+      "local provider: apps/desktop/src/workspace/selection.ts",
+      "local provider: apps/desktop/src/workspace/sidebarLines.ts",
+      "local provider: apps/desktop/src/workspace/tree.ts",
+      "local provider: apps/desktop/src/workspace/treeDrag.ts",
+      "local provider: apps/desktop/src/workspace/view.ts"
+    ],
+    "sha256": "650699a709dea12c69bc81a1a6fb8e2a9f2275f21ad3db8192037d46819eb324"
+  },
+  "apps/desktop/src/workspace/sidebarLines.ts": {
+    "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
+    "reasons": [
+      "local provider: apps/desktop/src/app/skiffAgent.ts",
+      "local provider: apps/desktop/src/app/state.ts",
+      "local provider: apps/desktop/src/app/stateQueries.ts",
+      "local provider: apps/desktop/src/workspace/view.ts"
+    ],
+    "sha256": "0dc062068f5d3652fabb52fd4891d2b8fe8645a52496916277a96c16a2911b74"
+  },
+  "apps/desktop/src/workspace/status.ts": {
+    "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
+    "reasons": [
+      "local provider: apps/desktop/src/app/state.ts",
+      "local provider: apps/desktop/src/workspace/welcome.ts"
+    ],
+    "sha256": "6a336766ba2137c92678890743d92a2b7ed33d79c9fc89fea1054f4e3e44eb69"
+  },
+  "apps/desktop/src/workspace/tree.ts": {
+    "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
+    "reasons": [
+      "local provider: apps/desktop/src/app/state.ts",
+      "local provider: apps/desktop/src/app/stateQueries.ts"
+    ],
+    "sha256": "444056dd8c63971f2a54c2181033a6045fc40a4b407b068be00b7a8520fa1260"
+  },
+  "apps/desktop/src/workspace/treeDrag.ts": {
+    "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
+    "reasons": [
+      "local provider: apps/desktop/src/app/render.ts",
+      "local provider: apps/desktop/src/app/state.ts",
+      "local provider: apps/desktop/src/workspace/fleets.ts",
+      "local provider: apps/desktop/src/workspace/tree.ts"
+    ],
+    "sha256": "e10f34297cfdc2e7073fd4935c2aaed4a5bf12f17d34eccd3c03e1ec9667c702"
+  },
+  "apps/desktop/src/workspace/view.ts": {
+    "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
+    "reasons": [
+      "local provider: apps/desktop/src/app/groups.ts",
+      "local provider: apps/desktop/src/app/keyboard.ts",
+      "local provider: apps/desktop/src/app/render.ts",
+      "local provider: apps/desktop/src/app/skiffAgent.ts",
+      "local provider: apps/desktop/src/app/state.ts",
+      "local provider: apps/desktop/src/app/stateQueries.ts",
+      "local provider: apps/desktop/src/terminal/peek.ts",
+      "local provider: apps/desktop/src/terminal/terminal.ts",
+      "local provider: apps/desktop/src/workspace/canvas.ts",
+      "local provider: apps/desktop/src/workspace/profile.ts",
+      "local provider: apps/desktop/src/workspace/selection.ts",
+      "local provider: apps/desktop/src/workspace/tree.ts"
+    ],
+    "sha256": "d93b3b73adcf26aee853bee30569ce2b86017342c848e9765631d3b44a938384"
+  },
+  "apps/desktop/src/workspace/welcome.ts": {
+    "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
+    "reasons": [
+      "local provider: apps/desktop/src/app/daemon.ts",
+      "local provider: apps/desktop/src/app/panels.ts",
+      "local provider: apps/desktop/src/app/state.ts",
+      "local provider: apps/desktop/src/app/stateQueries.ts",
+      "local provider: apps/desktop/src/appearance/agentIcon.ts",
+      "local provider: apps/desktop/src/workspace/menus.ts",
+      "local provider: apps/desktop/src/workspace/projectClose.ts"
+    ],
+    "sha256": "3f596f38297a3423e1212f8a3e3fb56601367a4bcda32476f4616cadf783aa30"
   }
 }

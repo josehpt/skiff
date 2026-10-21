@@ -141,22 +141,33 @@ serde/base64 allowlist, and its source is checked for I/O/application references
 
 The desktop check catches Rust host imports (including aliases, grouped uses,
 re-exports and fully qualified paths), filesystem/process/environment/network
-access, and TS direct invoke/network/Node/Tauri I/O imports. Imports of the new
-Host contract/client seam are allowed. The temporary baseline inventories 52
-existing adapters plus both desktop dependency manifests with exact SHA256
-content and purpose labels. New dependency aliases/providers also require review. It is deliberately
-conservative: even adding a call through an existing alias changes the whole
-file's fingerprint and fails. There are no directory or wildcard exemptions.
+access, and TS direct invoke/network/Node/Tauri I/O imports. Executable template
+interpolations are scanned recursively, including nested templates. Literal
+relative TS paths are normalized (dot segments, explicit extensions, emitted
+`.js` paths and index barrels). Local adapter dependencies propagate transitively
+through callers/re-exports; Rust module names and root/ancestor references are
+conservatively tracked without symbol resolution. Imports of the new Host
+contract/client seam are allowed.
+
+The temporary baseline inventories 78 existing adapters/callers plus both desktop
+dependency manifests with exact SHA256 content and purpose labels. New dependency
+aliases/providers also require review. It is deliberately conservative: even
+adding a call through an existing alias changes the whole file's fingerprint and
+fails. Type-only imports, inert relative-path strings and ambiguous Rust names
+may over-report. There are no directory or wildcard exemptions.
 Client policy files (appearance, keys/UI/native menus, clipboard, workspace files)
 have explicit exact-file entries rather than broad immunity.
 
 Do not casually regenerate the baseline. Inspect a changed file's ownership,
 then explicitly review any remaining direct local accesses and their purpose
 before updating its fingerprint with `--record`. A file with no remaining direct
-access must have its entry removed. M1–M6 progressively move providers into a
+or transitive access must have its entry removed. M1–M6 progressively move providers into a
 local adapter and shrink the inventory; graduation requires no legacy host-data
 entries. This is a lexical architecture tripwire, not a malicious-code sandbox
-or full Rust/TS semantic resolver. Baseline and checker changes require review.
+or full Rust/TS semantic resolver: computed module specifiers, custom resolver
+aliases, macro expansion and reflective/dynamically constructed I/O are not
+resolved. Regex recognition inside template expressions uses a lexical heuristic.
+Baseline and checker changes require review.
 
 ## M0 demo and handoff
 

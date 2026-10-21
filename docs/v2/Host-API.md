@@ -817,9 +817,11 @@ OpenSSH stream-local forward to the remote skiffd socket.
 
 - **The system ssh:** `/usr/bin/ssh` (else `ssh` on PATH), so `~/.ssh/config`,
   ProxyJump, agents, hardware keys and known_hosts behave as in a terminal.
-- **The forward:** `-N -L <private>/skiffd.sock:<remote socket> -- <destination>`.
-  The local socket lives in a per-account `0700` directory in the temp dir;
-  the path is short enough for `sun_path`.
+- **The forward:** `-N -L <private>/<pid>-<n>/skiffd.sock:<remote socket> -- <destination>`.
+  Each forward makes its own `0700` directory, exclusively, inside a
+  per-account, per-destination `0700` parent in the temp dir. Two windows or
+  app runs on one destination never share, unlink or remove each other's
+  socket. The path is short enough for `sun_path`.
 - **Options forced on the command line**, so they win over ssh config:
   - `BatchMode=yes`, `StrictHostKeyChecking=yes`, `UpdateHostKeys=no`
   - `ExitOnForwardFailure=yes`, `ServerAliveInterval=15`/`CountMax=3`,
@@ -849,8 +851,16 @@ OpenSSH stream-local forward to the remote skiffd socket.
   that Host."). The app's bootstrap id is never read or made for a remote Host.
 - The forward's peer pid is this Mac's `ssh`. It is never shown or signalled:
   status reports no pid for a remote Host.
-- On reconnect, a different `host_id` is refused with an explanation, and the
-  page keeps waiting.
+- **The pin.** The first accepted `host_id` is stored for that Host in
+  `hosts.toml` (`host_id`) before the connection is used, compare-and-set
+  against the file. Every later connection, through a reconnect, a new
+  selection or a new app run, must report the same id. A different one is
+  `identity_changed`: Skiff connects to nothing there, and the status shows an
+  `identity` warning.
+- **Only the person changes it.** The warning's "Accept new identity…" asks
+  first, then `accept_host_identity` stores the id Rust saw and refused (never
+  one the page names) and reloads the page. Forgetting the Host and adding it
+  again also starts over.
 
 ### Lifecycle
 
@@ -886,6 +896,14 @@ OpenSSH stream-local forward to the remote skiffd socket.
   is ssh, handshake and identity check), then capabilities, events, the
   session list, groups if offered, and every shown pane re-attached for a
   fresh snapshot.
+  - Any failed step fails the whole try. A loss reported during a try is kept.
+    Either way the whole recovery runs again, after 1→30 s.
+  - Input comes back on, and the Host shows connected, only after a complete
+    try with no loss in it.
+- **Why it is down:** each failed connect leaves its cause in the status
+  warning (`remote`, or `identity`): an `SshError` text, a Host without
+  identity, no answer, or one plain line with what to check. ssh's output and
+  local paths are never shown. A backoff wait keeps the last cause.
   - The real-SSH test shows SameInstance continuity after the link returns.
   - Nothing typed while down arrives later.
 - **No retries:** mutations are not retried; lifecycle is not offered remotely
@@ -903,11 +921,17 @@ OpenSSH stream-local forward to the remote skiffd socket.
   new command is not placed on one side. The page also does not load them:
   - no projects
   - the ledger does not start
+- **Host-owned workers on this Mac:** the Skipper skill copy
+  (`skiff_agent::sync`) runs only while this Mac is shown, once per app run:
+  at launch, or on the first switch back to This Mac. The ledger watcher reads
+  nothing while a remote Host is shown, and starts fresh after a switch back.
   - the welcome screen says "Sessions on <Host>"
   - the sidebar lists sessions under Other
 - **OSC 52:** remote clipboard writes are ignored unless allowed for that Host
-  ("Allow clipboard writes from this Host…", stored per Host). Reads stay
-  unsupported, as everywhere.
+  ("Allow clipboard writes from this Host…"). The permission is stored as the
+  pinned Host id it was given to (`clipboard_host`) and counts only while that
+  is the pin: a Host never connected cannot get it, and an accepted new
+  identity starts blocked. Reads stay unsupported, as everywhere.
 
 ### Picker and label
 
@@ -919,7 +943,8 @@ OpenSSH stream-local forward to the remote skiffd socket.
 - **Picking a Host** tears down the old connection, streams and held input,
   then reloads the page: no view mixes two Hosts.
 - **`hosts.toml`** (client-owned, beside `projects.toml`) stores the known
-  Hosts, `selected` and `clipboard`. An unknown or invalid selected entry falls
+  Hosts, `selected`, each Host's `host_id` pin and `clipboard_host`. An older
+  `clipboard = true` is ignored. An unknown or invalid selected entry falls
   back to This Mac.
 
 ### Agent list: M3
@@ -961,7 +986,7 @@ the remote CLI starts work.
   - Link drop: closed stream, input refused, session alive.
   - Down-link error, then backoff.
   - Reconnect gives SameInstance, a fresh snapshot, and no "LOST" input.
-  - Quit removes the forward directory; the session survives.
+  - Quit removes the forward's own directory; the session survives.
   - Unknown key, changed key (known_hosts unchanged), wrong socket, forwarding
     disabled, and a remote skiffd without identity refused, with no bootstrap
     file.
@@ -972,8 +997,19 @@ the remote CLI starts work.
   - every command is classified local-only or allowed
   - remote input is off while disconnected
   - `hosts.toml` round trip; an unknown or invalid selection is This Mac
+  - the pin: accept A, refuse B from the file, accept B only explicitly; the
+    clipboard permission follows the identity
+  - an unknown host key's cause reaches the status from a fresh state and
+    stays during the backoff; every failure maps to a cause without paths
+  - a remote launch does not copy the Skipper skill (private config); the
+    ledger watcher reads nothing while remote
+- **Fake ssh** (`skiff-client/tests/ssh_forward.rs`, the M2 review's
+  fixtures): a changed identity stays refused after reselection; two forwards
+  to one destination keep separate sockets.
 - **Page:** `hosts.test.ts` (clipboard opt-in per Host, pick saves then
-  reloads, one reconnect per lost link) plus the existing suites.
+  reloads, one recovery per lost link, and the review's race: a second loss
+  during recovery runs it again and input stays off until it is clean) plus the
+  existing suites.
 - **CI** now runs `tsc` and the page tests (`desktop-ts` job) and
   `ssh_remote`.
 

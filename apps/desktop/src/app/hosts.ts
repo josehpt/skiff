@@ -170,11 +170,56 @@ function addHostDialog() {
   });
 }
 
-/** Rust says the remote link ended. `reconnect` runs until it is back. */
-export function watchHostLink(reconnect: () => Promise<void>) {
+let recovering = false;
+let lostAgain = false;
+
+/** Rust says the remote link ended. `reconnect` restores everything: it
+ *  resolves only when every step worked, else it throws. A loss during a
+ *  try is kept, and the whole recovery runs again. The Host shows connected,
+ *  and `online` turns input back on, only after a full recovery with no loss
+ *  in it. Tries wait 1 s, then twice as long each time, up to 30 s. */
+export function watchHostLink(reconnect: () => Promise<void>, online: () => void) {
   void listen("skiff:host-lost", () => {
+    if (recovering) {
+      lostAgain = true;
+      return;
+    }
     if (!connected) return;
-    setHostConnected(false);
-    void reconnect();
+    void recover(reconnect, online);
   });
+}
+
+async function recover(reconnect: () => Promise<void>, online: () => void) {
+  recovering = true;
+  setHostConnected(false);
+  let wait = 1000;
+  for (;;) {
+    lostAgain = false;
+    const ok = await reconnect().then(
+      () => true,
+      (e) => (console.error(e), false),
+    );
+    if (ok && !lostAgain) break;
+    await new Promise((r) => setTimeout(r, wait));
+    wait = Math.min(wait * 2, 30_000);
+  }
+  recovering = false;
+  setHostConnected(true);
+  online();
+}
+
+/** The shown Host answered with another Skiff identity, and Skiff stopped.
+ *  The person checks that Host, then accepts the new identity here. Its
+ *  clipboard permission does not carry over. */
+export async function acceptHostIdentity() {
+  const name = hostName();
+  const ok = await confirmAction({
+    title: `Accept the new identity of ${name}?`,
+    body: "Skiff then connects to the Host that answers there now. Accept only if you know why it changed, such as a new install of Skiff on that Host. Clipboard writes from it are blocked again.",
+    action: "Accept identity",
+  });
+  if (!ok) return;
+  await invoke("accept_host_identity", { destination: list.selected })
+    .then(() => location.reload())
+    .catch(showError);
 }

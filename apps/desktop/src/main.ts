@@ -13,7 +13,7 @@ import { bySessionPriority } from "./workspace/model";
 import type { Appearance, DaemonStatus } from "./platform/types";
 import { invoke } from "@tauri-apps/api/core";
 import { switcher } from "./app/commands";
-import { loadProjects, reconnectRemote, refreshSessions, reloadDaemon, setDaemon, subscribeEvents, untilConnected } from "./app/daemon";
+import { hostOnline, loadProjects, reconnectRemote, refreshSessions, reloadDaemon, setDaemon, subscribeEvents, untilConnected } from "./app/daemon";
 import { isRemote, loadHosts, setHostConnected, watchHostLink } from "./app/hosts";
 import { muteInput } from "./terminal/terminalRuntime";
 import { loadHostCaps } from "./app/hostCaps";
@@ -104,7 +104,7 @@ async function boot() {
     muteInput(false);
     setHostConnected(true);
   }
-  watchHostLink(reconnectRemote);
+  watchHostLink(reconnectRemote, hostOnline);
 
   // What the selected Host offers decides which session surfaces it gets.
   await loadHostCaps().catch(console.error);

@@ -1,6 +1,7 @@
 //! M2: reach a remote Host's skiffd through the system `ssh`. OpenSSH forwards
 //! a Unix socket in a private `0700` directory on this machine to the remote
-//! skiffd socket (`-L local.sock:remote.sock`). `~/.ssh/config`, ProxyJump,
+//! skiffd socket (`-L local.sock:remote.sock`). Each forward makes its own
+//! directory, so two windows or app runs never share or remove a socket. `~/.ssh/config`, ProxyJump,
 //! agents, hardware keys and `known_hosts` work as in a terminal.
 //!
 //! Trust is the user's own: `StrictHostKeyChecking=yes`, so an unknown or
@@ -17,7 +18,10 @@ use std::{
     os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
     process::Stdio,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
     time::{Duration, Instant},
 };
 
@@ -213,8 +217,8 @@ pub fn classify(stderr: &str, target: &SshTarget) -> Option<SshError> {
     }
 }
 
-/// A running forward. Dropping it stops this app's `ssh` and removes the
-/// private directory; it never signals anything on the Host.
+/// A running forward. Dropping it stops this app's `ssh` and removes its own
+/// directory; it never signals anything on the Host.
 pub struct SshForward {
     target: SshTarget,
     child: Child,
@@ -224,24 +228,35 @@ pub struct SshForward {
 }
 
 impl SshForward {
-    /// Starts `ssh` and waits until it listens on the local socket.
+    /// Starts `ssh` and waits until it listens on the local socket, which
+    /// lives in a new directory of its own inside the private `parent`.
     pub async fn open(
         target: &SshTarget,
         options: &SshOptions,
-        dir: &Path,
+        parent: &Path,
     ) -> Result<Self, SshError> {
         target.validate().map_err(SshError::Setup)?;
-        private_dir(dir).map_err(|e| SshError::Setup(format!("{}: {e}", dir.display())))?;
+        private_dir(parent).map_err(|e| SshError::Setup(format!("{}: {e}", parent.display())))?;
+        let dir =
+            own_dir(parent).map_err(|e| SshError::Setup(format!("{}: {e}", parent.display())))?;
         let socket = dir.join("skiffd.sock");
-        let _ = std::fs::remove_file(&socket);
-        let mut child = Command::new(&options.program)
+        let child = Command::new(&options.program)
             .args(forward_args(target, &socket, options))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| SshError::Setup(format!("run {}: {e}", options.program.display())))?;
+            .spawn();
+        let mut child = match child {
+            Ok(child) => child,
+            Err(e) => {
+                let _ = std::fs::remove_dir(&dir);
+                return Err(SshError::Setup(format!(
+                    "run {}: {e}",
+                    options.program.display()
+                )));
+            }
+        };
         let stderr = Arc::new(Mutex::new(String::new()));
         if let Some(err) = child.stderr.take() {
             let keep = stderr.clone();
@@ -264,7 +279,7 @@ impl SshForward {
         let mut forward = Self {
             target: target.clone(),
             child,
-            dir: dir.to_path_buf(),
+            dir,
             socket,
             stderr,
         };
@@ -309,6 +324,25 @@ impl Drop for SshForward {
         let _ = self.child.start_kill();
         let _ = std::fs::remove_file(&self.socket);
         let _ = std::fs::remove_dir(&self.dir);
+    }
+}
+
+/// A new directory inside `parent` that no other forward, window or app run
+/// has: created exclusively, never reused. The name stays short for `-L`.
+fn own_dir(parent: &Path) -> std::io::Result<PathBuf> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    loop {
+        let dir = parent.join(format!(
+            "{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+            Ok(()) => return Ok(dir),
+            // Left by an earlier run with this pid: never adopt it.
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
     }
 }
 

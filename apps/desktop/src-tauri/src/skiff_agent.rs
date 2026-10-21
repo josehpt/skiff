@@ -23,12 +23,20 @@ use crate::{
 };
 use skiff_client::host::local::ProcessControl;
 
-/// Runs at app start, off the main thread. Never prompts. Copies the
-/// built-in `skiff-cli` skill out when it changed.
-pub fn sync() {
+/// Runs off the main thread at app start, and again on a switch to this Mac.
+/// Never prompts. Copies the built-in `skiff-cli` skill out when it changed:
+/// this Mac's Skipper setup, so only while this Mac is the shown Host, and
+/// once per app run. True when it ran now.
+pub(crate) fn sync(app: &App) -> bool {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static DONE: AtomicBool = AtomicBool::new(false);
+    if app.remote() || DONE.swap(true, Ordering::SeqCst) {
+        return false;
+    }
     if let Err(e) = skipper::sync_skill() {
         eprintln!("skiff-cli skill: {e:#}");
     }
+    true
 }
 
 /// Makes the agent's folder ready. Returns the folder.
@@ -300,6 +308,29 @@ pub async fn change_skiff_folder(
 #[cfg(test)]
 mod tests {
     use super::Edit;
+
+    /// Review P2: a launch with a remote Host selected leaves this Mac's
+    /// Skipper skill alone (private config; the review's repro wrote it).
+    #[test]
+    fn a_remote_launch_does_not_set_up_this_macs_skipper() {
+        let _env = crate::reload::tests::ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("skiff-remote-skill-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = std::env::var_os("SKIFF_CONFIG");
+        std::env::set_var("SKIFF_CONFIG", dir.join("projects.toml"));
+        let app = crate::connection::App::default();
+        let target = skiff_client::host::ssh::SshTarget { destination: "devbox".into(), socket: "/s.sock".into() };
+        let options = skiff_client::host::ssh::SshOptions { program: "/nonexistent/ssh".into(), config: None };
+        app.set_selection(skiff_client::host::local::HostSelection::ssh(target, options, dir.join("fwd"), None).unwrap());
+        assert!(!super::sync(&app));
+        assert!(!dir.join("skills").exists(), "a remote launch wrote this Mac's skill");
+        match old {
+            Some(v) => std::env::set_var("SKIFF_CONFIG", v),
+            None => std::env::remove_var("SKIFF_CONFIG"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// The shapes `SkiffAgentEdit` in apps/desktop/src/appearance/skiffAgentSettings.ts sends.
     #[test]

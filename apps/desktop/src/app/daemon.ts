@@ -30,7 +30,7 @@ import { ptySized } from "../terminal/terminal";
 import { reattachPanes } from "../terminal/terminalRuntime";
 import { focusPane, inBackground, paneNear, revealSession, rowNear, showSingle, splitWith, unfocus } from "../workspace/view";
 import { hostCan, hostInvoke, loadHostCaps } from "./hostCaps";
-import { hostName, isRemote, setHostConnected } from "./hosts";
+import { hostName, isRemote } from "./hosts";
 import { muteInput } from "../terminal/terminalRuntime";
 
 export function setDaemon(status: DaemonStatus) {
@@ -117,26 +117,32 @@ export async function untilConnected(): Promise<DaemonStatus> {
  * The link to a remote Host dropped. Input is off until it is back; nothing
  * typed meanwhile is kept or sent later. Then the same steps as after a
  * reload: the Host's capabilities, events first, the list, groups, and each
- * shown pane from a fresh snapshot. A different Host at the same address
- * never connects (Rust refuses it), so this keeps waiting and says why.
+ * shown pane from a fresh snapshot. A step that fails throws, so the caller
+ * runs the whole recovery again; it never turns input back on itself (see
+ * `watchHostLink`). A different Host at the same address never connects
+ * (Rust refuses it), so this keeps waiting and the status says why.
  */
 export async function reconnectRemote(): Promise<void> {
   muteInput(true);
   quietSeen(true);
   try {
     const status = await untilConnected();
-    await loadHostCaps().catch(console.error);
-    await subscribeEvents().catch(console.error);
-    await refreshSessions().catch(console.error);
-    if (hostCan("session_groups")) await loadGroups().catch(console.error);
+    await loadHostCaps();
+    await subscribeEvents();
+    await refreshSessions();
+    if (hostCan("session_groups")) await loadGroups();
     reattachPanes();
     setDaemon(status);
     render();
   } finally {
     quietSeen(false);
-    muteInput(false);
-    setHostConnected(true);
   }
+}
+
+/** A full recovery with no loss in it: input goes back on. */
+export function hostOnline() {
+  muteInput(false);
+  render();
 }
 
 let copiedTimer: number | undefined;

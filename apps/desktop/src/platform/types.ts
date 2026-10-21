@@ -180,8 +180,9 @@ export interface Reloaded {
 }
 
 export interface DaemonWarning {
-  /** `remote`: a remote Host this app reaches but never restarts or updates. */
-  kind: "outdated" | "protocol" | "newer" | "hung" | "failed" | "remote";
+  /** `remote`: a remote Host this app reaches but never restarts or updates.
+   *  `identity`: that Host answered with another Skiff identity. */
+  kind: "outdated" | "protocol" | "newer" | "hung" | "failed" | "remote" | "identity";
   message: string;
   /** Live sessions a restart stops. `null` when the daemon did not say. */
   sessions: number | null;

@@ -6,9 +6,9 @@ use std::{path::Path, time::Duration};
 
 use serde::Serialize;
 use skiff_client::ledger::{self, Row};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
-use crate::connection::err;
+use crate::connection::{err, App};
 
 /// The page reads the ledger again on this event.
 const LEDGER_CHANGED: &str = "skiff:ledger-changed";
@@ -68,18 +68,65 @@ fn stamp(file: &Path) -> Vec<Option<(u64, std::time::SystemTime)>> {
         .collect()
 }
 
-/// Runs at app start on its own thread. Emits [`LEDGER_CHANGED`] when
-/// `ledger.db` or its WAL changes, or when the ledger moves to another folder.
+/// What the watcher saw last: the stamps and the file.
+type Seen = Option<(Vec<Option<(u64, std::time::SystemTime)>>, std::path::PathBuf)>;
+
+/// Runs at app start on its own thread, for the app's lifetime. Emits
+/// [`LEDGER_CHANGED`] when `ledger.db` or its WAL changes, or when the ledger
+/// moves to another folder. The ledger is this Mac's: while a remote Host is
+/// shown it reads nothing, and starts over on a switch back.
 pub fn watch(app: AppHandle) {
     let mut last = None;
     loop {
-        if let Ok(file) = ledger::path() {
-            let now = Some((stamp(&file), file));
-            if last.is_some() && now != last {
-                let _ = app.emit(LEDGER_CHANGED, ());
-            }
-            last = now;
+        if look(app.state::<App>().remote(), &mut last) {
+            let _ = app.emit(LEDGER_CHANGED, ());
         }
         std::thread::sleep(TICK);
+    }
+}
+
+/// One tick. True when the ledger changed since the last local tick.
+fn look(remote: bool, last: &mut Seen) -> bool {
+    if remote {
+        *last = None;
+        return false;
+    }
+    let Ok(file) = ledger::path() else { return false };
+    let now = Some((stamp(&file), file));
+    let changed = last.is_some() && now != *last;
+    *last = now;
+    changed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Review P2: while a remote Host is shown, the watcher reads nothing of
+    /// this Mac's ledger, and a switch back starts from a fresh look.
+    #[test]
+    fn the_ledger_watcher_reads_nothing_while_a_remote_host_is_shown() {
+        let _env = crate::reload::tests::ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("skiff-ledger-watch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = std::env::var_os("SKIFF_LEDGER");
+        // A private ledger that changes between ticks.
+        let file = dir.join("ledger.db");
+        std::env::set_var("SKIFF_LEDGER", &file);
+        let mut last = None;
+        assert!(!look(false, &mut last));
+        assert!(last.is_some());
+        std::fs::write(&file, "changed").unwrap();
+        assert!(!look(true, &mut last), "a remote tick reports nothing");
+        assert!(last.is_none(), "a remote tick keeps nothing of this Mac's ledger");
+        assert!(!look(false, &mut last), "the first local tick after a switch is a fresh look");
+        std::fs::write(&file, "changed again").unwrap();
+        assert!(look(false, &mut last));
+        match old {
+            Some(v) => std::env::set_var("SKIFF_LEDGER", v),
+            None => std::env::remove_var("SKIFF_LEDGER"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -6,6 +6,7 @@ import { showError } from "../ui/alerts";
 import { dialogFrame } from "../ui/dialogParts";
 import { $, button, h } from "../ui/dom";
 import { opensAtOnce } from "./daemonNotice";
+import { acceptHostIdentity } from "./hosts";
 import { branchName, taskTitle } from "../workspace/model";
 import { sessions } from "./state";
 import { place } from "./stateQueries";
@@ -18,6 +19,7 @@ const WARNINGS: Record<DaemonWarning["kind"], [string, string]> = {
   hung: ["skiffd not responding", "skiffd is not responding"],
   failed: ["Reload failed", "skiffd did not come back"],
   remote: ["Host problem", "The remote Host needs attention"],
+  identity: ["Host identity changed", "Another Skiff Host answers"],
 };
 
 let shown: DaemonWarning | null = null;
@@ -84,6 +86,14 @@ export function daemonBadge(warning: DaemonWarning | null, requested = false) {
   const foot = h("div", "confirm-foot");
   // This app never restarts or updates skiffd on a remote Host.
   if (warning.kind === "remote") foot.append(later);
+  else if (warning.kind === "identity")
+    foot.append(
+      later,
+      button("confirm-act", "Accept new identity…", () => {
+        close();
+        void acceptHostIdentity();
+      }),
+    );
   else foot.append(later, restart);
   const body = whenIdle
     ? `skiffd restarts when no agent is working. ${plural(working().length, "agent is", "agents are")} working now.`

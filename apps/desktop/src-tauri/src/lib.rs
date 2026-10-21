@@ -81,7 +81,9 @@ pub fn run() {
             if let Some(local) = app.state::<App>().selection().process_control() {
                 std::thread::spawn(move || cli_path::sync(&local));
             }
-            std::thread::spawn(skiff_agent::sync);
+            // This Mac's Skipper and ledger: neither runs for a remote Host.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || skiff_agent::sync(&handle.state::<App>()));
             let handle = app.handle().clone();
             std::thread::spawn(move || ledger::watch(handle));
             let Some(window) = app.get_webview_window("main") else { return Ok(()) };
@@ -111,6 +113,7 @@ pub fn run() {
             hosts::remove_host,
             hosts::select_host,
             hosts::set_host_clipboard,
+            hosts::accept_host_identity,
             cli_path::install_cli,
             skiff_agent::get_skiff_agent,
             skiff_agent::set_skiff_agent,
@@ -259,7 +262,7 @@ mod tests {
         }
         // A command added later must be placed on one side or the other.
         let allowed = ["set_menu", "quit_app", "guard_quit", "menu_layout", "set_menu_layout", "set_window_dark", "clipboard_write", "clipboard_read",
-            "daemon_status", "host_capabilities", "list_hosts", "add_host", "remove_host", "select_host", "set_host_clipboard",
+            "daemon_status", "host_capabilities", "list_hosts", "add_host", "remove_host", "select_host", "set_host_clipboard", "accept_host_identity",
             "list_sessions", "create_session", "pty_write", "pty_resize", "session_seen", "kill_session", "rename_session", "set_session_theme",
             "open_settings", "set_open", "set_open_peek", "open_url", "list_themes", "import_themes", "open_theme_folder", "get_appearance",
             "memory_usage", "get_keys", "trace_info", "trace_write", "trace_set", "system_load", "set_appearance", "set_font_size", "set_mission_filter",

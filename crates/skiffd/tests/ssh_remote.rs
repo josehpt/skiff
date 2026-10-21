@@ -117,7 +117,7 @@ impl Fixture {
 
     fn selection(&self, config: &str, socket: &Path, forward: &str) -> HostSelection {
         let target = SshTarget { destination: "fixture".into(), socket: socket.to_string_lossy().into_owned() };
-        HostSelection::ssh(target, self.options(config), self.dir.join(forward)).unwrap()
+        HostSelection::ssh(target, self.options(config), self.dir.join(forward), None).unwrap()
     }
 }
 
@@ -316,7 +316,9 @@ async fn a_remote_terminal_over_a_real_forward_survives_a_dropped_link() {
     drop(again);
     drop(selection);
     tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(!f.dir.join("fwd").exists(), "the private forward directory is removed");
+    // Each forward's own directory goes; the shared private parent stays.
+    let left: Vec<_> = std::fs::read_dir(f.dir.join("fwd")).unwrap().collect();
+    assert!(left.is_empty(), "the forward's directory is removed: {left:?}");
     let after = host_side.list_sessions().await.unwrap().into_iter().find(|s| s.id == shell.id).unwrap();
     assert_eq!((after.pid, after.state == skiff_core::session::SessionState::Done), (shell.pid, false));
 }

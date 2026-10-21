@@ -63,20 +63,101 @@ test("picking a Host saves it, then reloads the page; the shown Host does nothin
   assert.equal(h.reloads(), 1);
 });
 
-test("a lost link turns input off once and starts one reconnect", async () => {
+test("a lost link turns input off once and starts one recovery", async () => {
   const h = hosts({ selected: "devbox", hosts: [devbox] });
   await h.mod.loadHosts();
   let reconnects = 0;
-  h.mod.watchHostLink(async () => {
-    reconnects++;
-  });
+  let onlines = 0;
+  let finish!: () => void;
+  h.mod.watchHostLink(
+    () => {
+      reconnects++;
+      return new Promise<void>((r) => (finish = r));
+    },
+    () => onlines++,
+  );
   await flush();
   const lost = h.listeners.get("skiff:host-lost")!;
   lost();
-  lost();
   assert.equal(h.mod.hostConnected(), false);
   assert.equal(reconnects, 1);
-  h.mod.setHostConnected(true);
+  finish();
+  await flush();
+  assert.equal(h.mod.hostConnected(), true);
+  assert.equal(onlines, 1);
   lost();
   assert.equal(reconnects, 2);
+});
+
+/** Review P2 (race.mjs): the real hosts and daemon modules. The new link
+ *  drops while recovery subscribes to events, and that subscription fails.
+ *  The loss is kept, the whole recovery runs again, and only the second,
+ *  clean run turns input back on and shows the Host connected. */
+test("a second loss during recovery runs the whole recovery again before input is on", async () => {
+  let lost!: () => void;
+  const immediate = (f: () => void) => setImmediate(f);
+  const hostsMod = moduleFromSource(
+    "../src/app/hosts.ts",
+    {
+      "@tauri-apps/api/core": { invoke: async () => ({ selected: "fixture", hosts: [] }) },
+      "@tauri-apps/api/event": { listen: async (_: string, cb: () => void) => void (lost = cb) },
+    },
+    { document: { title: "", getElementById: () => null }, Promise, setTimeout: immediate, console: { error() {} } },
+    "",
+  );
+  await hostsMod.loadHosts();
+  const noop = () => {};
+  const elem = { querySelector: () => ({}), replaceChildren: noop, set textContent(_: string) {}, set title(_: string) {} };
+  let muted = false;
+  const mutes: boolean[] = [];
+  let attaches = 0;
+  let subscribes = 0;
+  const daemon = moduleFromSource(
+    "../src/app/daemon.ts",
+    {
+      "@tauri-apps/api/core": { invoke: async () => ({ connected: true }), Channel: class {} },
+      "@tauri-apps/api/event": { listen: async () => {} },
+      "../ui/dom": { $: () => elem },
+      "./daemonRestart": { daemonBadge: noop },
+      "./skiffAgent": { noteDaemon: noop },
+      "./hosts": hostsMod,
+      "./render": { render: noop },
+      "./state": { born: new Set(), gone: new Set(), sessions: new Map(), S: {} },
+      "./seen": { quietSeen: noop },
+      "../terminal/terminalRuntime": {
+        muteInput: (x: boolean) => {
+          muted = x;
+          mutes.push(x);
+        },
+        reattachPanes: () => attaches++,
+      },
+      "./hostCaps": {
+        loadHostCaps: async () => {},
+        hostCan: () => false,
+        hostInvoke: async (_: string, cmd: string) => {
+          if (cmd === "subscribe_events" && ++subscribes === 1) {
+            lost();
+            throw Error("second connection dropped during resubscribe");
+          }
+          if (cmd === "list_sessions") return [];
+        },
+      },
+    },
+    { window: { addEventListener: noop }, document: { hasFocus: () => true }, console: { error: noop }, setTimeout: immediate, Promise, Map, Set },
+    "",
+  );
+  let reconnects = 0;
+  hostsMod.watchHostLink(async () => {
+    reconnects++;
+    await daemon.reconnectRemote();
+  }, daemon.hostOnline);
+  lost();
+  for (let i = 0; i < 20; i++) await flush();
+  assert.equal(reconnects, 2, "the failed recovery ran again");
+  assert.equal(subscribes, 2, "events were subscribed again");
+  assert.equal(attaches, 1, "panes reattach only in the clean run");
+  assert.equal(hostsMod.hostConnected(), true);
+  assert.equal(muted, false);
+  // Input stayed off until the end: never on between the two runs.
+  assert.deepEqual(mutes, [true, true, false]);
 });

@@ -16,6 +16,9 @@ pub(crate) struct App {
     /// The same selected Host connection, for keystrokes, which must not
     /// wait on a lock.
     pub(crate) live: std::sync::Mutex<Option<Arc<HostConnection>>>,
+    /// The shown remote Host reported another identity than its pin: the
+    /// destination and the id it reported, for `accept_host_identity`.
+    pub(crate) changed: std::sync::Mutex<Option<(String, skiff_host_api::HostId)>>,
     pub(crate) subs: Mutex<HashMap<String, JoinHandle<()>>>,
     /// The task that streams events to the page.
     pub(crate) events: Mutex<Option<JoinHandle<()>>>,
@@ -98,22 +101,46 @@ pub(crate) async fn replace_selection(app: &App, selection: HostSelection) {
     *app.replaced.lock().await = None;
     *app.reload.lock().await = None;
     *app.failed.lock().unwrap() = None;
+    *app.changed.lock().unwrap() = None;
     *app.selection.lock().unwrap() = Some(selection);
 }
 
 /// How long a remote skiffd may take to answer the first Ping.
 const REMOTE_HELLO_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// A remote Host: connect through its forward, adopt the identity it reports,
-/// and never start, reload, stop or replace anything. A version mismatch is
-/// reported, not acted on.
+/// A remote Host: connect through its forward, check the identity it reports
+/// against its pin, and never start, reload, stop or replace anything. A
+/// version mismatch is reported, not acted on. Every failure leaves its cause
+/// in the warning, so the status and the picker say why, in words that never
+/// repeat ssh's own output.
 async fn connect_remote(app: &App, selection: &HostSelection, guard: &mut Option<Arc<SelectedHost>>) -> Result<(Arc<SelectedHost>, bool), String> {
     let destination = selection.ssh_target().map(|t| t.destination.clone()).unwrap_or_default();
-    let mut c = selection.connect().await.map_err(err)?;
+    match try_remote(app, selection, &destination).await {
+        Ok(host) => {
+            *app.changed.lock().unwrap() = None;
+            *app.live.lock().unwrap() = Some(host.connection());
+            *guard = Some(host.clone());
+            Ok((host, false))
+        }
+        Err(e) => {
+            let (warning, message) = remote_failure(&e, &destination);
+            if let Some(skiff_host_api::Error::IdentityChanged { received, .. }) = e.downcast_ref() {
+                *app.changed.lock().unwrap() = Some((destination.clone(), received.clone()));
+            }
+            // The wait between tries is not a cause: the last cause stays.
+            if let Some(w) = warning {
+                *app.warning.lock().await = Some(w);
+            }
+            Err(message)
+        }
+    }
+}
+
+async fn try_remote(app: &App, selection: &HostSelection, destination: &str) -> anyhow::Result<Arc<SelectedHost>> {
+    let mut c = selection.connect().await?;
     let info = match tokio::time::timeout(REMOTE_HELLO_TIMEOUT, c.daemon_info()).await {
-        Ok(Ok(info)) => info,
-        Ok(Err(e)) => return Err(err(e)),
-        Err(_) => return Err(format!("skiffd on {destination} did not answer within {}s", REMOTE_HELLO_TIMEOUT.as_secs())),
+        Ok(info) => info?,
+        Err(_) => anyhow::bail!(RemoteSilent),
     };
     *app.warning.lock().await = (info.protocol != skiff_core::PROTOCOL).then(|| Warning {
         kind: "remote",
@@ -124,28 +151,72 @@ async fn connect_remote(app: &App, selection: &HostSelection, guard: &mut Option
         ),
         sessions: None,
     });
-    let host = match c.activate().await {
-        Ok(host) => Arc::new(host),
-        Err(e) => {
-            let message = match e.downcast_ref::<skiff_host_api::Error>() {
-                Some(skiff_host_api::Error::IdentityChanged { .. }) => format!(
-                    "Another Host answers at {destination}. Skiff stopped. Check that Host, then pick it again."
-                ),
-                _ => err(e),
-            };
-            *app.warning.lock().await = Some(Warning { kind: "remote", message: message.clone(), sessions: None });
-            return Err(message);
+    let first = selection.pinned().is_none();
+    let host = Arc::new(c.activate().await?);
+    if first {
+        // The first identity becomes the Host's pin before anything uses it.
+        let id = host.connection().hello().host.host_id.clone();
+        let d = destination.to_string();
+        let stored = tauri::async_runtime::spawn_blocking(move || crate::hosts::pin_first(&crate::hosts::path(), &d, &id)).await?;
+        if let Err(e) = stored {
+            // Another window or run stored another identity first: that one
+            // is the pin from now on, here too.
+            if let Some(skiff_host_api::Error::IdentityChanged { expected, .. }) = e.downcast_ref() {
+                selection.repin(expected.clone());
+            }
+            return Err(e);
         }
-    };
-    *app.live.lock().unwrap() = Some(host.connection());
-    *guard = Some(host.clone());
-    Ok((host, false))
+    }
+    Ok(host)
+}
+
+/// The remote skiffd did not answer the first Ping in time.
+#[derive(Debug)]
+struct RemoteSilent;
+impl std::fmt::Display for RemoteSilent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "no answer within {}s", REMOTE_HELLO_TIMEOUT.as_secs())
+    }
+}
+impl std::error::Error for RemoteSilent {}
+
+/// The warning and the message for a failed remote connection. Only known
+/// causes are named; anything else gets one plain line with what to check.
+/// `None` warning: a wait between tries, which keeps the last cause.
+pub(crate) fn remote_failure(e: &anyhow::Error, destination: &str) -> (Option<Warning>, String) {
+    use skiff_client::host::ssh::SshError;
+    let warn = |kind: &'static str, message: String| (Some(Warning { kind, message: message.clone(), sessions: None }), message);
+    if let Some(e) = e.downcast_ref::<SshError>() {
+        return match e {
+            SshError::Waiting { .. } => (None, e.to_string()),
+            _ => warn("remote", e.to_string()),
+        };
+    }
+    match e.downcast_ref::<skiff_host_api::Error>() {
+        Some(skiff_host_api::Error::IdentityChanged { .. }) => warn(
+            "identity",
+            format!(
+                "{destination} answers as another Skiff Host than before. Skiff stopped and sends nothing to it. \
+                 If you expect this, as after Skiff was reinstalled there, accept the new identity."
+            ),
+        ),
+        Some(skiff_host_api::Error::MalformedContract { message }) => warn("remote", message.clone()),
+        _ if e.downcast_ref::<RemoteSilent>().is_some() => warn(
+            "remote",
+            format!("skiffd on {destination} did not answer within {}s. Run `skiff info` on that Host to check it.", REMOTE_HELLO_TIMEOUT.as_secs()),
+        ),
+        _ => warn(
+            "remote",
+            format!("Cannot reach skiffd on {destination} over ssh. Run `skiff info` on that Host to check that skiffd runs and which socket it uses."),
+        ),
+    }
 }
 
 #[derive(Serialize, Clone)]
 pub(crate) struct Warning {
-    /// `outdated`, `protocol`, `newer`, `hung`, or `failed` for a reload that
-    /// did not come back.
+    /// `outdated`, `protocol`, `newer`, `hung`, `failed` for a reload that
+    /// did not come back, `remote` for a remote Host's problem, or
+    /// `identity` for a remote Host that reported another identity.
     pub(crate) kind: &'static str,
     pub(crate) message: String,
     /// Live sessions a restart would stop. `None` when the daemon did not say.
@@ -766,18 +837,28 @@ mod tests {
         std::env::set_var("SKIFF_DAEMON", mark("skiffd"));
         let app = App::default();
         let target = skiff_client::host::ssh::SshTarget { destination: "devbox".into(), socket: "/run/user/1/skiff/skiffd.sock".into() };
-        let options = skiff_client::host::ssh::SshOptions { program: mark("ssh"), config: None };
-        app.set_selection(HostSelection::ssh(target, options, dir.join("fwd")).unwrap());
+        // Review P2: an unknown host key from a fresh state reaches the status.
+        let ssh = mark("ssh");
+        let text = std::fs::read_to_string(&ssh).unwrap().replace("exit 255", "echo 'Host key verification failed.' >&2\nexit 255");
+        std::fs::write(&ssh, text).unwrap();
+        let options = skiff_client::host::ssh::SshOptions { program: ssh, config: None };
+        app.set_selection(HostSelection::ssh(target, options, dir.join("fwd"), None).unwrap());
         assert!(app.remote());
         assert!(app.selection().process_control().is_none());
         let started = std::time::Instant::now();
         let status = status_now(&app).await;
         assert!(!status.connected && !status.spawned && status.pid.is_none());
         assert_eq!(status.socket, "devbox:/run/user/1/skiff/skiffd.sock");
+        let cause = status.warning.as_ref().expect("the cause reaches the status");
+        assert_eq!(cause.kind, "remote");
+        assert!(cause.message.contains("does not know the host key of devbox") && !cause.message.contains("verification failed"), "{}", cause.message);
         // One ssh run, no retry loop, and a second try waits.
         assert!(started.elapsed() < Duration::from_secs(5));
         let e = ensure_host(&app).await.err().unwrap();
         assert!(e.contains("tries again"), "{e}");
+        // The wait keeps the cause: the status still says what to fix.
+        let again = status_now(&app).await;
+        assert!(again.warning.is_some_and(|w| w.message.contains("host key")));
         assert_eq!(std::fs::read_to_string(dir.join("ssh.ran")).unwrap().lines().count(), 1);
         assert!(!dir.join("skiffd.ran").exists(), "the local daemon binary ran for a remote Host");
         // Switching back to this Mac drops the remote selection and its forward.
@@ -789,6 +870,36 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&dir);
         });
+    }
+
+    /// Review P2: each remote failure has a cause the status can show, in
+    /// words that never repeat ssh's output; a wait keeps the last cause.
+    #[test]
+    fn remote_failures_name_a_cause_and_a_wait_keeps_the_last_one() {
+        use skiff_client::host::ssh::SshError;
+        let d = "devbox";
+        let cause = |e: anyhow::Error| super::remote_failure(&e, d);
+        for e in [
+            SshError::HostKeyUnknown(d.into()),
+            SshError::HostKeyChanged(d.into()),
+            SshError::AuthFailed(d.into()),
+            SshError::ChannelRefused { destination: d.into(), socket: "/s.sock".into() },
+            SshError::ForwardingRefused(d.into()),
+        ] {
+            let text = e.to_string();
+            let (w, message) = cause(e.into());
+            assert_eq!(w.map(|w| (w.kind, w.message)), Some(("remote", text.clone())));
+            assert_eq!(message, text);
+        }
+        let (w, _) = cause(SshError::Waiting { destination: d.into(), seconds: 4 }.into());
+        assert!(w.is_none());
+        let id = |s: &str| skiff_host_api::HostId::try_from(s.to_string()).unwrap();
+        let (w, _) = cause(skiff_host_api::Error::IdentityChanged { expected: id("A"), received: id("B") }.into());
+        assert_eq!(w.unwrap().kind, "identity");
+        // An unknown failure names no path or ssh line: one line, what to check.
+        let (w, _) = cause(anyhow::anyhow!("connect /var/folders/x/T/skiff-501-1/9-0/skiffd.sock: No such file"));
+        let w = w.unwrap();
+        assert!(w.message.contains("skiff info") && !w.message.contains("/var/folders"), "{}", w.message);
     }
 
     fn local_control() -> ProcessControl {

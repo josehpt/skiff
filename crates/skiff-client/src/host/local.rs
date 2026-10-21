@@ -25,11 +25,17 @@ use super::{
 use crate::{Client, DaemonInfo};
 
 struct Selection {
-    /// The local daemon's socket, or the SSH forward's local end.
+    /// The local daemon's socket, or for SSH the private directory that
+    /// holds each forward's own directory.
     socket: PathBuf,
     /// The app's bootstrap id, for an older local skiffd only.
     identity_file: PathBuf,
     previous: Mutex<Option<Hello>>,
+    /// The Host id this endpoint must report: the client's stored pin, else
+    /// the first identity it accepted. A different one is IdentityChanged,
+    /// on every connection of this selection and every one built with the
+    /// same pin, until the person accepts the new identity.
+    pin: Mutex<Option<HostId>>,
     remote: Option<Remote>,
 }
 
@@ -61,17 +67,26 @@ impl HostSelection {
             socket,
             identity_file,
             previous: Mutex::new(None),
+            pin: Mutex::new(None),
             remote: None,
         }))
     }
 
-    /// A remote Host through `ssh`, with its forward in the private `dir`.
-    pub fn ssh(target: SshTarget, options: SshOptions, dir: PathBuf) -> Result<Self, String> {
+    /// A remote Host through `ssh`. Each forward gets its own private
+    /// directory under `dir`. `pin`: the Host id stored for this endpoint;
+    /// `None` only before its first accepted connection.
+    pub fn ssh(
+        target: SshTarget,
+        options: SshOptions,
+        dir: PathBuf,
+        pin: Option<HostId>,
+    ) -> Result<Self, String> {
         target.validate()?;
         Ok(Self(Arc::new(Selection {
-            socket: dir.join("skiffd.sock"),
+            socket: dir.clone(),
             identity_file: PathBuf::new(),
             previous: Mutex::new(None),
+            pin: Mutex::new(pin),
             remote: Some(Remote {
                 target,
                 options,
@@ -82,7 +97,8 @@ impl HostSelection {
         })))
     }
 
-    /// The socket this app connects to: for SSH, the forward's local end.
+    /// The socket this app connects to. For SSH, the private directory the
+    /// forwards' own directories live in: each forward has its own socket.
     pub fn socket(&self) -> &Path {
         &self.0.socket
     }
@@ -91,6 +107,15 @@ impl HostSelection {
     }
     pub fn ssh_target(&self) -> Option<&SshTarget> {
         self.0.remote.as_ref().map(|r| &r.target)
+    }
+    /// The Host id this endpoint must report, once known.
+    pub fn pinned(&self) -> Option<HostId> {
+        self.0.pin.lock().unwrap().clone()
+    }
+    /// Makes `host_id` the one this endpoint must report, as the client's
+    /// store says when it holds another id than the first one accepted here.
+    pub fn repin(&self, host_id: HostId) {
+        *self.0.pin.lock().unwrap() = Some(host_id);
     }
     /// A descriptor. For SSH, `account` and `port` stay empty and 0: ssh
     /// config decides them for the destination.
@@ -271,6 +296,17 @@ impl PendingConnection {
                 )
             }
         };
+        // The pin outlives any one connection: a rebuilt selection or a new
+        // app run that carries it refuses another Host just as a reconnect does.
+        if let Some(pin) = self.selection.0.pin.lock().unwrap().as_ref() {
+            if *pin != host.host_id {
+                return Err(Error::IdentityChanged {
+                    expected: pin.clone(),
+                    received: host.host_id.clone(),
+                }
+                .into());
+            }
+        }
         let hello = Hello {
             host,
             instance_id,
@@ -325,6 +361,14 @@ impl PendingConnection {
                 previous.as_ref(),
             )?;
             *previous = Some(connection.hello().clone());
+            if remote.is_some() {
+                self.selection
+                    .0
+                    .pin
+                    .lock()
+                    .unwrap()
+                    .get_or_insert_with(|| connection.hello().host.host_id.clone());
+            }
             Arc::new(connection)
         };
         Ok(SelectedHost {

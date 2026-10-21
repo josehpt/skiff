@@ -7,7 +7,15 @@
 //! Identity: the same durable `host_id` store skiffd reads, beside the
 //! selected `projects.toml`, so both endpoints of one Host agree. Its
 //! `instance_id` is its own and changes on every start.
-use std::{collections::BTreeMap, path::Path, sync::Arc};
+use anyhow::{bail, Context};
+use std::{
+    collections::BTreeMap,
+    path::Path,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+};
 
 use skiff_core::{config::ProjectConfig, git, project};
 use skiff_host_api::{
@@ -17,12 +25,14 @@ use skiff_host_api::{
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{UnixListener, UnixStream},
-    sync::{mpsc, Semaphore},
+    sync::{mpsc, OwnedSemaphorePermit, Semaphore},
+    task::JoinSet,
 };
 
 /// The largest frame either side sends, newline included.
 pub const MAX_FRAME: usize = 8 * 1024 * 1024;
-/// Requests one connection may have running at once. More get `host_busy`.
+/// Requests one connection may have admitted at once, until each reply is
+/// written. A client that sends more waits: the service reads no further.
 pub const MAX_IN_FLIGHT: usize = 16;
 
 /// What this service offers. Nothing here writes.
@@ -50,6 +60,66 @@ pub fn hello() -> anyhow::Result<Hello> {
     })
 }
 
+/// The socket file this service bound. Only it is ever removed:
+/// [`BoundSocket::release`] checks that the path still names it.
+pub struct BoundSocket {
+    path: std::path::PathBuf,
+    id: (u64, u64),
+}
+
+/// Binds the service socket at `path`. Only a folder it creates gets locked
+/// down (`0700`); the socket is `0600`. An entry already at `path` is:
+/// - a live socket: another service, so this one does not start
+/// - a stale socket of this account: a crash's leftover, removed
+/// - anything else (a file, a link, a folder, another account's socket):
+///   refused and left as it is
+pub async fn bind(path: &Path) -> anyhow::Result<(UnixListener, BoundSocket)> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
+    if let Some(dir) = path.parent().filter(|d| !d.exists()) {
+        std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    match std::fs::symlink_metadata(path) {
+        Ok(found) => {
+            if !found.file_type().is_socket() {
+                bail!("{} exists and is not a socket; skiff-host leaves it as it is", path.display());
+            }
+            // SAFETY: geteuid takes no arguments and cannot fail.
+            if found.uid() != unsafe { libc::geteuid() } {
+                bail!("{} belongs to another account; skiff-host leaves it as it is", path.display());
+            }
+            if UnixStream::connect(path).await.is_ok() {
+                bail!("skiff-host is already running at {}", path.display());
+            }
+            // Still the same stale socket: nothing replaced it meanwhile.
+            let again = std::fs::symlink_metadata(path)?;
+            if (again.dev(), again.ino()) != (found.dev(), found.ino()) {
+                bail!("{} changed while skiff-host checked it", path.display());
+            }
+            std::fs::remove_file(path)?;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e).with_context(|| format!("check {}", path.display())),
+    }
+    let listener = UnixListener::bind(path).with_context(|| format!("bind {}", path.display()))?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    let meta = std::fs::symlink_metadata(path)?;
+    Ok((listener, BoundSocket { path: path.to_path_buf(), id: (meta.dev(), meta.ino()) }))
+}
+
+impl BoundSocket {
+    /// Removes the socket file only if the path still names the socket this
+    /// service bound: never a newer service's socket, nor anything else.
+    pub fn release(self) {
+        use std::os::unix::fs::{FileTypeExt, MetadataExt};
+        if let Ok(m) = std::fs::symlink_metadata(&self.path) {
+            if m.file_type().is_socket() && (m.dev(), m.ino()) == self.id {
+                let _ = std::fs::remove_file(&self.path);
+            }
+        }
+    }
+}
+
 /// Accepts connections until the listener fails. Each one is served on its
 /// own; dropping this future closes them all, as a stopped service does.
 pub async fn serve(listener: UnixListener, hello: Arc<Hello>) -> std::io::Result<()> {
@@ -65,46 +135,88 @@ pub async fn serve(listener: UnixListener, hello: Arc<Hello>) -> std::io::Result
     }
 }
 
-/// One client: newline-delimited envelopes in, replies out, in any order.
-/// An unreadable or oversize frame ends the connection; nothing is retried.
-pub async fn handle(stream: UnixStream, hello: Arc<Hello>) {
-    let (rd, mut wr) = stream.into_split();
-    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(MAX_IN_FLIGHT * 2);
-    let writer = tokio::spawn(async move {
-        while let Some(line) = rx.recv().await {
-            if wr.write_all(&line).await.is_err() {
-                break;
-            }
-        }
-    });
-    let slots = Arc::new(Semaphore::new(MAX_IN_FLIGHT));
-    let mut reader = BufReader::new(rd);
-    loop {
-        let mut line = Vec::new();
-        match (&mut reader).take(MAX_FRAME as u64 + 1).read_until(b'\n', &mut line).await {
-            Ok(0) | Err(_) => break,
-            Ok(_) if line.len() > MAX_FRAME || line.last() != Some(&b'\n') => break,
-            Ok(_) => {}
-        }
-        let Ok(Envelope { id, request }) = serde_json::from_slice::<Envelope>(&line) else {
-            break;
-        };
-        let Ok(slot) = slots.clone().try_acquire_owned() else {
-            send(&tx, id, Err(Error::HostBusy)).await;
-            continue;
-        };
-        let (tx, hello) = (tx.clone(), hello.clone());
-        tokio::spawn(async move {
-            let result = answer(request, &hello).await;
-            drop(slot);
-            send(&tx, id, result).await;
-        });
+/// Requests admitted and not yet written back or abandoned, over every
+/// connection of this process. For diagnostics and tests.
+pub fn admitted() -> usize {
+    ADMITTED.load(Ordering::Relaxed)
+}
+static ADMITTED: AtomicUsize = AtomicUsize::new(0);
+
+/// One admitted request, from its frame until its reply is written. Its
+/// permit bounds what a connection holds: work, encoded replies and the
+/// reply being written, together.
+struct Admission(#[allow(dead_code)] OwnedSemaphorePermit);
+impl Admission {
+    fn new(permit: OwnedSemaphorePermit) -> Self {
+        ADMITTED.fetch_add(1, Ordering::Relaxed);
+        Self(permit)
     }
-    drop(tx);
-    let _ = writer.await;
+}
+impl Drop for Admission {
+    fn drop(&mut self) {
+        ADMITTED.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
-async fn send(tx: &mpsc::Sender<Vec<u8>>, id: u64, result: Result<Response, Error>) {
+/// One client: newline-delimited envelopes in, replies out, in any order.
+///
+/// At most [`MAX_IN_FLIGHT`] requests are admitted at once, and one stays
+/// admitted until its reply is written. A client that stops reading stalls
+/// at that bound: no more frames are read, so nothing more is computed or
+/// queued for it. The work belongs to the connection: when the client is
+/// gone, or a frame is unreadable or oversize, what is left is dropped.
+/// Nothing is retried.
+pub async fn handle(stream: UnixStream, hello: Arc<Hello>) {
+    let (rd, mut wr) = stream.into_split();
+    let slots = Arc::new(Semaphore::new(MAX_IN_FLIGHT));
+    // Never full: every queued reply holds one of the permits.
+    let (tx, mut rx) = mpsc::channel::<(Vec<u8>, Admission)>(MAX_IN_FLIGHT);
+    let writer = async move {
+        while let Some((line, admission)) = rx.recv().await {
+            if wr.write_all(&line).await.is_err() {
+                return;
+            }
+            drop(admission);
+        }
+    };
+    let reader = async move {
+        let mut work = JoinSet::new();
+        let mut reader = BufReader::new(rd);
+        loop {
+            // Finished requests leave the set; a read is never interrupted.
+            while work.try_join_next().is_some() {}
+            let mut line = Vec::new();
+            let read = (&mut reader).take(MAX_FRAME as u64 + 1).read_until(b'\n', &mut line).await;
+            match read {
+                // The client is done sending: finish what it asked for.
+                Ok(0) => break,
+                Err(_) => return,
+                Ok(_) if line.len() > MAX_FRAME || line.last() != Some(&b'\n') => return,
+                Ok(_) => {}
+            }
+            let Ok(Envelope { id, request }) = serde_json::from_slice::<Envelope>(&line) else {
+                return;
+            };
+            let Ok(permit) = slots.clone().acquire_owned().await else { return };
+            let admission = Admission::new(permit);
+            let (tx, hello) = (tx.clone(), hello.clone());
+            work.spawn(async move {
+                let result = answer(request, &hello).await;
+                let _ = tx.send((encode(id, result), admission)).await;
+            });
+        }
+        while work.join_next().await.is_some() {}
+    };
+    tokio::pin!(writer);
+    tokio::select! {
+        // Every request answered and queued: the writer drains the queue.
+        _ = reader => writer.await,
+        // The client is gone: the reader and its work are dropped here.
+        _ = &mut writer => {}
+    }
+}
+
+fn encode(id: u64, result: Result<Response, Error>) -> Vec<u8> {
     let mut line = serde_json::to_vec(&Message::Reply { id, result }).unwrap_or_default();
     if line.len() >= MAX_FRAME {
         line = serde_json::to_vec(&Message::Reply {
@@ -114,7 +226,7 @@ async fn send(tx: &mpsc::Sender<Vec<u8>>, id: u64, result: Result<Response, Erro
         .unwrap_or_default();
     }
     line.push(b'\n');
-    let _ = tx.send(line).await;
+    line
 }
 
 /// One request. A family this service does not offer is refused before it

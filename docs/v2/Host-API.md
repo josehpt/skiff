@@ -1171,6 +1171,15 @@ Tracking: [M4 #160](https://github.com/solutionscay/skiff/issues/160), [epic #15
   - It listens on its own socket beside skiffd's: `x.sock` gives
     `x-host.sock` (`skiff_core::socket::data_socket`), with the same `0700`
     directory and `0600` socket rules as skiffd.
+  - **Its path is never taken over.** An entry already there is checked
+    without following links (`skiff_host::bind`):
+    - a live socket means another service, and this one does not start
+    - a stale socket of this account is removed once it is the same inode
+      as the one checked
+    - anything else is refused and kept: a regular file, a symlink, a folder
+      or another account's socket
+    - on exit it removes its socket only if the path still names the inode
+      it bound, never a newer service's socket
   - `--session-socket <skiffd socket>` names the skiffd it pairs with. Its
     state follows that socket exactly as skiffd's does: a private test or
     debug socket gets its own `projects.toml` and Host id.
@@ -1207,8 +1216,24 @@ Tracking: [M4 #160](https://github.com/solutionscay/skiff/issues/160), [epic #15
   operation, and neither grants the other.
 - **Hello:** the service's own `instance_id`, a new one per start.
   `service_versions` names `skiff-host`. `limits` are 8 MiB frames and 16
-  requests in flight per connection; more get `host_busy`. An unreadable or
-  oversize frame ends that connection only.
+  requests in flight per connection. An unreadable or oversize frame ends
+  that connection only.
+- **Admission is bounded through the write.** A request holds its slot from
+  its frame until its reply is written. At 16 the service reads no further
+  frames, so a client that stops reading stalls there: nothing more is
+  computed, encoded or queued for it. The requests belong to the
+  connection: when the client goes, they are dropped.
+  `skiff_host::admitted()` counts them, for diagnostics and tests.
+- **Line counts never leave the worktree** (`skiff_core::git::changes`, the
+  same for v1 and the service). Untracked files are opened one component at
+  a time below the worktree, with `O_NOFOLLOW`:
+  - a symlink counts as one line, its target, as git counts it; it is never
+    followed
+  - a path through a symlinked folder, or `..`: no count
+  - a FIFO, device, socket or folder is checked by type first and never
+    opened: no count
+  - a file over 1 MiB, or one that grows past it while it is read: no count,
+    and no more than the limit is read
 
 ### Identity and continuity
 
@@ -1277,6 +1302,20 @@ Tracking: [M4 #160](https://github.com/solutionscay/skiff/issues/160), [epic #15
   - Session families are unsupported. Another Host's id is refused.
   - A restart: `transport_lost`, then `NotRunning`, then `NewInstance` with
     the same Host. A bad frame ends one connection only.
+  - An allowed worktree's untracked link to a FIFO outside it answers at
+    once, counted as one line.
+- **Review fixes** (`skiff-host/tests/socket.rs`, `bounds.rs`, and the core
+  test `untracked_links_fifos_and_large_files_are_never_followed_or_read`):
+  - **Socket:** a regular file, a symlink and a folder at the path are
+    refused and kept, and a live socket too. A stale socket is replaced.
+    Release keeps a newer owner's socket. The binary refuses a regular file
+    and keeps its bytes.
+  - **Admission:** a client that never reads holds the service at exactly 16
+    admitted. On disconnect it drops to 0 and the connection ends. A client
+    that reads gets all 200 replies.
+  - **Counts:** links to an outside file, FIFO and folder count 1, matching
+    git's numstat. A 1 MiB+ file has no count. An in-repo FIFO, a path through
+    a link, `..` and absolute paths are refused.
   - SSH (a fake `ssh` that pipes to a socket on this machine): the forward
     names the socket beside the remote skiffd's. No service gives
     `NotRunning`, then a wait, and nothing is started.

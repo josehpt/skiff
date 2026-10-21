@@ -126,6 +126,25 @@ async fn the_data_plane_serves_this_hosts_projects_and_git_only() {
     let local = skiff_core::git::changes(Path::new(&feat)).unwrap();
     assert_eq!(serde_json::to_value(&changes).unwrap(), serde_json::to_value(&local).unwrap());
     assert_eq!(changes.iter().map(|c| (c.path.as_str(), c.status)).collect::<Vec<_>>(), [("a.txt", ChangeStatus::M), ("new.txt", ChangeStatus::A)]);
+    // Review M4 P2: an allowed worktree's untracked link to a FIFO outside
+    // it once blocked the request and read the outside data. Now the link
+    // counts as git counts it, one line, and the FIFO is never opened.
+    let fifo = dir.join("outside-fifo");
+    let c_fifo = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+    // SAFETY: a NUL-terminated path.
+    assert_eq!(unsafe { libc::mkfifo(c_fifo.as_ptr(), 0o600) }, 0);
+    std::os::unix::fs::symlink(&fifo, app.join("link-fifo")).unwrap();
+    let main = app.to_str().unwrap();
+    let read = tokio::time::timeout(Duration::from_secs(10), data::git_changes(&c, main)).await;
+    let Ok(read) = read else {
+        // Unblock the stuck reader so the run can end, then fail.
+        let _ = std::thread::spawn(move || std::fs::write(&fifo, "1\n2\n"));
+        panic!("git_changes blocked on a FIFO outside the worktree");
+    };
+    let link = read.unwrap().into_iter().find(|c| c.path == "link-fifo").unwrap();
+    assert_eq!((link.status, link.added, link.removed), (ChangeStatus::A, Some(1), Some(0)));
+    std::fs::remove_file(app.join("link-fifo")).unwrap();
+
     // Git runs in no folder the client names unless it is a worktree of an
     // open project: not a closed project's, not any other repo or path.
     for path in [outside.to_str().unwrap(), "/", dir.join("missing").to_str().unwrap(), "relative"] {

@@ -169,7 +169,7 @@ pub fn changes(dir: &Path) -> Result<Vec<Change>> {
         };
         let (added, removed) = match counts.get(path) {
             Some(&c) => c,
-            None if x == b'?' => (count_lines(&dir.join(path)), Some(0)),
+            None if x == b'?' => (count_lines(dir, path), Some(0)),
             None => (None, None),
         };
         list.push(Change { path: path.to_string(), status, added, removed });
@@ -227,18 +227,107 @@ pub fn diff_script(dir: &Path, file: Option<&str>, command: Option<&str>) -> Str
     }
 }
 
-/// Lines in a new text file. `None` for a binary or large file.
-fn count_lines(path: &Path) -> Option<u32> {
-    if std::fs::metadata(path).ok()?.len() > COUNT_LIMIT {
+/// Lines in a new file at `rel` under the worktree `dir`, as `git diff`
+/// would count them. It never leaves the worktree and never blocks:
+/// - a symlink is one line, its target, as git shows it; it is not followed
+/// - a path through a symlinked folder, `..` or an absolute path: `None`
+/// - a FIFO, device, socket or folder: `None`, never opened for reading
+/// - a binary file, or one over [`COUNT_LIMIT`] bytes: `None`, and no
+///   more than the limit is read even if the file grows meanwhile
+fn count_lines(dir: &Path, rel: &str) -> Option<u32> {
+    use std::io::Read;
+    let file = open_beneath(dir, rel)?;
+    let file = match file {
+        Beneath::Symlink => return Some(1),
+        Beneath::File(f) => f,
+    };
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() || meta.len() > COUNT_LIMIT {
         return None;
     }
-    let bytes = std::fs::read(path).ok()?;
-    if bytes.contains(&0) {
+    let mut bytes = Vec::new();
+    file.take(COUNT_LIMIT + 1).read_to_end(&mut bytes).ok()?;
+    if bytes.len() as u64 > COUNT_LIMIT || bytes.contains(&0) {
         return None;
     }
     let n = bytes.iter().filter(|&&b| b == b'\n').count();
     let last = !bytes.is_empty() && !bytes.ends_with(b"\n");
     Some((n + last as usize) as u32)
+}
+
+enum Beneath {
+    File(std::fs::File),
+    /// The last component is a symlink. It was not followed.
+    Symlink,
+}
+
+/// Opens `rel` under `dir` one component at a time, each relative to the
+/// folder opened before it and none followed if it is a symlink, so a folder
+/// swapped for a link meanwhile cannot lead outside `dir`. The file opens
+/// non-blocking: a FIFO that slipped in fails its type check, not a read.
+#[cfg(unix)]
+fn open_beneath(dir: &Path, rel: &str) -> Option<Beneath> {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt, os::fd::FromRawFd, path::Component};
+    let parts: Vec<_> = Path::new(rel).components().collect();
+    if parts.is_empty() || parts.iter().any(|c| !matches!(c, Component::Normal(_))) {
+        return None;
+    }
+    let root = CString::new(dir.as_os_str().as_bytes()).ok()?;
+    // SAFETY: plain open(2) calls on NUL-terminated paths; every fd made here
+    // is closed below or owned by the returned File.
+    unsafe {
+        let mut fd = libc::open(root.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC);
+        if fd < 0 {
+            return None;
+        }
+        for (i, part) in parts.iter().enumerate() {
+            let Ok(name) = CString::new(part.as_os_str().as_bytes()) else {
+                libc::close(fd);
+                return None;
+            };
+            let last = i + 1 == parts.len();
+            if last {
+                // Its type before any open: a link is not followed, and a
+                // FIFO or device is never opened.
+                let mut st: libc::stat = std::mem::zeroed();
+                if libc::fstatat(fd, name.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW) != 0 {
+                    libc::close(fd);
+                    return None;
+                }
+                match st.st_mode & libc::S_IFMT {
+                    libc::S_IFREG => {}
+                    libc::S_IFLNK => {
+                        libc::close(fd);
+                        return Some(Beneath::Symlink);
+                    }
+                    _ => {
+                        libc::close(fd);
+                        return None;
+                    }
+                }
+            }
+            // Swapped meanwhile: O_NOFOLLOW refuses a link, O_NONBLOCK keeps a
+            // FIFO from blocking, and the caller checks the type again.
+            let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC | if last { libc::O_NONBLOCK } else { libc::O_DIRECTORY };
+            let next = libc::openat(fd, name.as_ptr(), flags);
+            libc::close(fd);
+            if next < 0 {
+                return None;
+            }
+            fd = next;
+        }
+        Some(Beneath::File(std::fs::File::from_raw_fd(fd)))
+    }
+}
+
+#[cfg(not(unix))]
+fn open_beneath(dir: &Path, rel: &str) -> Option<Beneath> {
+    let path = dir.join(rel);
+    let meta = std::fs::symlink_metadata(&path).ok()?;
+    if meta.file_type().is_symlink() {
+        return Some(Beneath::Symlink);
+    }
+    meta.is_file().then(|| std::fs::File::open(path).ok().map(Beneath::File)).flatten()
 }
 
 /// Which of `paths`, relative to `dir`, git ignores. A folder needs a
@@ -332,6 +421,63 @@ mod tests {
                 c("src/new.rs", 'A', Some(2), Some(0)),
             ]
         );
+    }
+
+    /// Review M4 P2: an untracked link to a FIFO outside the worktree once
+    /// blocked the count and read the outside data. Now a link counts as git
+    /// counts it (one line, its target), and nothing outside, no FIFO and no
+    /// more than the limit is ever read.
+    #[cfg(unix)]
+    #[test]
+    fn untracked_links_fifos_and_large_files_are_never_followed_or_read() {
+        use std::os::unix::fs::symlink;
+        let base = std::env::temp_dir().join(format!("skiff-count-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        struct Gone(PathBuf);
+        impl Drop for Gone {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _gone = Gone(base.clone());
+        let (root, outside) = (base.join("repo"), base.join("outside"));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let run = |args: &[&str]| assert!(Command::new("git").arg("-C").arg(&root).args(args).status().unwrap().success());
+        run(&["init", "-q"]);
+        std::fs::write(outside.join("secret.txt"), "1\n2\n3\n").unwrap();
+        let mkfifo = |p: &Path| {
+            let c = std::ffi::CString::new(p.as_os_str().as_encoded_bytes()).unwrap();
+            // SAFETY: a NUL-terminated path.
+            assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        };
+        mkfifo(&outside.join("fifo"));
+        mkfifo(&root.join("pipe"));
+        symlink(outside.join("secret.txt"), root.join("link-out")).unwrap();
+        symlink(outside.join("fifo"), root.join("link-fifo")).unwrap();
+        symlink(&outside, root.join("dir-link")).unwrap();
+        std::fs::write(root.join("big.txt"), "x\n".repeat((COUNT_LIMIT as usize / 2) + 1)).unwrap();
+        std::fs::write(root.join("small.txt"), "a\nb").unwrap();
+
+        // Off this thread: a regression would block on the FIFO.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let dir = root.clone();
+        std::thread::spawn(move || tx.send(changes(&dir)).unwrap());
+        let got = rx.recv_timeout(std::time::Duration::from_secs(10)).expect("changes blocked").unwrap();
+        let count = |p: &str| got.iter().find(|c| c.path == p).map(|c| c.added);
+        // git's own count for a new link is one line: its target.
+        let out = Command::new("git").arg("-C").arg(&root).args(["diff", "--no-index", "--numstat", "--", "/dev/null", "link-out"]).output().unwrap();
+        let git_count = String::from_utf8_lossy(&out.stdout);
+        assert!(git_count.starts_with("1\t0"), "{git_count}");
+        assert_eq!(count("link-out"), Some(Some(1)));
+        assert_eq!(count("link-fifo"), Some(Some(1)));
+        assert_eq!(count("dir-link"), Some(Some(1)));
+        assert_eq!(count("big.txt"), Some(None));
+        assert_eq!(count("small.txt"), Some(Some(2)));
+        // Directly: a FIFO, a path through a link, `..` and absolute paths.
+        for rel in ["pipe", "dir-link/secret.txt", "../outside/secret.txt", "/etc/hosts", ""] {
+            assert_eq!(count_lines(&root, rel), None, "{rel}");
+        }
     }
 
     #[test]

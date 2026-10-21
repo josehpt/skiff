@@ -8,10 +8,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use anyhow::{bail, Context, Result};
-use tokio::{
-    net::{UnixListener, UnixStream},
-    signal::unix::{signal, SignalKind},
-};
+use tokio::signal::unix::{signal, SignalKind};
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
@@ -32,7 +29,7 @@ fn main() -> Result<()> {
     let hello = Arc::new(skiff_host::hello().context("read the Host identity")?);
     let path = skiff_core::socket::data_socket(&session);
     tokio::runtime::Runtime::new()?.block_on(async move {
-        let listener = bind(&path).await?;
+        let (listener, socket) = skiff_host::bind(&path).await?;
         eprintln!(
             "skiff-host {} listening on {} for Host {} (instance {})",
             skiff_core::VERSION,
@@ -47,26 +44,8 @@ fn main() -> Result<()> {
             _ = term.recv() => Ok(()),
             _ = int.recv() => Ok(()),
         };
-        let _ = std::fs::remove_file(&path);
+        // Only its own socket, if the path still names it.
+        socket.release();
         result
     })
-}
-
-/// As skiffd binds: only a directory it creates is locked down, a live
-/// socket means another service, and a dead one is a crash's leftover.
-async fn bind(path: &std::path::Path) -> Result<UnixListener> {
-    use std::os::unix::fs::PermissionsExt;
-    if let Some(dir) = path.parent().filter(|d| !d.exists()) {
-        std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
-    }
-    if path.exists() {
-        if UnixStream::connect(path).await.is_ok() {
-            bail!("skiff-host is already running at {}", path.display());
-        }
-        std::fs::remove_file(path)?;
-    }
-    let listener = UnixListener::bind(path).with_context(|| format!("bind {}", path.display()))?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    Ok(listener)
 }

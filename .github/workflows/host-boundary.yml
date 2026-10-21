@@ -20,7 +20,7 @@ jobs:
       - run: cargo build -p skiffd -p skiff-host
       - run: cargo test -p skiffd --test ssh_remote
       - run: cargo test -p skiff-host
-      - run: cargo test -p skiff-core --lib -- data_socket
+      - run: cargo test -p skiff-core --lib -- data_socket untracked_links
   desktop-ts:
     runs-on: ubuntu-latest
     steps:

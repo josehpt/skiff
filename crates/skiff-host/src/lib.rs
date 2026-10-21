@@ -248,9 +248,16 @@ pub async fn answer(request: Request, hello: &Hello) -> Result<Response, Error> 
             Ok(Response::Project { project: Box::new(host_project(project::Project::from_config(&p))) })
         }
         Request::GitChanges { worktree } => {
+            // Held open before the check, so a folder swapped in after it
+            // is refused rather than read.
+            let root = git::Root::open(Path::new(&worktree));
             let worktree = known_worktree(&worktree)?;
             Ok(Response::Changes {
-                changes: git::changes(&worktree).map_err(failed)?.into_iter().map(host_change).collect(),
+                changes: git::changes_in(&root.map_err(failed)?, &worktree)
+                    .map_err(failed)?
+                    .into_iter()
+                    .map(host_change)
+                    .collect(),
             })
         }
         _ => Err(Error::UnsupportedCapability { capability }),

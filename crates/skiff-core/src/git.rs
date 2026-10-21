@@ -145,8 +145,63 @@ pub struct Change {
 /// Untracked files larger than this show no line count.
 const COUNT_LIMIT: u64 = 1 << 20;
 
+/// The worktree folder held open, so a count reads the folder that was
+/// checked even if its path is swapped for another folder or a link.
+pub struct Root {
+    dir: std::fs::File,
+    #[cfg(not(unix))]
+    path: PathBuf,
+}
+
+impl Root {
+    /// Opened before `dir` is known to be a worktree: anything but a folder
+    /// fails, and a FIFO there never blocks.
+    pub fn open(dir: &Path) -> Result<Root> {
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_DIRECTORY | libc::O_NONBLOCK);
+        let file = options.open(dir).with_context(|| format!("open {}", dir.display()))?;
+        if !file.metadata()?.is_dir() {
+            bail!("{} is not a folder", dir.display());
+        }
+        Ok(Root {
+            dir: file,
+            #[cfg(not(unix))]
+            path: dir.to_path_buf(),
+        })
+    }
+
+    /// Fails unless `dir` still names this folder.
+    fn check(&self, dir: &Path) -> Result<()> {
+        if !same_file(&self.dir.metadata()?, &std::fs::metadata(dir)?) {
+            bail!("{} was replaced while it was read", dir.display());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+fn same_file(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    (a.dev(), a.ino()) == (b.dev(), b.ino())
+}
+
+#[cfg(not(unix))]
+fn same_file(_: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
+    b.is_dir()
+}
+
 /// The changed files of the worktree at `dir`, sorted by path.
 pub fn changes(dir: &Path) -> Result<Vec<Change>> {
+    changes_in(&Root::open(dir)?, dir)
+}
+
+/// [`changes`] of `root`, opened before `dir` was checked as a worktree.
+/// Git runs at `dir`, which must name `root` before and after; untracked
+/// files are counted under `root` itself.
+pub fn changes_in(root: &Root, dir: &Path) -> Result<Vec<Change>> {
+    root.check(dir)?;
     let status = git(dir, &["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"])?;
     // Fails in a repository with no commit yet: every file then shows no count.
     let numstat = git(dir, &["diff", "HEAD", "--numstat", "-z", "--no-renames"]).unwrap_or_default();
@@ -156,6 +211,8 @@ pub fn changes(dir: &Path) -> Result<Vec<Change>> {
         let (Some(a), Some(r), Some(p)) = (f.next(), f.next(), f.next()) else { continue };
         counts.insert(p.to_string(), (a.parse().ok(), r.parse().ok()));
     }
+    // Swapped while git ran: its output may be another folder's.
+    root.check(dir)?;
     let mut list = Vec::new();
     for rec in status.split('\0').filter(|r| r.len() > 3) {
         let (xy, path) = rec.split_at(3);
@@ -169,7 +226,7 @@ pub fn changes(dir: &Path) -> Result<Vec<Change>> {
         };
         let (added, removed) = match counts.get(path) {
             Some(&c) => c,
-            None if x == b'?' => (count_lines(dir, path), Some(0)),
+            None if x == b'?' => (count_lines(root, path), Some(0)),
             None => (None, None),
         };
         list.push(Change { path: path.to_string(), status, added, removed });
@@ -227,16 +284,16 @@ pub fn diff_script(dir: &Path, file: Option<&str>, command: Option<&str>) -> Str
     }
 }
 
-/// Lines in a new file at `rel` under the worktree `dir`, as `git diff`
+/// Lines in a new file at `rel` under the worktree `root`, as `git diff`
 /// would count them. It never leaves the worktree and never blocks:
 /// - a symlink is one line, its target, as git shows it; it is not followed
 /// - a path through a symlinked folder, `..` or an absolute path: `None`
 /// - a FIFO, device, socket or folder: `None`, never opened for reading
 /// - a binary file, or one over [`COUNT_LIMIT`] bytes: `None`, and no
 ///   more than the limit is read even if the file grows meanwhile
-fn count_lines(dir: &Path, rel: &str) -> Option<u32> {
+fn count_lines(root: &Root, rel: &str) -> Option<u32> {
     use std::io::Read;
-    let file = open_beneath(dir, rel)?;
+    let file = open_beneath(root, rel)?;
     let file = match file {
         Beneath::Symlink => return Some(1),
         Beneath::File(f) => f,
@@ -261,22 +318,22 @@ enum Beneath {
     Symlink,
 }
 
-/// Opens `rel` under `dir` one component at a time, each relative to the
-/// folder opened before it and none followed if it is a symlink, so a folder
-/// swapped for a link meanwhile cannot lead outside `dir`. The file opens
-/// non-blocking: a FIFO that slipped in fails its type check, not a read.
+/// Opens `rel` under the open folder `root` one component at a time, each
+/// relative to the folder opened before it and none followed if it is a
+/// symlink, so a folder swapped for a link meanwhile cannot lead outside
+/// `root`. The file opens non-blocking: a FIFO that slipped in fails its
+/// type check, not a read.
 #[cfg(unix)]
-fn open_beneath(dir: &Path, rel: &str) -> Option<Beneath> {
-    use std::{ffi::CString, os::unix::ffi::OsStrExt, os::fd::FromRawFd, path::Component};
+fn open_beneath(root: &Root, rel: &str) -> Option<Beneath> {
+    use std::{ffi::CString, os::fd::AsRawFd, os::unix::ffi::OsStrExt, os::fd::FromRawFd, path::Component};
     let parts: Vec<_> = Path::new(rel).components().collect();
     if parts.is_empty() || parts.iter().any(|c| !matches!(c, Component::Normal(_))) {
         return None;
     }
-    let root = CString::new(dir.as_os_str().as_bytes()).ok()?;
     // SAFETY: plain open(2) calls on NUL-terminated paths; every fd made here
-    // is closed below or owned by the returned File.
+    // is closed below or owned by the returned File. `root` stays open.
     unsafe {
-        let mut fd = libc::open(root.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC);
+        let mut fd = libc::fcntl(root.dir.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0);
         if fd < 0 {
             return None;
         }
@@ -321,8 +378,8 @@ fn open_beneath(dir: &Path, rel: &str) -> Option<Beneath> {
 }
 
 #[cfg(not(unix))]
-fn open_beneath(dir: &Path, rel: &str) -> Option<Beneath> {
-    let path = dir.join(rel);
+fn open_beneath(root: &Root, rel: &str) -> Option<Beneath> {
+    let path = root.path.join(rel);
     let meta = std::fs::symlink_metadata(&path).ok()?;
     if meta.file_type().is_symlink() {
         return Some(Beneath::Symlink);
@@ -476,8 +533,32 @@ mod tests {
         assert_eq!(count("small.txt"), Some(Some(2)));
         // Directly: a FIFO, a path through a link, `..` and absolute paths.
         for rel in ["pipe", "dir-link/secret.txt", "../outside/secret.txt", "/etc/hosts", ""] {
-            assert_eq!(count_lines(&root, rel), None, "{rel}");
+            assert_eq!(count_lines(&Root::open(&root).unwrap(), rel), None, "{rel}");
         }
+    }
+
+    /// Review M4 P2: the folder held open is the one counted. A path that
+    /// no longer names it, swapped for a link or another folder, is refused.
+    #[cfg(unix)]
+    #[test]
+    fn a_root_whose_path_names_another_folder_is_refused() {
+        let base = std::env::temp_dir().join(format!("skiff-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (root, other) = (base.join("repo"), base.join("other"));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let held = Root::open(&root).unwrap();
+        let first = held.check(&root).is_ok();
+        std::fs::rename(&root, base.join("moved")).unwrap();
+        std::os::unix::fs::symlink(&other, &root).unwrap();
+        let swapped = changes_in(&held, &root).map_err(|e| e.to_string());
+        let other_folder = changes_in(&held, &other).map_err(|e| e.to_string());
+        let file = Root::open(&base.join("moved/missing"));
+        std::fs::remove_dir_all(&base).unwrap();
+        assert!(first);
+        assert!(swapped.is_err_and(|e| e.contains("replaced")));
+        assert!(other_folder.is_err_and(|e| e.contains("replaced")));
+        assert!(file.is_err());
     }
 
     #[test]

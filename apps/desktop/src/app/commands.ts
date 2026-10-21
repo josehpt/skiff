@@ -27,6 +27,7 @@ import { accent, activeGroupObj, currentProject, currentWorktree, inShownGroup, 
 import { sessionThemeMenu } from "../appearance/themes";
 import { modeKeyBlocked } from "./modes";
 import { ledgerFolded, ledgerShown } from "../workspace/ledger";
+import { closeWorkspace, editWorkspace, ledgerAllWork, newWorkspace, openWorkspace, saveWorkspace, saveWorkspaceAs, setLedgerAllWork, workspaceOpen } from "../workspace/profile";
 import { refocusTerminal, revealSession, selectWorktree } from "../workspace/view";
 
 interface Cmd {
@@ -54,6 +55,12 @@ function commands(): Cmd[] {
     { section: "File", label: "Project menu…", key: "", run: openProjectMenu, off: !currentProject() },
     { section: "File", label: "Close project", key: "", run: () => withProject(closeProject), off: !currentProject() },
     { section: "File", label: "Remove project…", key: "", run: () => withProject(removeProject), off: !currentProject() },
+    { section: "File", label: "New workspace…", key: "", run: newWorkspace },
+    { section: "File", label: "Open workspace…", key: "", run: () => void openWorkspace() },
+    { section: "File", label: "Edit workspace…", key: "", run: editWorkspace, off: !workspaceOpen() },
+    { section: "File", label: "Save workspace", key: "", run: saveWorkspace, off: !workspaceOpen() },
+    { section: "File", label: "Save workspace as…", key: "", run: saveWorkspaceAs, off: !workspaceOpen() },
+    { section: "File", label: "Close workspace", key: "", run: closeWorkspace, off: !workspaceOpen() },
     { section: "File", label: "Settings", key: k("settings"), action: "settings", run: act("settings") },
     { section: "File", label: "Quit", key: k("quit"), action: "quit", run: act("quit") },
     // In Settings, they act on the text field with the keys.
@@ -83,6 +90,10 @@ function commands(): Cmd[] {
       run: act("skiff-agent"), off: !skiffAgentFolder(),
     },
     { section: "View", label: ledgerFolded() ? "Show Ledger" : "Hide Ledger", key: k("ledger"), action: "ledger", run: act("ledger"), off: !ledgerShown() },
+    {
+      section: "View", label: ledgerAllWork() ? "Ledger: show workspace work" : "Ledger: show all work", key: "",
+      run: () => setLedgerAllWork(!ledgerAllWork()), off: !workspaceOpen(),
+    },
     { section: "View", label: "Back to last session", key: k("back"), action: "back", run: act("back"), off: !S.previous },
     { section: "View", label: S.focusMode ? "Leave focus mode" : "Focus mode", key: k("focus-mode"), action: "focus-mode", run: act("focus-mode"), off: (!S.focusMode && !shown) || modeKeyBlocked("focus-mode") },
     { section: "View", label: S.maximized ? "Restore pane" : "Maximize pane", key: k("maximize"), action: "maximize", run: act("maximize"), off: (!S.maximized && !shown) || modeKeyBlocked("maximize") },
@@ -111,7 +122,7 @@ function commands(): Cmd[] {
 const ISSUES_URL = "https://github.com/solutionscay/skiff/issues/new";
 
 /** Where a group of commands starts a new block in its menu. */
-const BREAK_BEFORE = new Set(["Project menu…", "Settings", "Copy", "Rename session", "Command palette", "Add pane right…", "Next waiting", "Focus mode", "Leave focus mode", "Bigger text", "Open projects.toml", "About Skiff"]);
+const BREAK_BEFORE = new Set(["Project menu…", "New workspace…", "Settings", "Copy", "Rename session", "Command palette", "Add pane right…", "Next waiting", "Focus mode", "Leave focus mode", "Bigger text", "Open projects.toml", "About Skiff"]);
 
 interface MenuItem { id?: string; label?: string; accel?: string; enabled?: boolean; native?: string }
 

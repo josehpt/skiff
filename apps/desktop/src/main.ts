@@ -34,6 +34,7 @@ import { nextUnread, nextWaiting, selectProject, showGroup, showSingle } from ".
 import { closeMission, goToSession } from "./workspace/missionMotion";
 import { missionOpen, restoreRunning } from "./workspace/missionControl";
 import { startLedger } from "./workspace/ledger";
+import { startWorkspaces } from "./workspace/profile";
 
 configureRender(render);
 configurePaneActions({ focusPane, closePane, dragSessions });
@@ -113,6 +114,7 @@ async function boot() {
   if (hint) hint.textContent = "Commands, sessions, worktrees";
   await loadGroups();
   restorePlace();
+  await startWorkspaces();
   trackPlace();
   warmPanes();
 

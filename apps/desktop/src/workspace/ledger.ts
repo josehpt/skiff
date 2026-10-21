@@ -23,6 +23,11 @@
  * No row has a menu. The rows come read-only from the backend, again on each
  * change to `ledger.db`.
  *
+ * An open workspace (#154) filters the rows by their project: its projects'
+ * work, and work with no project. A plan shows when one of its tasks does,
+ * with only those tasks under it. All work, in the head, shows every row.
+ * The filter is a view: no row changes.
+ *
  * The person can fold the panel to a rail: a chevron, and the amber count of
  * the tasks that need them. The fold stays in localStorage on this machine.
  * A fold or an unfold slides the width; a saved fold at start does not.
@@ -44,6 +49,7 @@ import { isSlot } from "./layoutSlots";
 import { taskTitle } from "./model";
 import { keepRow } from "./selection";
 import { revealSession } from "./view";
+import { ledgerAllWork, ledgerScope, setLedgerAllWork, workspaceName, workspaceOpen } from "./profile";
 
 /** A ledger row as `ledger_rows` returns it. */
 interface Entry {
@@ -53,6 +59,8 @@ interface Entry {
   parent: string | null;
   pane_id: string | null;
   pane_gen: number | null;
+  /** The project the work is for. Empty: no project, shown in every workspace. */
+  project: string;
   task: string;
   sent_at: string;
   /** The short title Skipper gave it. */
@@ -176,14 +184,24 @@ function planState(kids: Look[]): State {
   return "sent";
 }
 
-/** Every item, in ledger order. */
+/** The row shows in the current Ledger view: no workspace or All work, its project in the workspace, or no project. */
+function inView(r: Entry, scope = ledgerScope()): boolean {
+  return !scope || !r.project || scope.names.has(r.project);
+}
+
+/** Every item the view shows, in ledger order. */
 function units(): Unit[] {
+  const scope = ledgerScope();
   const plans = new Set(rows.filter((r) => r.kind === "plan").map((r) => r.uid));
   const out: Unit[] = [];
   for (const r of rows) {
     if (r.kind === "plan") {
-      const kids = rows.filter((k) => k.kind === "task" && k.parent === r.uid).map(look);
+      const all = rows.filter((k) => k.kind === "task" && k.parent === r.uid);
+      // Each task shows by its own project. The plan heads the ones that show.
+      const kids = all.filter((k) => inView(k, scope)).map(look);
+      if (all.length && !kids.length) continue;
       if (!kids.length) {
+        if (!inView(r, scope)) continue;
         // A plan with no task stands by its own state.
         const st: State = r.state === "done" || r.state === "pending" || r.state === "blocked" ? r.state : "sent";
         out.push({ r, st, kids, closed: r.closed_at, working: false });
@@ -191,6 +209,7 @@ function units(): Unit[] {
       }
       out.push({ r, st: planState(kids), kids, closed: r.closed_at, working: kids.some((k) => k.st === "sent") });
     } else if (!r.parent || !plans.has(r.parent)) {
+      if (!inView(r, scope)) continue;
       const l = look(r);
       out.push({ r, st: l.st, look: l, closed: r.closed_at, working: l.st === "sent" });
     }
@@ -406,7 +425,7 @@ function unitRows(u: Unit, fin: boolean): HTMLElement[] {
 function signature(x: Sections): string {
   const look = (l: Look) => [l.r.id, l.r.state, l.r.title, l.r.task, l.r.updated_at, l.r.closed_at, l.r.result_exists, l.st, l.where, opens(l)];
   const unit = (u: Unit) => [u.r.id, u.st, u.r.title, u.r.task, u.r.updated_at, u.r.closed_at, u.r.result_exists, u.look ? look(u.look) : null, u.kids?.map(look)];
-  return JSON.stringify([error, x.working.map(unit), x.open.map(unit), x.finished.map(unit)]);
+  return JSON.stringify([error, scopeLabel(), x.working.map(unit), x.open.map(unit), x.finished.map(unit)]);
 }
 
 const still = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -500,6 +519,21 @@ function renderRail(panel: HTMLElement) {
   count.setAttribute("aria-label", count.title);
 }
 
+/** What the head's scope button says, or null with no workspace open. */
+const scopeLabel = () => (workspaceOpen() ? (ledgerAllWork() ? "All work" : workspaceName()) : null);
+
+/** The head's scope button: the workspace's work, or All work. A click switches. */
+function scopeButton(b: HTMLElement) {
+  const label = scopeLabel();
+  b.hidden = !label;
+  if (!label) return;
+  const all = ledgerAllWork();
+  b.textContent = label;
+  b.setAttribute("aria-pressed", String(all));
+  b.title = all ? `Every row shows. Show only ${workspaceName()} work.` : `Only ${workspaceName()} work shows. Show all work.`;
+  b.setAttribute("aria-label", all ? `All work. Show only ${workspaceName()} work` : `${workspaceName()} work. Show all work`);
+}
+
 /** Runs on each render, before the modes: shows, hides and fills the panel. */
 export function renderLedger() {
   const panel = document.getElementById("ledger");
@@ -525,6 +559,8 @@ export function renderLedger() {
   let need = panel.querySelector<HTMLElement>(".lg-need");
   const fold = panel.querySelector<HTMLElement>(".lg-head .lg-fold");
   if (fold) foldTip(fold, "Hide the Ledger");
+  const scope = panel.querySelector<HTMLElement>(".lg-head .lg-scope");
+  if (scope) scopeButton(scope);
   if (drawn && list && panel.dataset.sig === sig) return;
   panel.dataset.sig = sig;
 
@@ -536,7 +572,12 @@ export function renderLedger() {
     const head = h("div", "lg-head");
     const fold = foldButton("fold");
     foldTip(fold, "Hide the Ledger");
-    head.append(h("span", "lg-name", "Ledger"), need, fold);
+    const scope = h("button", "lg-scope");
+    (scope as HTMLButtonElement).type = "button";
+    keepKeys(scope);
+    scope.addEventListener("click", () => setLedgerAllWork(!ledgerAllWork()));
+    scopeButton(scope);
+    head.append(h("span", "lg-name", "Ledger"), scope, need, fold);
     list = h("div", "lg-list");
     panel.replaceChildren(head, list);
   }
@@ -550,6 +591,9 @@ export function renderLedger() {
 
   const out: HTMLElement[] = [];
   if (error) out.push(h("div", "lg-empty", error));
+  else if (!x.working.length && !x.open.length && !x.finished.length && scopeLabel() && !ledgerAllWork()) {
+    out.push(h("div", "lg-empty", "No work in this workspace."));
+  }
   for (const [label, part, fin] of [["Working", x.working, false], ["Open", x.open, false], ["Finished", x.finished, true]] as const) {
     if (!part.length) continue;
     out.push(h("div", "lg-sec", label));

@@ -12,8 +12,39 @@ import { h } from "../ui/dom";
 import { icon } from "../ui/icons";
 import { animateFold } from "../ui/fold";
 
-/** Folded rows: `fleet:<name>` and `project:<name>`. Every row starts open. */
-export const folded = storedSet("skiff.tree.folded");
+/** Folded rows in All projects: `fleet:<name>` and `project:<name>`. Every row starts open. */
+const savedFolds = storedSet("skiff.tree.folded");
+
+/**
+ * What an open workspace (#154) puts over the tree: which projects show, and
+ * its own folds. A user fold goes to `fold`; an automatic open (the session
+ * on screen moved into a folded row) goes to `autoOpen` and is no edit.
+ */
+export interface TreeView {
+  shows(p: Project): boolean;
+  isFolded(key: string): boolean;
+  fold(key: string, folded: boolean): void;
+  autoOpen(key: string): void;
+  keys(): string[];
+}
+let view: TreeView | null = null;
+
+/** Puts a workspace over the tree, or null for All projects. */
+export function useTreeView(v: TreeView | null) {
+  view = v;
+}
+
+/** The folded rows the tree draws now. */
+export const folded = {
+  has: (key: string) => (view ? view.isFolded(key) : savedFolds.has(key)),
+  keys: () => (view ? view.keys() : [...savedFolds]),
+};
+
+/** Opens a row with no edit to a workspace: the keys or the screen went there. */
+function autoOpen(key: string) {
+  if (view) view.autoOpen(key);
+  else savedFolds.delete(key);
+}
 
 export const fleetKey = (name: string) => `fleet:${name}`;
 export const projectKey = (name: string) => `project:${name}`;
@@ -28,7 +59,9 @@ export interface Section {
 export function treeSections(): Section[] {
   const loose: Project[] = [];
   const fleets = new Map<string, Project[]>();
+  // A workspace shows some projects. A fleet with none of them shown has no head.
   for (const p of S.projects) {
+    if (view && !view.shows(p)) continue;
     if (!p.fleet) loose.push(p);
     else if (fleets.has(p.fleet)) fleets.get(p.fleet)!.push(p);
     else fleets.set(p.fleet, [p]);
@@ -43,9 +76,11 @@ export function visibleProjects(): Project[] {
 
 export const isOpen = (key: string) => !folded.has(key);
 
+/** The user opens or folds a row. In a workspace, that is an edit. */
 export function setOpen(key: string, open: boolean) {
-  if (open) folded.delete(key);
-  else folded.add(key);
+  if (view) view.fold(key, !open);
+  else if (open) savedFolds.delete(key);
+  else savedFolds.add(key);
 }
 
 /** The session on screen moved into a folded project or fleet: open them, so its row shows. */
@@ -56,8 +91,8 @@ export function openToFocused() {
   const s = S.focused ? sessions.get(S.focused) : undefined;
   const p = s ? place(s)?.project : null;
   if (!p) return;
-  folded.delete(projectKey(p.name));
-  if (p.fleet) folded.delete(fleetKey(p.fleet));
+  autoOpen(projectKey(p.name));
+  if (p.fleet) autoOpen(fleetKey(p.fleet));
 }
 
 /** A folded row's marks: how many sessions under it wait, work, or have unread output. */
@@ -117,7 +152,7 @@ export function bareWorktree(p: Project): Worktree | null {
 
 /** The list row for a worktree: its own row, or the project's row when it has none. Opens its fleet and project. */
 export function worktreeRowKey(p: Project, w: Worktree): string {
-  folded.delete(projectKey(p.name));
-  if (p.fleet) folded.delete(fleetKey(p.fleet));
+  autoOpen(projectKey(p.name));
+  if (p.fleet) autoOpen(fleetKey(p.fleet));
   return bareWorktree(p) === w ? projectKey(p.name) : w.path;
 }

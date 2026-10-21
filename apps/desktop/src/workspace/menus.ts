@@ -13,6 +13,7 @@ import { cwdOf } from "./canvas";
 import { filledOf, slotsOf } from "./layoutSlots";
 import type { Group, Project, SessionInfo, SplitDir, Worktree } from "../platform/types";
 import type { Fleet } from "./fleets";
+import { fleetWorkspaceEntries, projectWorkspaceEntries } from "./profile";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openFile } from "@tauri-apps/plugin-dialog";
 import { openPath } from "../platform/os";
@@ -166,6 +167,7 @@ export function fleetMenu(f: Fleet, x: number, y: number) {
         }),
     },
     { icon: "code-ungroup", label: "Remove fleet", run: () => void renameFleet(f, "").catch(showError) },
+    ...fleetWorkspaceEntries(f.name),
   ]);
 }
 
@@ -217,6 +219,7 @@ export function projectMenu(p: Project, x: number, y: number) {
     { icon: "playback-image", label: "Background…", sub: backgroundEntries(p) },
     { icon: "code-git-branch", label: showsChanges(p) ? "Hide changes" : "Show changes", hint: keyLabel("project-changes"), run: run["project-changes"] },
     { icon: "documents-folder-open", label: showsFiles(p) ? "Hide files" : "Show files", hint: keyLabel("project-files"), run: run["project-files"] },
+    ...projectWorkspaceEntries(p),
     ...closeEntries(p),
   ]);
 }

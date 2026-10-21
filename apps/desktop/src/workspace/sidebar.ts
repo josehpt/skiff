@@ -34,6 +34,7 @@ import { animateFold, growOpened } from "../ui/fold";
 import { dragTree } from "./treeDrag";
 import { bareWorktree, fleetKey, folded, isOpen, openToFocused, projectBadge, projectKey, rollup, toggleRow, treeDrag, treeSections, type Section } from "./tree";
 import { render } from "../app/renderRequest";
+import { projectsPlus, renderWorkspaceBar, shows, workspaceOpen } from "./profile";
 import { ledgerNeeds } from "./ledger";
 import { openSkiffAgent, SKIFF_AGENT_KEY, skiffAgentChoice, skiffAgentFolder, skiffAgentName, skiffAgentSession, skiffWatch, syncSkiffAgent } from "../app/skiffAgent";
 
@@ -168,7 +169,7 @@ function sidebarSig(): string {
   const sa = skiffAgentSession();
   const agent = skiffAgentFolder() ? [skiffAgentName(), sa?.id ?? null, skiffAgentChoice()?.id ?? null, sa ? skiffWatch(sa) : null, sa?.watch?.follows ?? null, ledgerNeeds()] : null;
   return JSON.stringify([
-    listGen, appliedTheme(), S.selectedProject, [...folded],
+    listGen, appliedTheme(), S.selectedProject, folded.keys(), S.projects.map(shows),
     S.selection, S.renamingSession, S.renaming?.id ?? null, rows, groups, projects, agent,
   ]);
 }
@@ -176,6 +177,7 @@ function sidebarSig(): string {
 export function renderSidebar() {
   const side = $<HTMLElement>("sidebar-scroll");
   if (treeDrag.active) return;
+  renderWorkspaceBar();
   syncSkiffAgent();
   openToFocused();
   const sig = sidebarSig();
@@ -208,6 +210,7 @@ export function renderSidebar() {
     side.appendChild(kids);
   }
   if (!S.projects.length) side.appendChild(h("div", "note-row", "No projects"));
+  else if (!S.projects.some(shows)) side.appendChild(h("div", "note-row", "No projects in this workspace"));
   // Sessions whose folder is in no project.
   const other = worktreeLines(null);
   if (other.length) {
@@ -290,9 +293,11 @@ function sectionHead(sec: Section): HTMLElement {
   if (!sec.fleet) {
     const head = h("div", "tree-head");
     head.append(h("span", "tree-head-name", "Projects"));
-    const add = button("tree-head-add", "", () => void addProject.open());
-    add.title = "Add project";
-    add.setAttribute("aria-label", "Add project");
+    // In a workspace, the + puts projects and fleets in it, or adds a project to Skiff.
+    const add = button("tree-head-add", "", () => projectsPlus(add, () => void addProject.open()));
+    add.title = workspaceOpen() ? "Add to workspace" : "Add project";
+    add.setAttribute("aria-label", add.title);
+    if (workspaceOpen()) add.setAttribute("aria-haspopup", "menu");
     add.appendChild(plusIcon());
     head.appendChild(add);
     return head;

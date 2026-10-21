@@ -11,6 +11,7 @@ mod ledger;
 mod reload;
 mod skiff_agent;
 mod streaming;
+mod workspace_file;
 mod native_menu;
 #[cfg(target_os = "linux")]
 mod header_bar;
@@ -158,7 +159,19 @@ pub fn run() {
             streaming::ack_output,
             streaming::unsubscribe_output,
             streaming::subscribe_events,
+            workspace_file::workspace_read,
+            workspace_file::workspace_revision,
+            workspace_file::workspace_write,
+            workspace_file::workspace_launch_file,
+            workspace_file::workspace_took,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|_app, _event| {
+            // A workspace file opened from Finder while Skiff runs, or to start it.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Opened { urls } = &_event {
+                workspace_file::os_open(_app, urls.iter().map(|u| u.to_string()));
+            }
+        });
 }

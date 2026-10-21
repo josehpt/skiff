@@ -1,11 +1,8 @@
 import { type Action } from "./keys";
 
-import { invoke } from "@tauri-apps/api/core";
-
 import { $ } from "../ui/dom";
 import { projectKey } from "../workspace/tree";
 import { copy, open, reveal } from "../platform/fileActions";
-import { showError } from "../ui/alerts";
 import { currentRow, cycleRegion, fromProject, listItems, stepList, toMainWorktree, toProject } from "./keyboard";
 
 import { endEntry, killGroup, newWorktree, projectMenu, projectRun, splitMenu, ungroup } from "../workspace/menus";
@@ -33,6 +30,7 @@ import { showShortcuts } from "../ui/infoDialogs";
 import { isSkiffAgent, openSkiffAgent, skiffAgentSession } from "./skiffAgent";
 import { groupThemeMenu, projectThemeMenu, sessionThemeMenu } from "../appearance/themes";
 import { toggleLedger } from "../workspace/ledger";
+import { quitApp } from "../workspace/profile";
 function openNewSession() {
   // Its key works from inside a menu, such as the worktree menu that shows it: that menu goes.
   ctxMenu.close(false);
@@ -133,7 +131,7 @@ export function runAction(a: Action) {
     case "app-font-smaller": return setFontSize(S.fontSize - 1);
     case "app-font-reset": return setFontSize(FONT_DEFAULT);
     case "settings": return void settings.open();
-    case "quit": return void invoke("quit_app").catch(showError);
+    case "quit": return quitApp();
     case "focus-left": return moveFocus("left");
     case "focus-right": return moveFocus("right");
     case "focus-up": return moveFocus("up");

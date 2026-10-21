@@ -15,6 +15,7 @@ import { launchChoices } from "./stateQueries";
 
 import { loadThemes } from "../appearance/themes";
 import { refocusTerminal, selectProject } from "../workspace/view";
+import { includeAdded } from "../workspace/profile";
 
 export const settings = createSettings(
   (a) => {
@@ -62,6 +63,8 @@ export const addProject = createAddProject(
       await invoke("reorder_projects", { order, fleets: [[p.name, fleet]] }).catch(showError);
     }
     await loadProjects();
+    const added = S.projects.find((x) => x.name === p.name);
+    if (added) includeAdded(added);
     selectProject(p.name);
     host.querySelector<HTMLButtonElement>(".welcome button")?.focus();
   },

@@ -1,4 +1,5 @@
 /** What the terminal area shows and which pane has the keys. */
+import { noteSelected } from "./profile";
 import { isSkiffAgent } from "../app/skiffAgent";
 import { beginDrag, type DropTarget } from "./drag";
 import { build, type Direction, leaf, neighbor, removePane, replacePane, sessionsOf, shape, splitPane } from "./layout";
@@ -66,6 +67,7 @@ export function focusPane(id: string, grab = true) {
   } else if (at) {
     S.selectedProject = at.project.name;
     selectedWorktree.set(at.project.name, at.worktree.path);
+    noteSelected(at.project.name);
   } else if (s && !isSkiffAgent(id)) {
     S.selectedProject = OTHER;
   }
@@ -443,6 +445,7 @@ export function selectWorktree(project: Project, w: Worktree) {
   noteFocus();
   S.selectedProject = project.name;
   selectedWorktree.set(project.name, w.path);
+  noteSelected(project.name);
   // The worktree's row is where we are, until a session it shows takes the row.
   S.roveKey = worktreeRowKey(project, w);
   S.groupPicked = null;

@@ -1,5 +1,15 @@
 {
   "bundle": {
-    "targets": ["app", "dmg"]
+    "targets": ["app", "dmg"],
+    "fileAssociations": [
+      {
+        "ext": ["skiffw"],
+        "name": "Skiff workspace",
+        "role": "Editor",
+        "rank": "Owner",
+        "mimeType": "application/x-skiff-workspace",
+        "exportedType": { "identifier": "com.solutionscay.skiff.workspace", "conformsTo": ["public.data"] }
+      }
+    ]
   }
 }

@@ -30,7 +30,7 @@ import { skiffAgentSession } from "../app/skiffAgent";
 import { S, sessions } from "../app/state";
 import { shownIds } from "../app/stateQueries";
 import type { SessionInfo } from "../platform/types";
-import { openPath, previewOnScreen } from "../terminal/peek";
+import { openPath, previewToken } from "../terminal/peek";
 import { holdFits, releaseFits } from "../terminal/terminal";
 import { h } from "../ui/dom";
 import { isSlot } from "./layoutSlots";
@@ -229,10 +229,11 @@ export function ledgerNeeds(): number {
   return needing(units());
 }
 
-/** The panel shows while Skipper's pane is the one pane on screen. */
+/** The panel shows while Skipper's pane is the one pane on screen. A preview a row opened keeps it; any other preview hides it. */
 function wanted(): boolean {
   const s = skiffAgentSession();
-  if (!s || previewOnScreen()) return false;
+  const t = previewToken();
+  if (!s || (t && t !== ours)) return false;
   const ids = shownIds().filter((id) => !isSlot(id));
   return ids.length === 1 && ids[0] === s.id;
 }
@@ -327,7 +328,16 @@ interface Acts {
   icons: [keyof typeof ICON, string, () => void][];
 }
 
-const result = (r: Entry) => (r.result_exists && r.result_path ? () => openPath(r.result_path!) : null);
+/** The preview a Ledger row opened. The panel stays beside it. */
+let ours = 0;
+
+const result = (r: Entry) =>
+  r.result_exists && r.result_path
+    ? () => {
+        openPath(r.result_path!);
+        ours = previewToken();
+      }
+    : null;
 
 /**
  * A task's actions. Running, approval, blocked, pending, exited: the click

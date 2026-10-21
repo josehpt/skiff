@@ -27,6 +27,7 @@ import { $, button, h } from "../ui/dom";
 import { icon } from "../ui/icons";
 import { showError } from "../ui/alerts";
 import { appKey, currentRow, itemKey } from "../app/keyboard";
+import { render } from "../app/renderRequest";
 import type { Action } from "../app/keys";
 import { S, sessions } from "../app/state";
 import type { SessionInfo } from "../platform/types";
@@ -307,6 +308,35 @@ export function closePeek(hold = false) {
   else if (S.focused) panes.get(S.focused)?.term.focus();
 }
 
+/**
+ * The Esc button, and Esc on a card or on a command that did not take the
+ * terminal: the preview closes, its command ends, the row stays current.
+ * Enter or a click on the row shows it again.
+ */
+export function closePreview() {
+  if (!active || active.closed) return;
+  const hadKeys = !!card?.contains(document.activeElement) || (!!open && keysIn(open.el));
+  active.closed = true;
+  clearCard();
+  const p = open;
+  open = null;
+  if (p) drop(p, p.shown);
+  repaintPanes();
+  render();
+  if (!hadKeys) return;
+  const row = currentRow();
+  if (row) row.focus();
+  else if (S.focused) panes.get(S.focused)?.term.focus();
+}
+
+/** The Esc keycap at the right of a preview's header. */
+function escButton(): HTMLButtonElement {
+  const b = button("peek-esc", "Esc", closePreview);
+  b.title = "Close the preview (Esc)";
+  b.setAttribute("aria-label", "Close the preview");
+  return b;
+}
+
 const keysIn = (el: HTMLElement) => el.contains(document.activeElement) || document.activeElement === document.body;
 
 function repaintPanes() {
@@ -332,7 +362,7 @@ function showCard(mine: number, kind: string, path: string, label?: string, act?
   el.tabIndex = -1;
   el.setAttribute("aria-label", name);
   const head = h("div", "peek-head");
-  head.append(h("span", "peek-kind", kind), h("span", "peek-title mono", name), h("span", "peek-where mono", dir));
+  head.append(h("span", "peek-kind", kind), h("span", "peek-title mono", name), h("span", "peek-where mono", dir), escButton());
   const body = h("div", "file-preview-body");
   if (label && act) {
     // A keycap you can click, with the action under it: the hint and the button in one.
@@ -351,7 +381,10 @@ function showCard(mine: number, kind: string, path: string, label?: string, act?
   // Tab does nothing here. Space opens or closes the row, as on the row. Enter runs the button.
   el.addEventListener("keydown", (e) => {
     if (e.key === "Tab") e.preventDefault();
-    else if (e.key === " " && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
+    else if (e.key === "Escape" && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
+      e.preventDefault();
+      closePreview();
+    } else if (e.key === " " && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
       e.preventDefault();
       if (active) rowActs(active.key)?.fold?.();
     }
@@ -395,7 +428,7 @@ function frame(mine: number, kind: string, title: string, where: string, program
   el.setAttribute("role", "dialog");
   el.setAttribute("aria-label", title);
   const head = h("div", "peek-head");
-  head.append(h("span", "peek-kind", kind), h("span", "peek-title mono", title), h("span", "peek-where mono", where));
+  head.append(h("span", "peek-kind", kind), h("span", "peek-title mono", title), h("span", "peek-where mono", where), escButton());
   const box = h("div", "peek-body");
   el.append(head, box);
   // Laid out but not visible, so the terminal has its real size from the start.
@@ -425,6 +458,12 @@ function frame(mine: number, kind: string, title: string, where: string, program
       if (["Shift", "Control", "Alt", "Meta"].includes(e.key)) return false;
       e.preventDefault();
       if (open === p) closePeek();
+      return false;
+    }
+    // Esc closes a diff or printed output. A tool that took the terminal keeps Esc: micro and vim need it.
+    if (e.key === "Escape" && !p.interactive && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
+      e.preventDefault();
+      if (open === p) closePreview();
       return false;
     }
     // Navigation runs in the window handler. Copy and paste work in the tool.

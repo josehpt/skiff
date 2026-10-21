@@ -8,6 +8,7 @@ import { showError } from "../ui/alerts";
 import { ctxMenu } from "../ui/contextMenu";
 import type { MenuEntry } from "../ui/menu";
 import { basename, branchName, samePath } from "../workspace/model";
+import { hostInvoke } from "../app/hostCaps";
 
 /**
  * Resume after a restart. A restored pane remembers the agent it ran and that
@@ -129,7 +130,7 @@ function commandFor(agent: string): string {
 
 /** Types a line into the pane's shell and runs it. */
 function run(id: string, line: string) {
-  invoke("pty_write", { session: id, data: line + "\r" }).catch(showError);
+  hostInvoke("session_terminal", "pty_write", { session: id, data: line + "\r" }).catch(showError);
 }
 
 /** A UUIDv7 starts with its creation time in ms. grok prints only a date, so its ids give the time. */

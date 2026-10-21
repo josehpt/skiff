@@ -29,6 +29,7 @@ import { panes } from "../terminal/terminalState";
 import { ptySized } from "../terminal/terminal";
 import { reattachPanes } from "../terminal/terminalRuntime";
 import { focusPane, inBackground, paneNear, revealSession, rowNear, showSingle, splitWith, unfocus } from "../workspace/view";
+import { hostInvoke, loadHostCaps } from "./hostCaps";
 
 export function setDaemon(status: DaemonStatus) {
   const dot = $("daemon").querySelector(".dot") as HTMLElement;
@@ -57,7 +58,7 @@ export async function subscribeEvents() {
   events.onmessage = (e) => {
     if (n === eventStream) onEvent(e);
   };
-  await invoke("subscribe_events", { onEvent: events });
+  await hostInvoke("session_updates", "subscribe_events", { onEvent: events });
 }
 
 /**
@@ -75,7 +76,9 @@ export async function reloadDaemon(): Promise<DaemonStatus> {
     const r = await invoke<Reloaded>("reload_daemon");
     // Before boot subscribed anything, boot does it next.
     if (r.reconnected && r.status.connected && eventStream) {
-      // Events first, so nothing between the list and the stream is missed.
+      // The reloaded Host answers for itself. Events first, so nothing
+      // between the list and the stream is missed.
+      await loadHostCaps().catch(console.error);
       await subscribeEvents().catch(console.error);
       await refreshSessions().catch(console.error);
       await loadGroups().catch(console.error);
@@ -134,7 +137,7 @@ export async function newSession(
   // Agent IDs are useful in the launch menu, but call signs make a new crew
   // easier (and more fun) to tell apart once it is running.
   const sessionLabel = name ?? (role === "agent" ? agentCallsign([...sessions.values()].map((s) => s.label)) : label);
-  const info = await invoke<SessionInfo>("create_session", {
+  const info = await hostInvoke<SessionInfo>("session_lifecycle", "create_session", {
     spec: {
       label: sessionLabel,
       name: role === "agent" ? sessionLabel : null,
@@ -294,7 +297,7 @@ export async function refreshSessions() {
   born.add(fresh);
   let list: SessionInfo[];
   try {
-    list = await invoke<SessionInfo[]>("list_sessions");
+    list = await hostInvoke<SessionInfo[]>("session_inventory", "list_sessions");
   } finally {
     born.delete(fresh);
   }
@@ -344,7 +347,7 @@ export function onEvent(e: DaemonEvent) {
         s.state = "done";
         s.exit_code = e.code;
         // A shell that exits (Ctrl+D, `exit`) has nothing left to show: it closes.
-        if (s.role === "shell") invoke("kill_session", { session: s.id }).catch(console.error);
+        if (s.role === "shell") hostInvoke("session_lifecycle", "kill_session", { session: s.id }).catch(console.error);
       }
       break;
     }

@@ -3,7 +3,7 @@
 use skiff_core::session as core;
 use skiff_host_api::{inventory as api, Error};
 
-fn opaque_path(value: std::path::PathBuf) -> Result<String, Error> {
+pub(super) fn opaque_path(value: std::path::PathBuf) -> Result<String, Error> {
     value
         .into_os_string()
         .into_string()
@@ -76,7 +76,7 @@ pub(super) fn project_session(value: core::SessionInfo) -> Result<api::Inventory
     })
 }
 
-fn project_role(value: core::Role) -> api::Role {
+pub(super) fn project_role(value: core::Role) -> api::Role {
     match value {
         core::Role::Agent => api::Role::Agent,
         core::Role::Task => api::Role::Task,
@@ -189,7 +189,7 @@ pub(super) fn restore_session(value: api::InventorySession) -> core::SessionInfo
     }
 }
 
-fn restore_role(value: api::Role) -> core::Role {
+pub(super) fn restore_role(value: api::Role) -> core::Role {
     match value {
         api::Role::Agent => core::Role::Agent,
         api::Role::Task => core::Role::Task,

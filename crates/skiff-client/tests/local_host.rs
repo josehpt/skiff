@@ -160,7 +160,9 @@ async fn selected_endpoint_is_the_only_status_source_and_keeps_legacy_wire_and_c
             Capability::session_screen(),
             Capability::session_inventory(),
             Capability::session_updates(),
-            Capability::session_terminal()
+            Capability::session_terminal(),
+            Capability::session_lifecycle(),
+            Capability::session_groups()
         ]
     );
     // Endpoint-local lifecycle permission comes from the selected endpoint.

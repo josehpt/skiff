@@ -4,13 +4,13 @@ import { sessionsOf, shapeName } from "../workspace/layout";
 
 import { agentName } from "../workspace/model";
 import type { Group } from "../platform/types";
-import { invoke } from "@tauri-apps/api/core";
 import { showError } from "../ui/alerts";
 import { render } from "./render";
 import { S, sessions } from "./state";
 import { activeGroupObj, shownIds } from "./stateQueries";
 
 import { inBackground, unfocus } from "../workspace/view";
+import { hostInvoke } from "./hostCaps";
 
 /** Group writes run one at a time, so a new group has its id before the next save. */
 let groupQueue = Promise.resolve();
@@ -49,7 +49,7 @@ export function saveGroup(g: Group) {
   syncTemplateName(g);
   persist(async () => {
     if (!S.groups.includes(g)) return;
-    const saved = await invoke<Group>("save_group", {
+    const saved = await hostInvoke<Group>("session_groups", "save_group", {
       group: { id: g.id.startsWith("tmp-") ? "" : g.id, name: g.name, layout: g.layout, focus: g.focus, cwd: g.cwd ?? null },
     });
     if (saved.id !== g.id) {
@@ -70,7 +70,7 @@ export function deleteGroup(g: Group) {
   if (S.renaming?.id === g.id) S.renaming = null;
   persist(async () => {
     if (g.id.startsWith("tmp-")) return;
-    await invoke("delete_group", { group: g.id }).catch((e) => console.warn(e));
+    await hostInvoke("session_groups", "delete_group", { group: g.id }).catch((e) => console.warn(e));
   });
 }
 
@@ -81,7 +81,7 @@ export async function loadGroups() {
   }
   let list: Group[];
   try {
-    list = await invoke<Group[]>("list_groups");
+    list = await hostInvoke<Group[]>("session_groups", "list_groups");
   } catch (e) {
     console.error(e);
     return;
@@ -100,7 +100,7 @@ export async function loadGroups() {
   // place, so they piled up under Other. Drop them, unless one is on screen.
   const stale = list.filter((g) => !g.cwd && g.id !== S.activeGroup && sessionsOf(g.layout).every(isSlot));
   S.groups = list.filter((g) => !stale.includes(g));
-  for (const g of stale) persist(() => invoke("delete_group", { group: g.id }));
+  for (const g of stale) persist(() => hostInvoke("session_groups", "delete_group", { group: g.id }));
   const was = S.activeGroup;
   if (S.activeGroup && !activeGroupObj()) {
     S.activeGroup = null;

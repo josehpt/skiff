@@ -64,10 +64,8 @@ pub async fn start_skiff_watch(app: State<'_, App>, session: String) -> Result<b
 pub(crate) async fn ensure_watch(app: &App, _local: &ProcessControl, cli: PathBuf, session: String) -> Result<bool, String> {
     let _one = app.watch_gate.lock().await;
     let mut known = app.watch_pids.lock().unwrap().clone();
-    if let Ok((c, _)) = ensure_client(app).await {
-        if let Ok(list) = c.list_sessions().await {
-            known.extend(list.iter().filter(|s| s.id == session).filter_map(|s| s.watch.as_ref()).flat_map(|w| w.pids.iter().copied()));
-        }
+    if let Ok(list) = crate::connection::inventory_now(app).await {
+        known.extend(list.iter().filter(|s| s.id == session).filter_map(|s| s.watch.as_ref()).flat_map(|w| w.pids.iter().copied()));
     }
     // Only the bundled CLI replaces a watcher: a bare `skiff` from PATH is
     // not known to be this app's build.
@@ -290,8 +288,8 @@ pub async fn change_skiff_folder(
         if !end_skipper {
             return Err("Skipper runs. It ends before the change.".into());
         }
-        let (c, _) = ensure_client(&app).await?;
-        c.kill(&s.id).await.map_err(err)?;
+        let c = crate::connection::host_now(&app).await?;
+        skiff_client::host::local::legacy_kill(&c, &s.id).await.map_err(err)?;
         panes.remove(&s.id);
     }
     let done = blocking(move || agent_folder::change(&config::load()?, &path, mode, &panes, anyway)).await?;

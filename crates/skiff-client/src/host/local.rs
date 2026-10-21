@@ -1,6 +1,6 @@
-//! M1a–M1e local connection ownership: status, screen, inventory, session
-//! updates and the session terminal, and the Host identity skiffd reports
-//! in `pong`. No Host service and no new skiffd requests.
+//! M1a–M1g local connection ownership: status, screen, inventory, session
+//! updates, the session terminal, session lifecycle and groups, and the Host
+//! identity skiffd reports in `pong`. No Host service and no new skiffd requests.
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -14,9 +14,9 @@ use skiff_host_api::{
 use uuid::Uuid;
 
 use super::{
-    HostConnection, InventorySource, LocalSources, OutputGap, OutputStream, ScreenSource,
-    SessionUpdates, StatusSource, TerminalOutput, TerminalSource, UpdateGap, UpdateSource,
-    UpdateStream,
+    GroupSource, HostConnection, InventorySource, LifecycleSource, LocalSources, OutputGap,
+    OutputStream, ScreenSource, SessionUpdates, StatusSource, TerminalOutput, TerminalSource,
+    UpdateGap, UpdateSource, UpdateStream,
 };
 use crate::{Client, DaemonInfo};
 
@@ -144,6 +144,8 @@ impl PendingLocalConnection {
                 Capability::session_inventory(),
                 Capability::session_updates(),
                 Capability::session_terminal(),
+                Capability::session_lifecycle(),
+                Capability::session_groups(),
             ],
             limits: Limits {
                 max_frame_bytes: 8 * 1024 * 1024,
@@ -160,6 +162,8 @@ impl PendingLocalConnection {
                     inventory: Some(source.clone()),
                     updates: Some(source),
                     terminal: Some(Arc::new(LegacyTerminal(self.client.clone()))),
+                    lifecycle: Some(Arc::new(LegacySessions(self.client.clone()))),
+                    groups: Some(Arc::new(LegacySessions(self.client.clone()))),
                 },
                 hello,
                 previous.as_ref(),
@@ -620,4 +624,228 @@ pub async fn connection_status(connection: &HostConnection) -> Result<(String, u
             message: "expected connection status".into(),
         }),
     }
+}
+
+/// M1g: session lifecycle and groups. The very same skiffd requests the
+/// desktop sent before (`create_session`, `kill`, `rename_session`,
+/// `set_session_theme`, `seen`, `list_groups`, `save_group`, `delete_group`)
+/// on the selected Client. No Host envelope, no retry.
+struct LegacySessions(Arc<Client>);
+impl LegacySessions {
+    async fn call(
+        &self,
+        request: skiff_core::protocol::Request,
+    ) -> Result<skiff_core::protocol::Response, Error> {
+        match self.0.request_decoded(request).await {
+            Ok(skiff_core::protocol::Response::Error { message }) => {
+                Err(Error::OperationFailed { message })
+            }
+            Ok(reply) => Ok(reply),
+            Err(e) => Err(legacy_transport_error(&self.0, e)),
+        }
+    }
+
+    async fn row(&self, request: skiff_core::protocol::Request) -> Result<Response, Error> {
+        match self.call(request).await? {
+            skiff_core::protocol::Response::Session { session } => Ok(Response::Session {
+                session: Box::new(super::inventory::project_session(session)?),
+            }),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    async fn ok(&self, request: skiff_core::protocol::Request) -> Result<Response, Error> {
+        match self.call(request).await? {
+            skiff_core::protocol::Response::Ok => Ok(Response::Ok),
+            other => Err(unexpected(other)),
+        }
+    }
+}
+
+fn unexpected(reply: skiff_core::protocol::Response) -> Error {
+    Error::MalformedContract {
+        message: format!("unexpected reply: {reply:?}"),
+    }
+}
+
+impl LifecycleSource for LegacySessions {
+    fn lifecycle(&self, request: Request) -> Op<'_> {
+        use skiff_core::protocol::Request as Legacy;
+        Box::pin(async move {
+            match request {
+                Request::SessionCreate { spec } => {
+                    self.row(Legacy::CreateSession {
+                        spec: super::lifecycle::restore_spec(spec),
+                    })
+                    .await
+                }
+                Request::SessionKill { session } => self.ok(Legacy::Kill { session }).await,
+                Request::SessionRename { session, name } => {
+                    self.row(Legacy::RenameSession { session, name }).await
+                }
+                Request::SessionSetTheme { session, theme } => {
+                    self.row(Legacy::SetSessionTheme { session, theme }).await
+                }
+                Request::SessionSeen { session } => self.ok(Legacy::Seen { session }).await,
+                _ => Err(Error::MalformedContract {
+                    message: "not a session lifecycle request".into(),
+                }),
+            }
+        })
+    }
+}
+
+impl GroupSource for LegacySessions {
+    fn groups(&self, request: Request) -> Op<'_> {
+        use skiff_core::protocol::{Request as Legacy, Response as LegacyReply};
+        Box::pin(async move {
+            match request {
+                Request::GroupList => match self.call(Legacy::ListGroups).await? {
+                    LegacyReply::Groups { groups } => Ok(Response::Groups {
+                        groups: groups
+                            .into_iter()
+                            .map(super::lifecycle::project_group)
+                            .collect(),
+                    }),
+                    other => Err(unexpected(other)),
+                },
+                Request::GroupSave { group } => match self
+                    .call(Legacy::SaveGroup {
+                        group: super::lifecycle::restore_group(group),
+                    })
+                    .await?
+                {
+                    LegacyReply::Group { group } => Ok(Response::Group {
+                        group: super::lifecycle::project_group(group),
+                    }),
+                    other => Err(unexpected(other)),
+                },
+                Request::GroupDelete { group } => self.ok(Legacy::DeleteGroup { group }).await,
+                _ => Err(Error::MalformedContract {
+                    message: "not a session group request".into(),
+                }),
+            }
+        })
+    }
+}
+
+/// Temporary desktop compatibility projections of the lifecycle and group
+/// families: typed Host requests, the existing Tauri results and error text.
+/// Capability/version failures propagate explicitly, never via a raw Client.
+async fn legacy_request(connection: &HostConnection, request: Request) -> anyhow::Result<Response> {
+    connection.request(request).await.map_err(legacy_read_error)
+}
+
+fn legacy_row(reply: Response) -> anyhow::Result<skiff_core::session::SessionInfo> {
+    match reply {
+        Response::Session { session } => Ok(super::inventory::restore_session(*session)),
+        _ => Err(Error::MalformedContract {
+            message: "expected a session".into(),
+        }
+        .into()),
+    }
+}
+
+pub async fn legacy_create(
+    connection: &HostConnection,
+    spec: skiff_core::session::SessionSpec,
+) -> anyhow::Result<skiff_core::session::SessionInfo> {
+    let spec = super::lifecycle::project_spec(spec).map_err(legacy_read_error)?;
+    legacy_row(legacy_request(connection, Request::SessionCreate { spec }).await?)
+}
+
+pub async fn legacy_kill(connection: &HostConnection, session: &str) -> anyhow::Result<()> {
+    legacy_request(
+        connection,
+        Request::SessionKill {
+            session: session.into(),
+        },
+    )
+    .await
+    .map(drop)
+}
+
+pub async fn legacy_rename(
+    connection: &HostConnection,
+    session: &str,
+    name: &str,
+) -> anyhow::Result<skiff_core::session::SessionInfo> {
+    legacy_row(
+        legacy_request(
+            connection,
+            Request::SessionRename {
+                session: session.into(),
+                name: name.into(),
+            },
+        )
+        .await?,
+    )
+}
+
+pub async fn legacy_set_theme(
+    connection: &HostConnection,
+    session: &str,
+    theme: Option<String>,
+) -> anyhow::Result<skiff_core::session::SessionInfo> {
+    legacy_row(
+        legacy_request(
+            connection,
+            Request::SessionSetTheme {
+                session: session.into(),
+                theme,
+            },
+        )
+        .await?,
+    )
+}
+
+pub async fn legacy_seen(connection: &HostConnection, session: &str) -> anyhow::Result<()> {
+    legacy_request(
+        connection,
+        Request::SessionSeen {
+            session: session.into(),
+        },
+    )
+    .await
+    .map(drop)
+}
+
+pub async fn legacy_groups(
+    connection: &HostConnection,
+) -> anyhow::Result<Vec<skiff_core::group::Group>> {
+    match legacy_request(connection, Request::GroupList).await? {
+        Response::Groups { groups } => Ok(groups
+            .into_iter()
+            .map(super::lifecycle::restore_group)
+            .collect()),
+        _ => Err(Error::MalformedContract {
+            message: "expected groups".into(),
+        }
+        .into()),
+    }
+}
+
+pub async fn legacy_save_group(
+    connection: &HostConnection,
+    group: skiff_core::group::Group,
+) -> anyhow::Result<skiff_core::group::Group> {
+    let group = super::lifecycle::project_group(group);
+    match legacy_request(connection, Request::GroupSave { group }).await? {
+        Response::Group { group } => Ok(super::lifecycle::restore_group(group)),
+        _ => Err(Error::MalformedContract {
+            message: "expected a group".into(),
+        }
+        .into()),
+    }
+}
+
+pub async fn legacy_delete_group(connection: &HostConnection, group: &str) -> anyhow::Result<()> {
+    legacy_request(
+        connection,
+        Request::GroupDelete {
+            group: group.into(),
+        },
+    )
+    .await
+    .map(drop)
 }

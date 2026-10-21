@@ -276,3 +276,94 @@ fn m1e_session_terminal_has_its_own_capability_and_lossless_golden_shape() {
     }
     .is_local());
 }
+
+#[test]
+fn m1g_lifecycle_and_groups_have_their_own_capabilities_and_lossless_golden_shapes() {
+    let fixture: Value = serde_json::from_str(include_str!("fixtures/m1g.json")).unwrap();
+    let lifecycle = Capability::session_lifecycle();
+    let groups = Capability::session_groups();
+    assert_eq!(
+        serde_json::to_value(&lifecycle).unwrap(),
+        fixture["capabilities"]["lifecycle"]
+    );
+    assert_eq!(
+        serde_json::to_value(&groups).unwrap(),
+        fixture["capabilities"]["groups"]
+    );
+    let row = Response::Session {
+        session: Box::new(
+            serde_json::from_value(fixture["replies"][0]["result"]["Ok"]["session"].clone())
+                .unwrap(),
+        ),
+    };
+    let group: Group =
+        serde_json::from_value(fixture["replies"][2]["result"]["Ok"]["group"].clone()).unwrap();
+    for (key, capability) in [
+        ("lifecycle_requests", &lifecycle),
+        ("group_requests", &groups),
+    ] {
+        for value in fixture[key].as_array().unwrap() {
+            let request: Request = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(&request).unwrap(), *value);
+            assert_eq!(request.capability().as_ref(), Some(capability));
+            // Each request takes exactly one reply shape; Ok never stands in for a row.
+            let wants_row = matches!(
+                request,
+                Request::SessionCreate { .. }
+                    | Request::SessionRename { .. }
+                    | Request::SessionSetTheme { .. }
+            );
+            assert_eq!(request.accepts(&row), wants_row, "{value}");
+            assert_eq!(
+                request.accepts(&Response::Groups { groups: vec![] }),
+                matches!(request, Request::GroupList)
+            );
+            assert_eq!(
+                request.accepts(&Response::Group {
+                    group: group.clone()
+                }),
+                matches!(request, Request::GroupSave { .. })
+            );
+            assert_eq!(
+                request.accepts(&Response::Ok),
+                matches!(
+                    request,
+                    Request::SessionKill { .. }
+                        | Request::SessionSeen { .. }
+                        | Request::GroupDelete { .. }
+                )
+            );
+        }
+    }
+    for value in fixture["replies"].as_array().unwrap() {
+        let message: Message = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&message).unwrap(), *value);
+    }
+    // Spec defaults match the legacy SessionSpec: shell role, 120×40, no peek.
+    let minimal: Request =
+        serde_json::from_value(json!({"cmd":"session_create","spec":{}})).unwrap();
+    assert_eq!(
+        serde_json::to_value(&minimal).unwrap(),
+        json!({"cmd":"session_create","spec":{"label":"","name":null,"role":"shell","cwd":null,"command":null,"args":[],"peek":false,"cols":120,"rows":40}})
+    );
+    // A coordinator flag is not part of the contract; unknown fields are ignored.
+    let ignored: Request =
+        serde_json::from_value(json!({"cmd":"session_create","spec":{"coordinator":true}}))
+            .unwrap();
+    assert_eq!(ignored, minimal);
+    for bad in [
+        json!({"cmd":"session_create","spec":{"role":"robot"}}),
+        json!({"cmd":"session_create","spec":{"cols":-1}}),
+        json!({"cmd":"session_kill"}),
+        json!({"cmd":"group_save","group":{"name":"x","layout":{"type":"tab"}}}),
+        json!({"cmd":"group_save","group":{"name":"x","layout":{"type":"split","dir":"diagonal","ratio":0.5,"a":{"type":"pane","session":"a"},"b":{"type":"pane","session":"b"}}}}),
+    ] {
+        assert!(
+            serde_json::from_value::<Request>(bad.clone()).is_err(),
+            "{bad}"
+        );
+    }
+    // Older contract families keep their own capabilities.
+    let m0: Request = serde_json::from_value(json!({"cmd":"list_sessions"})).unwrap();
+    assert_eq!(m0.capability(), Some(Capability::sessions()));
+}

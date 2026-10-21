@@ -18,6 +18,7 @@ import { collapsed, S, selectedWorktree, sessions } from "../app/state";
 import { worktreeSessions } from "../app/stateQueries";
 
 import { refocusTerminal, selectProject } from "./view";
+import { hostInvoke } from "../app/hostCaps";
 
 /** The project's sessions, and one line per worktree that has any, for a confirmation. */
 function projectSessions(p: Project) {
@@ -42,7 +43,7 @@ const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 /** Ends the sessions. False when one would not end: the project stays as it was. */
 async function endAll(ids: string[]): Promise<boolean> {
   clearSelection();
-  const results = await Promise.allSettled(ids.filter((id) => sessions.has(id)).map((id) => invoke("kill_session", { session: id })));
+  const results = await Promise.allSettled(ids.filter((id) => sessions.has(id)).map((id) => hostInvoke("session_lifecycle", "kill_session", { session: id })));
   let ok = true;
   for (const r of results) {
     if (r.status === "rejected") {

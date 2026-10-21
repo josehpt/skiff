@@ -30,6 +30,7 @@ import { bareWorktree, projectBadge, rollup, treeSections } from "./tree";
 import { closeMission, goToSession, maximizeLit } from "./missionMotion";
 import { nextWaiting } from "./view";
 import { settings } from "../app/panels";
+import { hostInvoke } from "../app/hostCaps";
 
 /** Rows of text per screen. */
 const ROWS = 12;
@@ -419,7 +420,7 @@ async function read() {
   await Promise.all(
     [...screens].map(async ([id, pre]) => {
       try {
-        const lines = await invoke<string[]>("session_screen", { session: id, rows: ROWS });
+        const lines = await hostInvoke<string[]>("session_screen", "session_screen", { session: id, rows: ROWS });
         if (paused) return;
         const text = lines.join("\n");
         if (pre.textContent !== text) pre.textContent = text;

@@ -13,6 +13,7 @@ import { S, sessions } from "../app/state";
 import { currentProject, place } from "../app/stateQueries";
 import { panes } from "../terminal/terminalState";
 import { skiffAgentSession } from "../app/skiffAgent";
+import { hostInvoke } from "../app/hostCaps";
 
 const knownTheme = (id: string | null) => (S.themes.some((t) => t.id === id) ? id! : DEFAULT_THEME);
 
@@ -113,7 +114,7 @@ export async function sessionThemeMenu(s: SessionInfo) {
       applyThemes();
       applyApp();
       render();
-      invoke<SessionInfo>("set_session_theme", { session: s.id, theme: id }).catch(showError);
+      hostInvoke<SessionInfo>("session_lifecycle", "set_session_theme", { session: s.id, theme: id }).catch(showError);
     },
   });
 }
@@ -136,7 +137,7 @@ export async function groupThemeMenu(g: Group) {
         const s = sessions.get(sid);
         if (!s) continue;
         s.theme = id;
-        invoke<SessionInfo>("set_session_theme", { session: sid, theme: id }).catch(showError);
+        hostInvoke<SessionInfo>("session_lifecycle", "set_session_theme", { session: sid, theme: id }).catch(showError);
       }
       applyThemes();
       applyApp();

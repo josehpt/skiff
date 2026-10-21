@@ -9,6 +9,7 @@ import { agentName, branchName, bySessionPriority, taskTitle } from "../workspac
 import { createSwitcher, type SwitchItem } from "../ui/switcher";
 
 import { invoke } from "@tauri-apps/api/core";
+import { hostCan } from "./hostCaps";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "../platform/os";
 
@@ -48,7 +49,7 @@ function commands(): Cmd[] {
   const k = (a: Action) => keyLabel(a);
   const act = (a: Action) => () => runAction(a);
   return [
-    { section: "File", label: "New session…", key: k("new-session"), action: "new-session", run: act("new-session"), off: !currentWorktree() },
+    { section: "File", label: "New session…", key: k("new-session"), action: "new-session", run: act("new-session"), off: !currentWorktree() || !hostCan("session_lifecycle") },
     { section: "File", label: "New worktree…", key: k("new-worktree"), action: "new-worktree", run: act("new-worktree"), off: !currentProject() },
     { section: "File", label: "Add project…", key: k("add-project"), action: "add-project", run: act("add-project") },
     { section: "File", label: "Open closed project…", key: "", run: openClosedMenu, off: !S.closedProjects.length },
@@ -67,23 +68,23 @@ function commands(): Cmd[] {
     { section: "Edit", label: "Copy", key: k("copy"), action: "copy", run: act("copy"), off: !s && !settings.isOpen },
     { section: "Edit", label: "Paste", key: k("paste"), action: "paste", run: act("paste"), off: !s && !settings.isOpen },
     { section: "Edit", label: "Find…", key: k("find"), action: "find", run: act("find"), off: !shown },
-    { section: "Edit", label: "Rename session", key: k("rename"), action: "rename", run: act("rename"), off: !s || isSkiffAgent(s.id) },
-    { section: "Edit", label: "Session theme…", key: k("theme"), run: () => s && void sessionThemeMenu(s), off: !s },
+    { section: "Edit", label: "Rename session", key: k("rename"), action: "rename", run: act("rename"), off: !s || isSkiffAgent(s.id) || !hostCan("session_lifecycle") },
+    { section: "Edit", label: "Session theme…", key: k("theme"), run: () => s && void sessionThemeMenu(s), off: !s || !hostCan("session_lifecycle") },
     {
-      section: "Edit", label: "End session…", key: k("end-session"), action: "end-session", off: !s,
+      section: "Edit", label: "End session…", key: k("end-session"), action: "end-session", off: !s || !hostCan("session_lifecycle"),
       run: act("end-session"),
     },
     { section: "View", label: "Command palette", key: k("palette"), action: "palette", run: act("palette") },
     { section: "View", label: "Next session", key: k("session-next"), action: "session-next", run: act("session-next") },
     { section: "View", label: "Previous session", key: k("session-prev"), action: "session-prev", run: act("session-prev") },
     { section: "View", label: "Main worktree", key: k("list-main"), action: "list-main", run: act("list-main") },
-    { section: "View", label: "Add pane right…", key: k("split-right"), action: "split-right", run: act("split-right"), off: !shown || splitFull() || isSkiffAgent(S.focused) },
-    { section: "View", label: "Add pane below…", key: k("split-down"), action: "split-down", run: act("split-down"), off: !shown || splitFull() || isSkiffAgent(S.focused) },
-    { section: "View", label: "Remove from group", key: k("close-pane"), action: "close-pane", run: act("close-pane"), off: !(S.focused && inShownGroup(S.focused)) },
+    { section: "View", label: "Add pane right…", key: k("split-right"), action: "split-right", run: act("split-right"), off: !shown || splitFull() || isSkiffAgent(S.focused) || !hostCan("session_lifecycle") },
+    { section: "View", label: "Add pane below…", key: k("split-down"), action: "split-down", run: act("split-down"), off: !shown || splitFull() || isSkiffAgent(S.focused) || !hostCan("session_lifecycle") },
+    { section: "View", label: "Remove from group", key: k("close-pane"), action: "close-pane", run: act("close-pane"), off: !(S.focused && inShownGroup(S.focused)) || !hostCan("session_groups") },
     ...groupCloseEntries(g).map((entry): Cmd => ({
       section: "View", label: entry.label, key: "", run: () => entry.run?.(), off: entry.disabled,
     })),
-    { section: "View", label: "Mission control", key: k("mission-control"), action: "mission-control", run: act("mission-control") },
+    { section: "View", label: "Mission control", key: k("mission-control"), action: "mission-control", run: act("mission-control"), off: !hostCan("session_screen") },
     { section: "View", label: "Next waiting", key: k("next-waiting"), action: "next-waiting", run: act("next-waiting") },
     {
       section: "View", label: `${skiffAgentSession() ? "Show" : "Start"} ${skiffAgentName()}`, key: k("skiff-agent"), action: "skiff-agent",

@@ -82,6 +82,7 @@ pub fn run() {
             clipboard::clipboard_write,
             clipboard::clipboard_read,
             connection::daemon_status,
+            connection::host_capabilities,
             cli_path::install_cli,
             skiff_agent::get_skiff_agent,
             skiff_agent::set_skiff_agent,

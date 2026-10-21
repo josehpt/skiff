@@ -1,4 +1,4 @@
-//! Host contract client, with in-process local sources for M1a–M1e.
+//! Host contract client, with in-process local sources for M1a–M1g.
 use std::{
     collections::HashMap,
     future::Future,
@@ -22,6 +22,7 @@ use tokio::{
 use crate::transport::Transport;
 
 mod inventory;
+mod lifecycle;
 pub mod local;
 mod terminal;
 mod updates;
@@ -52,6 +53,25 @@ pub trait ScreenSource: Send + Sync {
 /// Read-only desktop inventory, independent of core session lifecycle types.
 pub trait InventorySource: Send + Sync {
     fn inventory(&self) -> Pin<Box<dyn Future<Output = Result<Response, Error>> + Send + '_>>;
+}
+
+/// M1g: create, kill, rename, theme and seen of one session. It receives only
+/// `session_lifecycle@1` requests. No retry: a timed-out create or kill may
+/// have run.
+pub trait LifecycleSource: Send + Sync {
+    fn lifecycle(
+        &self,
+        request: Request,
+    ) -> Pin<Box<dyn Future<Output = Result<Response, Error>> + Send + '_>>;
+}
+
+/// M1g: list, save and delete the Host's session groups. It receives only
+/// `session_groups@1` requests.
+pub trait GroupSource: Send + Sync {
+    fn groups(
+        &self,
+        request: Request,
+    ) -> Pin<Box<dyn Future<Output = Result<Response, Error>> + Send + '_>>;
 }
 
 /// Read-only non-output session events. Each call starts a receiver at the
@@ -132,6 +152,8 @@ pub struct LocalSources {
     pub inventory: Option<Arc<dyn InventorySource>>,
     pub updates: Option<Arc<dyn UpdateSource>>,
     pub terminal: Option<Arc<dyn TerminalSource>>,
+    pub lifecycle: Option<Arc<dyn LifecycleSource>>,
+    pub groups: Option<Arc<dyn GroupSource>>,
 }
 
 enum Backend {
@@ -142,6 +164,8 @@ enum Backend {
         inventory: Option<Arc<dyn InventorySource>>,
         updates: Option<Arc<dyn UpdateSource>>,
         terminal: Option<Arc<dyn TerminalSource>>,
+        lifecycle: Option<Arc<dyn LifecycleSource>>,
+        groups: Option<Arc<dyn GroupSource>>,
         read_slots: tokio::sync::Semaphore,
         /// Attach/detach/resize: bounded, apart from reads and status.
         terminal_slots: tokio::sync::Semaphore,
@@ -451,6 +475,8 @@ impl HostConnection {
                 inventory: None,
                 updates: None,
                 terminal: None,
+                lifecycle: None,
+                groups: None,
             },
             hello,
             previous,
@@ -471,6 +497,8 @@ impl HostConnection {
                 inventory: None,
                 updates: None,
                 terminal: None,
+                lifecycle: None,
+                groups: None,
             },
             hello,
             previous,
@@ -492,6 +520,8 @@ impl HostConnection {
                 inventory: Some(inventory),
                 updates: None,
                 terminal: None,
+                lifecycle: None,
+                groups: None,
             },
             hello,
             previous,
@@ -515,6 +545,8 @@ impl HostConnection {
                 inventory: Some(inventory),
                 updates: Some(updates),
                 terminal: None,
+                lifecycle: None,
+                groups: None,
             },
             hello,
             previous,
@@ -522,8 +554,8 @@ impl HostConnection {
     }
 
     /// An in-process local adapter. It may advertise only the capabilities
-    /// its sources serve; M1e adds `session_terminal@1` with a TerminalSource.
-    /// Still never `sessions@1`: no create/kill/rename lifecycle here.
+    /// its sources serve; M1e adds `session_terminal@1` with a TerminalSource,
+    /// M1g `session_lifecycle@1` and `session_groups@1`. Never `sessions@1`.
     pub fn local(
         sources: LocalSources,
         hello: Hello,
@@ -535,6 +567,8 @@ impl HostConnection {
             inventory,
             updates,
             terminal,
+            lifecycle,
+            groups,
         } = sources;
         hello.validate()?;
         if hello.capabilities.iter().any(|c| {
@@ -543,6 +577,8 @@ impl HostConnection {
                 && !(inventory.is_some() && c.name == skiff_host_api::SESSION_INVENTORY)
                 && !(updates.is_some() && c.name == skiff_host_api::SESSION_UPDATES)
                 && !(terminal.is_some() && c.name == skiff_host_api::SESSION_TERMINAL)
+                && !(lifecycle.is_some() && c.name == skiff_host_api::SESSION_LIFECYCLE)
+                && !(groups.is_some() && c.name == skiff_host_api::SESSION_GROUPS)
         }) {
             return Err(Error::MalformedContract {
                 message: "local adapter cannot advertise capabilities without a source".into(),
@@ -559,6 +595,8 @@ impl HostConnection {
                 inventory,
                 updates,
                 terminal,
+                lifecycle,
+                groups,
                 read_slots,
                 terminal_slots: tokio::sync::Semaphore::new(limit),
                 closed: watch::channel(false).0,
@@ -599,6 +637,8 @@ impl HostConnection {
                 screen,
                 inventory,
                 terminal,
+                lifecycle,
+                groups,
                 read_slots,
                 terminal_slots,
                 closed,
@@ -686,6 +726,49 @@ impl HostConnection {
                                     .map(|()| Response::Ok),
                                 _ => unreachable!(),
                             }
+                        })
+                    }
+                    Request::SessionCreate { .. }
+                    | Request::SessionKill { .. }
+                    | Request::SessionRename { .. }
+                    | Request::SessionSetTheme { .. }
+                    | Request::SessionSeen { .. } => {
+                        let lifecycle =
+                            lifecycle
+                                .as_ref()
+                                .ok_or_else(|| Error::UnsupportedCapability {
+                                    capability: capability.clone(),
+                                })?;
+                        let request = request.clone();
+                        // The read lane: a closing project ends its sessions at
+                        // once; they wait for a slot within the deadline, and
+                        // the status reservation stays.
+                        Box::pin(async move {
+                            let _read = read_slots
+                                .acquire()
+                                .await
+                                .map_err(|_| Error::TransportLost)?;
+                            let _slot = slots.acquire().await.map_err(|_| Error::TransportLost)?;
+                            lifecycle.lifecycle(request).await
+                        })
+                    }
+                    Request::GroupList
+                    | Request::GroupSave { .. }
+                    | Request::GroupDelete { .. } => {
+                        let groups =
+                            groups
+                                .as_ref()
+                                .ok_or_else(|| Error::UnsupportedCapability {
+                                    capability: capability.clone(),
+                                })?;
+                        let request = request.clone();
+                        Box::pin(async move {
+                            let _read = read_slots
+                                .acquire()
+                                .await
+                                .map_err(|_| Error::TransportLost)?;
+                            let _slot = slots.acquire().await.map_err(|_| Error::TransportLost)?;
+                            groups.groups(request).await
                         })
                     }
                     _ => return Err(Error::UnsupportedCapability { capability }),

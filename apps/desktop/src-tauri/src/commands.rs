@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use skiff_core::{group::Group, project::AgentInfo, session::{SessionInfo, SessionSpec}};
 use tauri::{AppHandle, Manager, State};
+use skiff_client::host::local::{legacy_create, legacy_delete_group, legacy_groups, legacy_kill, legacy_rename, legacy_save_group, legacy_seen, legacy_set_theme};
 use crate::{connection::{App, ensure_client, err}, input::Sent};
 
 #[tauri::command]
@@ -10,8 +11,8 @@ pub(crate) async fn list_sessions(app: State<'_, App>) -> Result<Vec<SessionInfo
 
 #[tauri::command]
 pub(crate) async fn create_session(app: State<'_, App>, spec: SessionSpec) -> Result<SessionInfo, String> {
-    let (c, _) = ensure_client(&app).await?;
-    c.create_session(spec).await.map_err(err)
+    let c = crate::connection::host_now(&app).await?;
+    legacy_create(&c, spec).await.map_err(err)
 }
 
 /// Not async: it runs on the main thread, one call after another, so
@@ -27,7 +28,7 @@ pub(crate) fn pty_write(handle: AppHandle, app: State<'_, App>, session: String,
         Sent::Connect => {
             tauri::async_runtime::spawn(async move {
                 let app = handle.state::<App>();
-                let c = crate::connection::terminal_now(&app).await.ok();
+                let c = crate::connection::host_now(&app).await.ok();
                 app.input.connected(c.as_deref());
             });
         }
@@ -42,7 +43,7 @@ pub(crate) async fn pty_resize(
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    let c = crate::connection::terminal_now(&app).await?;
+    let c = crate::connection::host_now(&app).await?;
     skiff_client::host::local::legacy_resize(&c, &session, cols, rows).await.map_err(err)
 }
 
@@ -52,8 +53,8 @@ pub(crate) async fn set_session_theme(
     session: String,
     theme: Option<String>,
 ) -> Result<SessionInfo, String> {
-    let (c, _) = ensure_client(&app).await?;
-    c.set_session_theme(&session, theme).await.map_err(err)
+    let c = crate::connection::host_now(&app).await?;
+    legacy_set_theme(&c, &session, theme).await.map_err(err)
 }
 
 #[tauri::command]
@@ -62,15 +63,15 @@ pub(crate) async fn rename_session(
     session: String,
     name: String,
 ) -> Result<SessionInfo, String> {
-    let (c, _) = ensure_client(&app).await?;
-    c.rename_session(&session, &name).await.map_err(err)
+    let c = crate::connection::host_now(&app).await?;
+    legacy_rename(&c, &session, &name).await.map_err(err)
 }
 
 /// The session's pane has the keys: its unread flag and agent exit go.
 #[tauri::command]
 pub(crate) async fn session_seen(app: State<'_, App>, session: String) -> Result<(), String> {
-    let (c, _) = ensure_client(&app).await?;
-    c.seen(&session).await.map_err(err)
+    let c = crate::connection::host_now(&app).await?;
+    legacy_seen(&c, &session).await.map_err(err)
 }
 
 /// Mission control's text for one session (#88).
@@ -81,8 +82,8 @@ pub(crate) async fn session_screen(app: State<'_, App>, session: String, rows: u
 
 #[tauri::command]
 pub(crate) async fn kill_session(app: State<'_, App>, session: String) -> Result<(), String> {
-    let (c, _) = ensure_client(&app).await?;
-    c.kill(&session).await.map_err(err)
+    let c = crate::connection::host_now(&app).await?;
+    legacy_kill(&c, &session).await.map_err(err)
 }
 
 #[tauri::command]
@@ -364,18 +365,18 @@ pub(crate) async fn list_agent_sessions(app: State<'_, App>, command: Vec<String
 
 #[tauri::command]
 pub(crate) async fn list_groups(app: State<'_, App>) -> Result<Vec<Group>, String> {
-    let (c, _) = ensure_client(&app).await?;
-    c.list_groups().await.map_err(err)
+    let c = crate::connection::host_now(&app).await?;
+    legacy_groups(&c).await.map_err(err)
 }
 
 #[tauri::command]
 pub(crate) async fn save_group(app: State<'_, App>, group: Group) -> Result<Group, String> {
-    let (c, _) = ensure_client(&app).await?;
-    c.save_group(group).await.map_err(err)
+    let c = crate::connection::host_now(&app).await?;
+    legacy_save_group(&c, group).await.map_err(err)
 }
 
 #[tauri::command]
 pub(crate) async fn delete_group(app: State<'_, App>, group: String) -> Result<(), String> {
-    let (c, _) = ensure_client(&app).await?;
-    c.delete_group(&group).await.map_err(err)
+    let c = crate::connection::host_now(&app).await?;
+    legacy_delete_group(&c, &group).await.map_err(err)
 }

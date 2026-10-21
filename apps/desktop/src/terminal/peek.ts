@@ -39,6 +39,7 @@ import { rowActs } from "../workspace/rowActs";
 import { panes } from "./terminalState";
 import { fitShown } from "./terminal";
 import { FONT, TERM_THEME } from "./terminalRuntime";
+import { hostInvoke } from "../app/hostCaps";
 
 /** Where to find tools for a row that has none. */
 export const TOOLS_URL = "https://github.com/solutionscay/skiff/wiki/Open-with";
@@ -131,7 +132,7 @@ export function strayPeek(s: SessionInfo) {
   if (s.id === open?.session || s.id === held?.p.session || [...parked.values()].some((p) => p.session === s.id)) return;
   // An app still running keeps its window. Its session goes when it exits.
   // A terminal tool out of the peek has no screen left: it ends.
-  if (s.state === "done" || s.interactive) invoke("kill_session", { session: s.id }).catch(console.error);
+  if (s.state === "done" || s.interactive) hostInvoke("session_lifecycle", "kill_session", { session: s.id }).catch(console.error);
   else released.add(s.id);
 }
 
@@ -409,7 +410,7 @@ function drop(p: Peek, end: boolean) {
   p.term.dispose();
   p.el.remove();
   if (!p.session) return;
-  if (end || p.exited) invoke("kill_session", { session: p.session }).catch(console.error);
+  if (end || p.exited) hostInvoke("session_lifecycle", "kill_session", { session: p.session }).catch(console.error);
   else released.add(p.session);
 }
 
@@ -477,7 +478,7 @@ function frame(mine: number, kind: string, title: string, where: string, program
     return key === null;
   });
   term.onData((data) => {
-    if (p.session && !p.exited) invoke("pty_write", { session: p.session, data }).catch(console.error);
+    if (p.session && !p.exited) hostInvoke("session_terminal", "pty_write", { session: p.session, data }).catch(console.error);
   });
   p.resize.observe(box);
   open = p;
@@ -504,7 +505,7 @@ function show(p: Peek) {
 function resized(p: Peek) {
   if (open !== p) return;
   p.fit.fit();
-  if (p.session && !p.exited) invoke("pty_resize", { session: p.session, cols: p.term.cols, rows: p.term.rows }).catch(console.error);
+  if (p.session && !p.exited) hostInvoke("session_terminal", "pty_resize", { session: p.session, cols: p.term.cols, rows: p.term.rows }).catch(console.error);
 }
 
 /** Starts `script` for the active preview, hidden. What it does decides whether the peek shows. */
@@ -525,7 +526,7 @@ async function run(kind: string, title: string, where: string, script: string, c
   const p = frame(mine, kind, title, where, program, request);
   let info: SessionInfo;
   try {
-    info = await invoke<SessionInfo>("create_session", {
+    info = await hostInvoke<SessionInfo>("session_lifecycle", "create_session", {
       spec: { label: program, role: "task", cwd, command: "/bin/sh", args: ["-c", script], peek: true, cols: p.term.cols, rows: p.term.rows },
     });
   } catch (e) {
@@ -536,13 +537,13 @@ async function run(kind: string, title: string, where: string, script: string, c
   // The row changed meanwhile, or a newer command came: this one runs on its own.
   if (open !== p) {
     earlyInteractive.delete(info.id);
-    if (info.interactive) invoke("kill_session", { session: info.id }).catch(console.error);
+    if (info.interactive) hostInvoke("session_lifecycle", "kill_session", { session: info.id }).catch(console.error);
     else released.add(info.id);
     return;
   }
   // A skiffd from before the peek ran it as a plain session, with a shell after it.
   if (!info.peek) {
-    invoke("kill_session", { session: info.id }).catch(console.error);
+    hostInvoke("session_lifecycle", "kill_session", { session: info.id }).catch(console.error);
     closePeek();
     return showError("This skiffd is older than the app. Restart skiffd to open files and diffs.");
   }
@@ -559,7 +560,7 @@ async function run(kind: string, title: string, where: string, script: string, c
     if (bytes.length) p.got = true;
     p.term.write(bytes, () => invoke("ack_output", { session: info.id, stream: n, bytes: bytes.length }).catch(console.error));
   };
-  await invoke("subscribe_output", { session: info.id, stream: n, onOutput: channel }).catch(showError);
+  await hostInvoke("session_terminal", "subscribe_output", { session: info.id, stream: n, onOutput: channel }).catch(showError);
   if (info.interactive || earlyInteractive.delete(info.id)) peekUpdated({ ...info, interactive: true });
   if (early.has(info.id)) {
     const code = early.get(info.id) ?? null;
@@ -573,7 +574,7 @@ export function peekUpdated(info: SessionInfo) {
   if (!info.interactive) return;
   if (held?.p.session === info.id) return reclaim(held);
   // A command let go as an app turned out to be a terminal tool: nothing shows it, so it ends.
-  if (released.delete(info.id)) return void invoke("kill_session", { session: info.id }).catch(console.error);
+  if (released.delete(info.id)) return void hostInvoke("session_lifecycle", "kill_session", { session: info.id }).catch(console.error);
   const p = open;
   if (!p) return;
   // A start is in flight: the update may be its command's, ahead of the reply.
@@ -617,7 +618,7 @@ function printed(term: Terminal): boolean {
 /** skiffd says a peek command ended. True when the session was a peek's. */
 export function peekExited(id: string, code: number | null): boolean {
   if (released.delete(id)) {
-    invoke("kill_session", { session: id }).catch(console.error);
+    hostInvoke("session_lifecycle", "kill_session", { session: id }).catch(console.error);
     return true;
   }
   // A held app ended. What it printed was for no one.

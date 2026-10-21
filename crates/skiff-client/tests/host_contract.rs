@@ -682,3 +682,90 @@ async fn m1e_terminal_is_gated_ordered_and_lag_reporting_on_the_negotiated_trans
         Err(Error::TransportLost)
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn m1g_lifecycle_and_groups_are_typed_and_separately_gated_on_the_negotiated_transport() {
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../../skiff-host-api/tests/fixtures/m1g.json")).unwrap();
+    let mut h = hello();
+    h.capabilities = vec![Capability::session_lifecycle()];
+    let (connection, mut peer) = connect(h, None).await;
+    let connection = connection.unwrap();
+    let row: Response =
+        serde_json::from_value(fixture["replies"][0]["result"]["Ok"].clone()).unwrap();
+    for value in fixture["lifecycle_requests"].as_array().unwrap() {
+        let request: Request = serde_json::from_value(value.clone()).unwrap();
+        let answer = match request {
+            Request::SessionKill { .. } | Request::SessionSeen { .. } => Response::Ok,
+            _ => row.clone(),
+        };
+        let (reply, ()) = tokio::join!(connection.request(request.clone()), async {
+            let envelope = peer.request().await;
+            assert_eq!(envelope.request, request);
+            peer.reply(envelope.id, Ok(answer.clone())).await;
+        });
+        assert_eq!(reply, Ok(answer));
+    }
+    // A service rejection stays typed; nothing is retried.
+    let kill = Request::SessionKill {
+        session: "s1".into(),
+    };
+    let (reply, ()) = tokio::join!(connection.request(kill.clone()), async {
+        let envelope = peer.request().await;
+        peer.reply(
+            envelope.id,
+            Err(Error::OperationFailed {
+                message: "no such session".into(),
+            }),
+        )
+        .await;
+    });
+    assert_eq!(
+        reply,
+        Err(Error::OperationFailed {
+            message: "no such session".into()
+        })
+    );
+    // A row where Ok belongs, or Ok where a row belongs, is malformed.
+    let (reply, ()) = tokio::join!(connection.request(kill), async {
+        let envelope = peer.request().await;
+        peer.reply(envelope.id, Ok(row.clone())).await;
+    });
+    assert!(matches!(reply, Err(Error::MalformedContract { .. })));
+    // Lifecycle grants no groups, and nothing is sent for them.
+    for request in [
+        Request::GroupList,
+        Request::GroupDelete { group: "g".into() },
+    ] {
+        assert_eq!(
+            connection.request(request).await,
+            Err(Error::UnsupportedCapability {
+                capability: Capability::session_groups()
+            })
+        );
+    }
+
+    let mut h = hello();
+    h.capabilities = vec![Capability::session_groups()];
+    let (connection, mut peer) = connect(h, None).await;
+    let connection = connection.unwrap();
+    let save: Request = serde_json::from_value(fixture["group_requests"][1].clone()).unwrap();
+    let stored: Response =
+        serde_json::from_value(fixture["replies"][2]["result"]["Ok"].clone()).unwrap();
+    let (reply, ()) = tokio::join!(connection.request(save.clone()), async {
+        let envelope = peer.request().await;
+        assert_eq!(envelope.request, save);
+        peer.reply(envelope.id, Ok(stored.clone())).await;
+    });
+    assert_eq!(reply, Ok(stored));
+    assert_eq!(
+        connection
+            .request(Request::SessionKill {
+                session: "s1".into()
+            })
+            .await,
+        Err(Error::UnsupportedCapability {
+            capability: Capability::session_lifecycle()
+        })
+    );
+}

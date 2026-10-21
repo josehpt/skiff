@@ -63,8 +63,7 @@ pub(crate) async fn remove_worktree(
     path: PathBuf,
     force: bool,
 ) -> Result<(), String> {
-    let (c, _) = ensure_client(&app).await?;
-    let sessions = c.list_sessions().await.map_err(err)?;
+    let sessions = crate::connection::inventory_now(&app).await?;
     project_edit(&handle, move || remove_worktree_now(&project, &path, force, &sessions)).await
 }
 

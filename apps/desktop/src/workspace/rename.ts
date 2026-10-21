@@ -2,7 +2,6 @@
 import { agentIcon } from "../appearance/agentIcon";
 import { agentName, taskTitle } from "./model";
 import type { Group, SessionInfo } from "../platform/types";
-import { invoke } from "@tauri-apps/api/core";
 import { $, h } from "../ui/dom";
 import { showError } from "../ui/alerts";
 import { saveGroup } from "../app/groups";
@@ -11,6 +10,7 @@ import { render } from "../app/render";
 import { S, sessions, upsert } from "../app/state";
 
 import { refocusTerminal } from "./view";
+import { hostInvoke } from "../app/hostCaps";
 
 /** What the operator has typed so far; a re-render rebuilds the input from it. */
 let renameDraft: string | null = null;
@@ -52,7 +52,7 @@ async function finishRename(id: string, name: string | null, byKey = false) {
   renameDraft = null;
   if (name !== null) {
     try {
-      const info = await invoke<SessionInfo>("rename_session", { session: id, name });
+      const info = await hostInvoke<SessionInfo>("session_lifecycle", "rename_session", { session: id, name });
       // The session may have ended during the call; do not bring it back.
       if (sessions.has(id)) upsert(info);
     } catch (e) {

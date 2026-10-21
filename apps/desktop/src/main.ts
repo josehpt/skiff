@@ -14,6 +14,7 @@ import type { Appearance, DaemonStatus } from "./platform/types";
 import { invoke } from "@tauri-apps/api/core";
 import { switcher } from "./app/commands";
 import { loadProjects, refreshSessions, reloadDaemon, setDaemon, subscribeEvents } from "./app/daemon";
+import { loadHostCaps } from "./app/hostCaps";
 import { $ } from "./ui/dom";
 import { showError } from "./ui/alerts";
 import { loadGroups } from "./app/groups";
@@ -91,6 +92,8 @@ async function boot() {
   }
   if (!status.connected) return;
 
+  // What the selected Host offers decides which session surfaces it gets.
+  await loadHostCaps().catch(console.error);
   await subscribeEvents();
 
   await refreshSessions();

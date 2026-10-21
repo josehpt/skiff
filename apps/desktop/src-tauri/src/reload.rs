@@ -14,7 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 use serde::Serialize;
-use skiff_client::{DaemonInfo, Refused};
+use skiff_client::{host::local::ProcessControl, DaemonInfo, Refused};
 #[cfg(test)]
 use skiff_client::Client;
 use skiff_core::session::{SessionInfo, SessionState};
@@ -62,7 +62,8 @@ impl From<String> for NoPlan {
 
 /// A reload onto the bundled skiffd, or why there is none. `same`: the
 /// daemon is another build of the same version, so the same version is new.
-pub(crate) async fn plan(info: &DaemonInfo, same: bool) -> Result<Plan, NoPlan> {
+/// It runs the bundled binary, so only a local endpoint may: `_local` proves it.
+pub(crate) async fn plan(_local: &ProcessControl, info: &DaemonInfo, same: bool) -> Result<Plan, NoPlan> {
     plan_with(info, &daemon_binary(), same).await
 }
 

@@ -36,6 +36,7 @@ import { groupThemeMenu, projectThemeMenu, sessionThemeMenu } from "../appearanc
 import { focusPane, refocusTerminal, removeFromGroup, showGroup, splitWith, unsplit } from "./view";
 import { resumeAllEntry, resumeOffer, resumePane } from "../terminal/resume";
 import { ledgerFolded, ledgerShown, toggleLedger } from "./ledger";
+import { hostCan, hostInvoke } from "../app/hostCaps";
 
 async function setIcon(p: Project, icon: string | null) {
   try {
@@ -207,7 +208,7 @@ export function projectMenu(p: Project, x: number, y: number) {
   const w = p.worktrees.find((x) => x.path === sel) ?? p.worktrees.find((x) => x.is_main) ?? p.worktrees[0];
   const plus = w && [...document.querySelectorAll<HTMLElement>("#sidebar-scroll .wt-plus")].find((b) => b.dataset.wt === w.path);
   ctxMenu.open(x, y, p.path, [
-    { icon: "indicators-plus", label: "New session…", hint: keyLabel("new-session"), disabled: !w, run: () => w && launchMenu.open(plus ?? { x, y }, p, w) },
+    { icon: "indicators-plus", label: "New session…", hint: keyLabel("new-session"), disabled: !w || !hostCan("session_lifecycle"), run: () => w && launchMenu.open(plus ?? { x, y }, p, w) },
     { icon: "code-git-branch", label: "New worktree…", hint: keyLabel("new-worktree"), disabled: !!p.error, run: () => newWorktree(p) },
     { icon: "indicators-square-arrow-out-up-right", label: "Show in file manager", hint: keyLabel("project-folder"), run: run["project-folder"] },
     { icon: "code-copy", label: "Copy path", hint: keyLabel("project-copy-path"), run: run["project-copy-path"] },
@@ -228,7 +229,7 @@ export function projectMenu(p: Project, x: number, y: number) {
 export function worktreeMenu(p: Project, w: Worktree, x: number, y: number) {
   const plus = [...document.querySelectorAll<HTMLElement>("#sidebar-scroll .wt-plus")].find((b) => b.dataset.wt === w.path);
   const entries: MenuEntry[] = [
-    { icon: "indicators-plus", label: "New session…", hint: keyLabel("new-session"), disabled: !!p.error, run: () => launchMenu.open(plus ?? { x, y }, p, w) },
+    { icon: "indicators-plus", label: "New session…", hint: keyLabel("new-session"), disabled: !!p.error || !hostCan("session_lifecycle"), run: () => launchMenu.open(plus ?? { x, y }, p, w) },
     ...(showsChanges(p) && hasChanges(w) ? [{ icon: "code-git-branch", label: "Review all changes", run: () => reviewChanges(w) }] : []),
     { icon: "indicators-square-arrow-out-up-right", label: "Show in file manager", run: () => void openPath(w.path).catch(showError) },
     { icon: "code-copy", label: "Copy path", run: () => void navigator.clipboard.writeText(w.path).catch(showError) },
@@ -249,9 +250,9 @@ export function rowMenu(s: SessionInfo, x: number, y: number) {
   if (ids.length > 1 && ids.includes(s.id)) return selectionMenu(ids, x, y);
   ctxMenu.open(x, y, sessionLabel(s), [
     ...(groupOf(s.id)
-      ? [{ icon: "code-ungroup", label: "Remove from group", hint: keyLabel("close-pane"), run: () => removeFromGroup(s.id) }]
+      ? [{ icon: "code-ungroup", label: "Remove from group", hint: keyLabel("close-pane"), disabled: !hostCan("session_groups"), run: () => removeFromGroup(s.id) }]
       : []),
-    { icon: "tools-pencil", label: "Rename", hint: keyLabel("rename"), run: () => startSessionRename(s.id) },
+    { icon: "tools-pencil", label: "Rename", hint: keyLabel("rename"), disabled: !hostCan("session_lifecycle"), run: () => startSessionRename(s.id) },
     themeEntry(s),
     endEntry(s),
   ]);
@@ -306,13 +307,13 @@ export function deleteKeyMenu(el: HTMLElement) {
   if (ids.length > 1 && ids.includes(s.id)) return pick(endSelectedEntry(ids));
   if (!groupOf(s.id)) return pick(endEntry(s));
   ctxMenu.open(x, y, sessionLabel(s), [
-    { icon: "code-ungroup", label: "Remove from group", hint: keyLabel("close-pane"), run: () => removeFromGroup(s.id) },
+    { icon: "code-ungroup", label: "Remove from group", hint: keyLabel("close-pane"), disabled: !hostCan("session_groups"), run: () => removeFromGroup(s.id) },
     endEntry(s),
   ]);
 }
 
 function themeEntry(s: SessionInfo): MenuEntry {
-  return { icon: "tools-sparkles", label: "Session theme…", hint: keyLabel("theme"), run: () => void sessionThemeMenu(s) };
+  return { icon: "tools-sparkles", label: "Session theme…", hint: keyLabel("theme"), disabled: !hostCan("session_lifecycle"), run: () => void sessionThemeMenu(s) };
 }
 
 /** Right-click, End session: stops the process and drops it from the list. */
@@ -323,6 +324,7 @@ export function endEntry(s: SessionInfo): MenuEntry {
       label: "Remove from list…",
       hint: keyLabel("end-session"),
       danger: true,
+      disabled: !hostCan("session_lifecycle"),
       run: async () => {
         const ok = await confirmAction({
           title: `Remove ${taskTitle(s)}?`,
@@ -339,6 +341,7 @@ export function endEntry(s: SessionInfo): MenuEntry {
     label: "End session…",
     hint: keyLabel("end-session"),
     danger: true,
+    disabled: !hostCan("session_lifecycle"),
     // A running agent loses its work: ask once more.
     run: async () => {
       const ok = await confirmAction({
@@ -366,12 +369,13 @@ function endManyEntry(ids: string[], label: string, title: string): MenuEntry {
     for (const id of ids) void endSession(id);
   };
   if (!running.length) {
-    return { icon: "tools-trash-2", label: `Remove ${ids.length} from list`, danger: true, run: end };
+    return { icon: "tools-trash-2", label: `Remove ${ids.length} from list`, danger: true, disabled: !hostCan("session_lifecycle"), run: end };
   }
   return {
     icon: "indicators-square-stop",
     label,
     danger: true,
+    disabled: !hostCan("session_lifecycle"),
     run: async () => {
       const ok = await confirmAction({
         title,
@@ -386,7 +390,7 @@ function endManyEntry(ids: string[], label: string, title: string): MenuEntry {
 
 async function endSession(id: string) {
   try {
-    await invoke("kill_session", { session: id });
+    await hostInvoke("session_lifecycle", "kill_session", { session: id });
   } catch (e) {
     showError(e);
   }
@@ -399,9 +403,9 @@ export function paneMenu(id: string, x: number, y: number) {
   if (isSkiffAgent(id)) return skiffAgentMenu(s, x, y);
   const full = splitFull();
   const entries: MenuEntry[] = [
-    { icon: "layouts-panel-left:flip", label: "Add pane right…", hint: keyLabel("split-right"), disabled: full, run: () => splitMenu(id, "row", x, y) },
-    { icon: "layouts-panel-bottom", label: "Add pane below…", hint: keyLabel("split-down"), disabled: full, run: () => splitMenu(id, "col", x, y) },
-    { icon: "tools-pencil", label: "Rename", hint: keyLabel("rename"), run: () => startSessionRename(id) },
+    { icon: "layouts-panel-left:flip", label: "Add pane right…", hint: keyLabel("split-right"), disabled: full || !hostCan("session_lifecycle"), run: () => splitMenu(id, "row", x, y) },
+    { icon: "layouts-panel-bottom", label: "Add pane below…", hint: keyLabel("split-down"), disabled: full || !hostCan("session_lifecycle"), run: () => splitMenu(id, "col", x, y) },
+    { icon: "tools-pencil", label: "Rename", hint: keyLabel("rename"), disabled: !hostCan("session_lifecycle"), run: () => startSessionRename(id) },
   ];
   const offer = resumeOffer(s);
   if (offer) entries.unshift({ icon: "schedule-refresh-cw", label: `Resume ${offer.agent}`, run: () => resumePane(id, { x, y }) });
@@ -412,7 +416,7 @@ export function paneMenu(id: string, x: number, y: number) {
   entries.push({ icon: "view-focus", label: S.focusMode ? "Leave focus mode" : "Focus mode", hint: keyLabel("focus-mode"), run: toggleFocusMode });
   entries.push(themeEntry(s));
   if (shownIds().length > 1) {
-    entries.push({ icon: "code-ungroup", label: "Remove from group", hint: keyLabel("close-pane"), run: () => removeFromGroup(id) });
+    entries.push({ icon: "code-ungroup", label: "Remove from group", hint: keyLabel("close-pane"), disabled: !hostCan("session_groups"), run: () => removeFromGroup(id) });
   }
   entries.push(endEntry(s));
   ctxMenu.open(x, y, sessionLabel(s), entries);
@@ -477,8 +481,8 @@ export function groupMenu(g: Group, x: number, y: number) {
     ...(resume ? [resume] : []),
     ...groupStartEntries(g),
     { head: "GROUP" },
-    { icon: "tools-pencil", label: "Rename", hint: keyLabel("rename"), run: () => startRename(g) },
-    { icon: "tools-sparkles", label: "Group theme…", hint: keyLabel("theme"), run: () => void groupThemeMenu(g) },
+    { icon: "tools-pencil", label: "Rename", hint: keyLabel("rename"), disabled: !hostCan("session_groups"), run: () => startRename(g) },
+    { icon: "tools-sparkles", label: "Group theme…", hint: keyLabel("theme"), disabled: !hostCan("session_lifecycle"), run: () => void groupThemeMenu(g) },
     ...groupCloseEntries(g),
   ]);
 }
@@ -497,7 +501,7 @@ function groupStartEntries(g: Group): MenuEntry[] {
       glyph: launchIcon(a),
       label: a?.id ?? "Shell",
       hint: launchDigit(i),
-      disabled: full,
+      disabled: full || !hostCan("session_lifecycle"),
       run: () => {
         if (g.id !== S.activeGroup) showGroup(g.id);
         const target = g.focus && filled.includes(g.focus) ? g.focus : filled[0];
@@ -535,7 +539,7 @@ export async function killGroup(id: string) {
     if (!ok) return refocusTerminal();
   }
   clearSelection();
-  const results = await Promise.allSettled(ids.filter((id) => sessions.has(id)).map((id) => invoke("kill_session", { session: id })));
+  const results = await Promise.allSettled(ids.filter((id) => sessions.has(id)).map((id) => hostInvoke("session_lifecycle", "kill_session", { session: id })));
   for (const result of results) {
     if (result.status === "rejected") {
       showError(result.reason);
@@ -555,10 +559,10 @@ export function groupCloseEntries(g: Group | null): Exclude<MenuEntry, { head: s
     if (group) ungroup(group);
   };
   const entries: Exclude<MenuEntry, { head: string }>[] = [
-    { icon: "code-ungroup", label: "Ungroup", hint: keyLabel("close-pane"), disabled: !g, run: drop },
+    { icon: "code-ungroup", label: "Ungroup", hint: keyLabel("close-pane"), disabled: !g || !hostCan("session_groups"), run: drop },
   ];
   if (hasSessions) entries.push(
-    { icon: "indicators-square-stop", label: "Kill all sessions…", hint: keyLabel("end-session"), danger: true, run: () => void killGroup(g!.id) },
+    { icon: "indicators-square-stop", label: "Kill all sessions…", hint: keyLabel("end-session"), danger: true, disabled: !hostCan("session_lifecycle"), run: () => void killGroup(g!.id) },
   );
   return entries;
 }

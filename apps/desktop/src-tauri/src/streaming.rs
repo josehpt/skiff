@@ -3,7 +3,7 @@ use skiff_client::host::{local::{legacy_attach, legacy_detach, legacy_output}, O
 use skiff_core::protocol::Event;
 use tauri::{ipc::{Channel, InvokeResponseBody}, State};
 use tokio::sync::Notify;
-use crate::connection::{App, err, terminal_now, updates_now};
+use crate::connection::{App, err, host_now, updates_now};
 
 /// One write to the page holds at most this much, so xterm can yield to the
 /// page between pieces instead of parsing one long chunk.
@@ -59,7 +59,7 @@ pub(crate) async fn subscribe_output(
     stream: u32,
     on_output: Channel<InvokeResponseBody>,
 ) -> Result<(), String> {
-    let c = terminal_now(&app).await?;
+    let c = host_now(&app).await?;
     // Listen first: the snapshot can arrive before the attach reply.
     let mut rx = legacy_output(&c, &session).map_err(err)?;
     legacy_attach(&c, &session).await.map_err(err)?;
@@ -175,7 +175,7 @@ pub(crate) async fn unsubscribe_output(app: State<'_, App>, session: String) -> 
     if let Some(task) = app.subs.lock().await.remove(&session) {
         task.abort();
     }
-    let c = terminal_now(&app).await?;
+    let c = host_now(&app).await?;
     legacy_detach(&c, &session).await.map_err(err)
 }
 

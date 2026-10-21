@@ -8,6 +8,7 @@ import { agentKind } from "../appearance/agentIcon";
 import { keepRow } from "../workspace/selection";
 import { revealSession } from "../workspace/view";
 import { openPath } from "../terminal/peek";
+import { hostInvoke } from "./hostCaps";
 
 /** The name until Settings has one. skiffd's setup keeps the same default. */
 export const DEFAULT_NAME = "Skipper";
@@ -259,7 +260,7 @@ export function syncSkiffAgent() {
 let shownName: string | null = null;
 
 function rename(id: string, name: string) {
-  invoke<SessionInfo>("rename_session", { session: id, name })
+  hostInvoke<SessionInfo>("session_lifecycle", "rename_session", { session: id, name })
     .then((info) => {
       const s = sessions.get(id);
       if (s) s.name = info.name;

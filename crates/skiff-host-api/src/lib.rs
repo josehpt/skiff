@@ -4,10 +4,14 @@ use std::{collections::BTreeMap, fmt};
 
 use serde::{Deserialize, Serialize};
 
+pub mod groups;
 pub mod inventory;
+pub mod lifecycle;
 pub mod terminal;
 pub mod updates;
+pub use groups::Group;
 pub use inventory::InventorySession;
+pub use lifecycle::SessionSpec;
 pub use terminal::{EchoTimes, TerminalFrame};
 pub use updates::SessionUpdate;
 
@@ -18,6 +22,8 @@ pub const SESSION_SCREEN: &str = "session_screen";
 pub const SESSION_INVENTORY: &str = "session_inventory";
 pub const SESSION_UPDATES: &str = "session_updates";
 pub const SESSION_TERMINAL: &str = "session_terminal";
+pub const SESSION_LIFECYCLE: &str = "session_lifecycle";
+pub const SESSION_GROUPS: &str = "session_groups";
 
 macro_rules! identity {
     ($name:ident) => {
@@ -89,6 +95,21 @@ pub struct Capability {
     pub version: u32,
 }
 impl Capability {
+    /// Create, end (kill), rename, theme and mark seen one session. Grants
+    /// no terminal I/O, inventory or group operation.
+    pub fn session_lifecycle() -> Self {
+        Self {
+            name: SESSION_LIFECYCLE.into(),
+            version: 1,
+        }
+    }
+    /// List, save and delete the Host's session groups.
+    pub fn session_groups() -> Self {
+        Self {
+            name: SESSION_GROUPS.into(),
+            version: 1,
+        }
+    }
     /// Attach/output, input, resize and detach of existing sessions; grants
     /// no create, kill, rename or inventory operation.
     pub fn session_terminal() -> Self {
@@ -241,7 +262,7 @@ pub struct Session {
     pub generation: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Request {
     Hello,
@@ -292,6 +313,37 @@ pub enum Request {
         #[serde(default)]
         paste: bool,
     },
+    /// Answers `session` with the new row. Not retried after a timeout:
+    /// the session may have started.
+    SessionCreate {
+        spec: SessionSpec,
+    },
+    /// Ends the session's process. Answers `ok`. The caller asks first.
+    SessionKill {
+        session: String,
+    },
+    /// Answers `session` with the renamed row.
+    SessionRename {
+        session: String,
+        name: String,
+    },
+    /// `None` clears the session's own theme. Answers `session`.
+    SessionSetTheme {
+        session: String,
+        theme: Option<String>,
+    },
+    /// Clears unread output and the agent exit mark. Answers `ok`.
+    SessionSeen {
+        session: String,
+    },
+    GroupList,
+    /// Creates (empty id) or replaces a group. Answers `group` as stored.
+    GroupSave {
+        group: Group,
+    },
+    GroupDelete {
+        group: String,
+    },
 }
 impl Request {
     pub fn capability(&self) -> Option<Capability> {
@@ -304,6 +356,14 @@ impl Request {
             | Self::TerminalDetach { .. }
             | Self::TerminalResize { .. }
             | Self::TerminalInput { .. } => Some(Capability::session_terminal()),
+            Self::SessionCreate { .. }
+            | Self::SessionKill { .. }
+            | Self::SessionRename { .. }
+            | Self::SessionSetTheme { .. }
+            | Self::SessionSeen { .. } => Some(Capability::session_lifecycle()),
+            Self::GroupList | Self::GroupSave { .. } | Self::GroupDelete { .. } => {
+                Some(Capability::session_groups())
+            }
             Self::ListSessions
             | Self::Write { .. }
             | Self::Resize { .. }
@@ -319,6 +379,14 @@ impl Request {
                 | (Self::ConnectionStatus, Response::ConnectionStatus { .. })
                 | (Self::SessionScreen { .. }, Response::SessionScreen { .. })
                 | (Self::SessionInventory, Response::SessionInventory { .. })
+                | (
+                    Self::SessionCreate { .. }
+                        | Self::SessionRename { .. }
+                        | Self::SessionSetTheme { .. },
+                    Response::Session { .. }
+                )
+                | (Self::GroupList, Response::Groups { .. })
+                | (Self::GroupSave { .. }, Response::Group { .. })
         ) || (!matches!(
             self,
             Self::Hello
@@ -326,18 +394,27 @@ impl Request {
                 | Self::ConnectionStatus
                 | Self::SessionScreen { .. }
                 | Self::SessionInventory
+                | Self::SessionCreate { .. }
+                | Self::SessionRename { .. }
+                | Self::SessionSetTheme { .. }
+                | Self::GroupList
+                | Self::GroupSave { .. }
         ) && matches!(reply, Response::Ok))
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Envelope {
     pub id: u64,
     pub request: Request,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// `Session` is boxed: a row would otherwise size every reply. Same JSON.
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Response {
+    Session { session: Box<InventorySession> },
+    Groups { groups: Vec<Group> },
+    Group { group: Group },
     SessionInventory { sessions: Vec<InventorySession> },
     SessionScreen { lines: Vec<String> },
     ConnectionStatus { version: String, protocol: u32 },
@@ -416,7 +493,7 @@ impl Event {
         }
     }
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Message {
     Reply {

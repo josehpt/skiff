@@ -1,4 +1,4 @@
-# Host API — M0 contract and local M1a–M1f seams
+# Host API — M0 contract and local M1a–M1g seams
 
 Tracking: [M0 #156](https://github.com/solutionscay/skiff/issues/156),
 [epic #155](https://github.com/solutionscay/skiff/issues/155).
@@ -19,8 +19,10 @@ push to the separate wiki repository.
   is the M0 operation family; M1a adds `connection_status@1` and M1b adds
   read-only `session_screen@1`; M1c adds `session_inventory@1`; M1d adds read-only
   `session_updates@1` events; M1e adds `session_terminal@1` (attach, output,
-  input, resize, detach of existing sessions). Unknown names/majors are retained as metadata
-  and ignored unless an operation requires them.
+  input, resize, detach of existing sessions); M1g adds `session_lifecycle@1`
+  (create, kill, rename, theme, seen) and `session_groups@1` (list, save, delete).
+  Unknown names/majors are retained as metadata and ignored unless an operation
+  requires them.
 
 The ownership rule is: if data would differ on another Host, it must eventually
 come from that Host. Projects/fleets/worktrees, Git, files/images, sessions/groups,
@@ -644,6 +646,157 @@ Tradeoff:
 - The local adapter remains a Host contract in front of skiffd's legacy wire. It
   is not a Host envelope on the socket.
 
+## M1g: session lifecycle and groups, and capability-gated surfaces
+
+### What moved
+
+These Tauri commands now reach skiffd only through the selected
+`HostConnection`, behind two new capabilities:
+
+- `session_lifecycle@1`: `create_session`, `kill_session`, `rename_session`,
+  `set_session_theme`, `session_seen`. The Skipper folder change also ends
+  Skipper's session through it.
+- `session_groups@1`: `list_groups`, `save_group`, `delete_group`.
+
+`remove_worktree`'s live-session check and the watcher's watch-pid read now use
+the M1c inventory, not a raw `list_sessions`.
+
+The Tauri command names, arguments, result JSON, legacy error text,
+confirmations and UI flows are unchanged. The page still asks before End,
+Kill all, Remove and Close, exactly as before.
+
+### Contract (additive, API major 1)
+
+- Requests:
+  - `session_create { spec }` answers `session { session }`
+  - `session_kill { session }` answers `ok`
+  - `session_rename { session, name }` answers `session`
+  - `session_set_theme { session, theme|null }` answers `session`
+  - `session_seen { session }` answers `ok`
+  - `group_list` answers `groups { groups }`
+  - `group_save { group }` answers `group { group }`
+  - `group_delete { group }` answers `ok`
+- A reply of any other kind is `malformed_contract`.
+- `SessionSpec` (`skiff-host-api::lifecycle`) mirrors the desktop spec:
+  - It keeps the same defaults: shell role, 120×40, no peek, null name/cwd/command.
+  - Paths are opaque UTF-8 host strings.
+  - It has no coordinator flag. That flag is never on the legacy wire, and a core
+    spec that sets it is refused before sending.
+- `Group`, `Layout` and `SplitDir` (`skiff-host-api::groups`) keep the existing
+  JSON. Because of the `f32` split ratio, `Request`, `Envelope`, `Response` and
+  `Message` are now `PartialEq` without `Eq`.
+- Session rows reuse the lossless M1c `InventorySession`.
+- Mapping is exhaustive both ways (`skiff-client::host::lifecycle`), as in M1c.
+- Golden fixture: `tests/fixtures/m1g.json`, including the legacy frame map.
+
+### Local adapter
+
+- `LegacySessions` on the same selected `Arc<Client>` sends exactly the old
+  frames: `create_session`, `kill`, `rename_session`, `set_session_theme`,
+  `seen`, `list_groups`, `save_group`, `delete_group`.
+- **Errors keep their provenance:**
+  - a daemon error is `operation_failed`
+  - a decode failure is `malformed_contract`
+  - a stall is `timed_out`
+  - a lost connection is `transport_lost`
+- The `legacy_*` helpers in `host::local` give each Tauri command its old
+  result and error text.
+- **Lane:** both families use the bounded read lane within the 20-second budget,
+  and the status reservation stays. A project close that ends many sessions at
+  once waits for slots rather than failing with `host_busy`.
+- **No retry:** nothing is retried. A timed-out create or kill may have run.
+- **No fallback:** a missing or wrong-major capability is refused before any
+  frame, and an adapter cannot advertise a family it has no source for.
+
+### Capabilities in the GUI: one mechanism
+
+- `host_capabilities` returns the selected Host's `name@major` list.
+- **`app/hostCaps.ts`** is the page's only path for session and terminal
+  commands. It covers inventory, events, screen, attach/output/ack/input/resize/
+  detach, lifecycle and groups.
+  - `hostInvoke(cap, cmd, args)` refuses a command whose capability the Host
+    does not advertise ("This Host does not offer …"), before any IPC.
+  - Once the capabilities are known it calls `invoke` synchronously, so
+    keystrokes keep their order.
+  - The first call waits for the first answer.
+- **`hostCan(cap)` decides whether a surface offers its action.** Unavailable
+  actions are greyed in the menu bar and left out of the palette. This covers
+  New session, Rename, Session theme, End session, Add pane, Remove from group,
+  Mission control and the context menus (session, pane, worktree, project,
+  group, selection, Kill all, Ungroup, Group theme).
+- **Load points:** capabilities load at launch before the event stream, and
+  again after a daemon reload.
+- **Before the first answer, surfaces stay as they are.** The call itself still
+  waits and checks.
+- **Rust checks again on every request,** so a page bug cannot bypass a
+  capability.
+- **Local behavior:** the local Host advertises every family, so nothing visible
+  changes.
+
+### Audit while integrating
+
+- **Lifecycle tokens.** `reload::plan` ran the bundled `skiffd --reload-info`
+  from the daemon check without the endpoint-local token. It now takes
+  `ProcessControl`, and the check plans no reload without one.
+- Every desktop action that spawns, signals, reloads, links or replaces a Host
+  process now requires the token:
+  - daemon spawn
+  - compatibility stop/replace
+  - restart
+  - reload plan and run
+  - CLI link
+  - watcher start/replace
+- `install_cli` (an explicit user action on this Mac) and the memory diagnostics
+  `ps` read of this Mac's processes are not Host lifecycle actions.
+- **Identity and reconnect** (M1f) were re-checked on the paths M1g touches. No
+  defect was found:
+  - a refused identity leaves the previous Hello in place, so a changed Host
+    stays refused
+  - restart signals only a local peer pid under the token
+  - SameInstance still renews subscriptions, because receivers close with their
+    owner
+
+### Still local (not Host APIs yet)
+
+These still reach local code or the legacy Client directly. They stay in the
+boundary baseline, assigned to later milestones. None of them is a Host API.
+
+| Surface | Commands / code | Milestone |
+|---|---|---|
+| Projects, fleets, worktrees, project presentation | `list_projects`, `get_project`, `add_project`, `remove_project`, `reorder_projects`, `set_project_*`, `add_worktree`, `remove_worktree`, `init_repository`, `config.rs` | M4 |
+| Git status and diffs | `git_changes`, `hidden_changes_projects`, `open_diff` | M4 |
+| Files and previews | `list_dir`, `preview_file`, `read_image`, `open_file`, `open_path`, `reveal_file`, `inspect_folder`, `files_projects` | M5 |
+| Ledger | `ledger_rows`, `ledger::watch` | M6 |
+| Skipper and its folder, task types, watcher | `get_skiff_agent`, `set_skiff_agent`, `open_skiff_agent` (coordinator), `start_skiff_watch`, `skiff_watch_log`, `preview_skiff_folder`, `change_skiff_folder` (except its kill) | M6 |
+| Agent list and commands | `list_agents`, `list_agent_sessions`, `set_agents`, `set_agent_command` (skiffd-served, legacy Client) | not assigned in #155; propose M3 with remote session creation |
+| Endpoint-local lifecycle and diagnostics | `daemon_status` compatibility checks, `restart_daemon`, `reload_daemon`, `trace_set` | local only, token-guarded |
+
+Client-owned surfaces (appearance, keys, menus, theme files, clipboard,
+workspace files, traces and window state) stay in the client.
+
+### Tests
+
+- **Contract:** `m1g.json` round trips; exact reply kinds per request; defaults;
+  an ignored coordinator field; bad roles, dimensions, layouts and directions
+  refused.
+- **Negotiated transport:** both families typed and separately gated; a service
+  error stays typed; a wrong reply kind is malformed; nothing is sent without
+  the capability.
+- **Selected private socket** (`session_lifecycle.rs`): every operation compared
+  with the legacy Client on one Client, covering exact frames, results, daemon
+  errors, wrong-kind and unreadable replies, the lost-connection text, the
+  unused second endpoint and a refused coordinator spec.
+- **Fakes:** no capability, no source or another major means no call; 80
+  concurrent kills complete without `host_busy` (at most 63 in flight);
+  disconnect wakes a waiting call without replay.
+- **Desktop entry point:** create, kill error, list and save group on the same
+  connection as status, screen, inventory, updates and the terminal, plus the
+  `host_capabilities` list.
+- **TS** (`tests/hostCaps.test.ts`): offered call passes exact arguments; a
+  missing or other-major capability is refused with no IPC; keystroke order
+  holds across the first answer and later calls are synchronous; a reload
+  re-reads the capabilities.
+
 ## M0 demo and handoff
 
 M0 has zero visible behavior changes: desktop source, daemon source, protocol,
@@ -653,9 +806,12 @@ performs the identical call. Test-only paired streams/private sockets prove the
 old Ping JSON, protocol 27, ordered raw input and snapshot/output bytes still work.
 Existing config/ledger fixture tests cover their unchanged on-disk contracts.
 
-Remaining M1 work after M1f: session lifecycle/mutation routing and
-capability-driven UI surfaces. The topology is decided structurally (M1f); M2
-measures RTT over a real forward.
+After M1g, every session-plane surface the desktop uses goes through the
+selected Host, behind its own capability, and the page gates those surfaces on
+the advertised capabilities. The agent list and Skipper's coordinator are the
+exceptions (see M1g, Still local). Projects, Git, files, ledger and Skipper stay
+local until M4–M6. The topology is decided structurally (M1f); M2 measures RTT
+over a real forward.
 M2–M6 own transport, services and data APIs. This document intentionally does not
 implement SSH, a host process, host selection, migrations or data-location changes.
 

@@ -143,11 +143,24 @@ pub(crate) async fn inventory_now(app: &App) -> Result<Vec<skiff_core::session::
     skiff_client::host::local::legacy_inventory(&host.connection()).await.map_err(err)
 }
 
-/// The M1e terminal plane: attach, output, input and resize of the same
-/// selected owner. The caller keeps no Client of its own.
-pub(crate) async fn terminal_now(app: &App) -> Result<Arc<HostConnection>, String> {
+/// The selected owner's Host connection: the M1e terminal plane and the M1g
+/// session lifecycle and groups. The caller keeps no Client of its own.
+pub(crate) async fn host_now(app: &App) -> Result<Arc<HostConnection>, String> {
     let (host, _) = ensure_host(app).await?;
     Ok(host.connection())
+}
+
+/// The selected Host's capabilities as `name@major`, for the page: it offers
+/// a session or terminal surface only when the Host has its capability. The
+/// Host connection checks them again on every request.
+#[tauri::command]
+pub(crate) async fn host_capabilities(app: State<'_, App>) -> Result<Vec<String>, String> {
+    let c = host_now(&app).await?;
+    Ok(capability_names(&c))
+}
+
+fn capability_names(c: &HostConnection) -> Vec<String> {
+    c.hello().capabilities.iter().map(|c| format!("{}@{}", c.name, c.version)).collect()
 }
 
 /// The one M1d event path: page events from the same selected owner. The
@@ -253,10 +266,13 @@ async fn check_info(app: &App, c: &Client, info: Option<skiff_client::DaemonInfo
         *app.warning.lock().await = None;
         return Check::Use;
     }
-    // Never a downgrade, and one try per app run.
+    // Never a downgrade, and one try per app run. Planning runs the bundled
+    // skiffd and replacing signals the daemon: endpoint-local only.
+    let control = app.local().process_control();
     let mut old_build = None;
-    if (order.is_lt() || other_build) && !app.reload_tried.load(Ordering::Relaxed) {
-        match reload::plan(&info, other_build).await {
+    let planned = (order.is_lt() || other_build) && !app.reload_tried.load(Ordering::Relaxed);
+    if let (true, Some(local)) = (planned, &control) {
+        match reload::plan(local, &info, other_build).await {
             Ok(plan) => {
                 *app.reload.lock().await = Some(plan);
                 *app.warning.lock().await = None;
@@ -290,7 +306,6 @@ async fn check_info(app: &App, c: &Client, info: Option<skiff_client::DaemonInfo
     // Never a downgrade: a newer daemon keeps running, whatever its protocol.
     let stale = !order.is_gt() && (!same_protocol || order.is_lt() || other_build);
     // Never SIGKILL here: a daemon that does not stop keeps running as it is.
-    let control = app.local().process_control();
     if let (true, true, Some(0), Some(pid), Some(control)) = (may_replace, stale, live, c.daemon_pid, control) {
         if stop_daemon(&control, pid, false).await {
             *app.replaced.lock().await = Some(version);
@@ -539,6 +554,24 @@ mod tests {
                 let mut bytes = serde_json::to_vec(&reply).unwrap(); bytes.push(b'\n');
                 stream.get_mut().write_all(&bytes).await.unwrap();
             }
+            // M1g: lifecycle and groups send exactly the legacy frames.
+            let spec: skiff_core::session::SessionSpec = serde_json::from_value(serde_json::json!({"label":"sh","cwd":"/srv/λ","cols":90,"rows":20})).unwrap();
+            let group: skiff_core::group::Group = serde_json::from_value(serde_json::json!({"name":"G","layout":{"type":"pane","session":"t1"}})).unwrap();
+            let mut row = inventory[0].clone();
+            row["id"] = "made".into();
+            for (id, request, reply) in [
+                (14, skiff_core::protocol::Request::CreateSession { spec }, serde_json::json!({"type":"session","session":row})),
+                (15, skiff_core::protocol::Request::Kill { session: "gone".into() }, serde_json::json!({"type":"error","message":"no such session"})),
+                (16, skiff_core::protocol::Request::ListGroups, serde_json::json!({"type":"groups","groups":[]})),
+                (17, skiff_core::protocol::Request::SaveGroup { group }, serde_json::json!({"type":"group","group":{"id":"g1","name":"G","layout":{"type":"pane","session":"t1"},"focus":null}})),
+            ] {
+                line.clear();
+                stream.read_line(&mut line).await.unwrap();
+                assert_eq!(serde_json::from_str::<serde_json::Value>(&line).unwrap(), legacy(id, request));
+                let mut reply = reply; reply["id"] = id.into();
+                let mut bytes = serde_json::to_vec(&reply).unwrap(); bytes.push(b'\n');
+                stream.get_mut().write_all(&bytes).await.unwrap();
+            }
             // Keep the one connection alive through the reuse assertions.
             line.clear();
             stream.read_line(&mut line).await.ok();
@@ -568,7 +601,7 @@ mod tests {
             assert_eq!(serde_json::to_value(updates.recv().await.unwrap()).unwrap(), *want);
         }
         // M1e: attach/output/input/resize/detach on the same selected owner.
-        let terminal = terminal_now(&app).await.unwrap();
+        let terminal = host_now(&app).await.unwrap();
         assert!(Arc::ptr_eq(&terminal, &live));
         let mut output = skiff_client::host::local::legacy_output(&terminal, "t1").unwrap();
         skiff_client::host::local::legacy_attach(&terminal, "t1").await.unwrap();
@@ -587,6 +620,16 @@ mod tests {
         // Detach closes the receiver first, as unsubscribe did.
         assert_eq!(output.recv().await, Err(skiff_client::host::OutputGap::Closed));
         let mut reattached = skiff_client::host::local::legacy_output(&terminal, "t1").unwrap();
+        // M1g: lifecycle and groups on the same selected owner, and the
+        // capabilities the page reads.
+        assert_eq!(capability_names(&terminal), ["connection_status@1", "session_screen@1", "session_inventory@1", "session_updates@1", "session_terminal@1", "session_lifecycle@1", "session_groups@1"]);
+        let made = skiff_client::host::local::legacy_create(&terminal, serde_json::from_value(serde_json::json!({"label":"sh","cwd":"/srv/λ","cols":90,"rows":20})).unwrap()).await.unwrap();
+        assert_eq!(made.id, "made");
+        assert_eq!(skiff_client::host::local::legacy_kill(&terminal, "gone").await.unwrap_err().to_string(), "no such session");
+        assert!(skiff_client::host::local::legacy_groups(&terminal).await.unwrap().is_empty());
+        let saved = skiff_client::host::local::legacy_save_group(&terminal, serde_json::from_value(serde_json::json!({"name":"G","layout":{"type":"pane","session":"t1"}})).unwrap()).await.unwrap();
+        assert_eq!(saved.id, "g1");
+        assert!(Arc::ptr_eq(&owner, app.host.lock().await.as_ref().unwrap()));
         drop(terminal);
         drop(live);
         // Dropping the selected owner, as reconnect/restart/reload do, ends it.

@@ -455,3 +455,24 @@ async fn m1b_screen_works_over_transport_without_granting_sessions() {
         Err(Error::UnsupportedCapability { .. })
     ));
 }
+
+#[tokio::test]
+async fn m1c_inventory_is_typed_and_gated_on_the_negotiated_transport() {
+    let mut h = hello();
+    h.capabilities = vec![Capability::session_inventory()];
+    let (connection, mut peer) = connect(h, None).await;
+    let connection = connection.unwrap();
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../../skiff-host-api/tests/fixtures/m1c.json")).unwrap();
+    let response: Response = serde_json::from_value(fixture["reply"].clone()).unwrap();
+    let (reply, ()) = tokio::join!(connection.request(Request::SessionInventory), async {
+        let envelope = peer.request().await;
+        assert_eq!(envelope.request, Request::SessionInventory);
+        peer.reply(envelope.id, Ok(response.clone())).await;
+    });
+    assert_eq!(reply, Ok(response));
+    assert!(matches!(
+        connection.request(Request::ListSessions).await,
+        Err(Error::UnsupportedCapability { .. })
+    ));
+}

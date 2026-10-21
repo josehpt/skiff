@@ -140,3 +140,31 @@ fn m1b_screen_has_an_independent_read_only_capability_and_lossless_golden_shape(
         envelope
     );
 }
+
+#[test]
+fn m1c_inventory_golden_schema_preserves_defaults_nulls_omissions_and_metadata() {
+    let fixture: Value = serde_json::from_str(include_str!("fixtures/m1c.json")).unwrap();
+    let request: Request = serde_json::from_value(fixture["request"].clone()).unwrap();
+    let response: Response = serde_json::from_value(fixture["reply"].clone()).unwrap();
+    assert_eq!(serde_json::to_value(&request).unwrap(), fixture["request"]);
+    assert_eq!(serde_json::to_value(&response).unwrap(), fixture["reply"]);
+    assert_eq!(
+        serde_json::to_value(request.capability().unwrap()).unwrap(),
+        fixture["capability"]
+    );
+    assert!(request.accepts(&response));
+    assert!(!request.accepts(&Response::Ok));
+    assert!(!Request::ListSessions.accepts(&response));
+    let minimal: InventorySession =
+        serde_json::from_value(fixture["legacy_minimal"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(minimal).unwrap(),
+        fixture["minimal_output"]
+    );
+    let mut malformed = fixture["legacy_minimal"].clone();
+    malformed["role"] = "future-role".into();
+    assert!(serde_json::from_value::<InventorySession>(malformed).is_err());
+    let mut malformed = fixture["reply"]["sessions"][0].clone();
+    malformed["watch"]["pids"] = json!(["bad"]);
+    assert!(serde_json::from_value::<InventorySession>(malformed).is_err());
+}

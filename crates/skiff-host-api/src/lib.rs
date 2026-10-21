@@ -4,10 +4,14 @@ use std::{collections::BTreeMap, fmt};
 
 use serde::{Deserialize, Serialize};
 
+pub mod inventory;
+pub use inventory::InventorySession;
+
 pub const API_MAJOR: u32 = 1;
 pub const SESSIONS: &str = "sessions";
 pub const CONNECTION_STATUS: &str = "connection_status";
 pub const SESSION_SCREEN: &str = "session_screen";
+pub const SESSION_INVENTORY: &str = "session_inventory";
 
 macro_rules! identity {
     ($name:ident) => {
@@ -69,6 +73,13 @@ pub struct Capability {
     pub version: u32,
 }
 impl Capability {
+    pub fn session_inventory() -> Self {
+        Self {
+            name: SESSION_INVENTORY.into(),
+            version: 1,
+        }
+    }
+
     /// Read-only text snapshot; does not grant session lifecycle or events.
     pub fn session_screen() -> Self {
         Self {
@@ -204,6 +215,7 @@ pub struct Session {
 pub enum Request {
     Hello,
     ConnectionStatus,
+    SessionInventory,
     SessionScreen {
         session: String,
         rows: u16,
@@ -233,6 +245,7 @@ impl Request {
         match self {
             Self::Hello => None,
             Self::ConnectionStatus => Some(Capability::connection_status()),
+            Self::SessionInventory => Some(Capability::session_inventory()),
             Self::SessionScreen { .. } => Some(Capability::session_screen()),
             _ => Some(Capability::sessions()),
         }
@@ -244,9 +257,14 @@ impl Request {
                 | (Self::ListSessions, Response::Sessions { .. })
                 | (Self::ConnectionStatus, Response::ConnectionStatus { .. })
                 | (Self::SessionScreen { .. }, Response::SessionScreen { .. })
+                | (Self::SessionInventory, Response::SessionInventory { .. })
         ) || (!matches!(
             self,
-            Self::Hello | Self::ListSessions | Self::ConnectionStatus | Self::SessionScreen { .. }
+            Self::Hello
+                | Self::ListSessions
+                | Self::ConnectionStatus
+                | Self::SessionScreen { .. }
+                | Self::SessionInventory
         ) && matches!(reply, Response::Ok))
     }
 }
@@ -259,6 +277,7 @@ pub struct Envelope {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Response {
+    SessionInventory { sessions: Vec<InventorySession> },
     SessionScreen { lines: Vec<String> },
     ConnectionStatus { version: String, protocol: u32 },
     Hello { hello: Hello },

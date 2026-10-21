@@ -135,6 +135,12 @@ pub(crate) async fn screen_now(app: &App, session: &str, rows: u16) -> Result<Ve
     skiff_client::host::local::legacy_screen(&host.connection(), session, rows).await.map_err(err)
 }
 
+/// The one M1c read path; lifecycle compatibility checks still use Client.
+pub(crate) async fn inventory_now(app: &App) -> Result<Vec<skiff_core::session::SessionInfo>, String> {
+    let (host, _) = ensure_host(app).await?;
+    skiff_client::host::local::legacy_inventory(&host.connection()).await.map_err(err)
+}
+
 async fn ensure_host(app: &App) -> Result<(Arc<SelectedLocalHost>, bool), String> {
     let mut guard = app.host.lock().await;
     if let Some(host) = guard.as_ref() {
@@ -425,6 +431,9 @@ mod tests {
         std::fs::write(&ledger, b"existing ledger fixture").unwrap();
         let app = App::default();
         assert!(app.local.set(LocalSelection::new(socket.clone(), dir.join("local-host-id"))).is_ok());
+        let inventory_fixture: serde_json::Value = serde_json::from_str(include_str!("../../../../crates/skiff-host-api/tests/fixtures/m1c.json")).unwrap();
+        let inventory = inventory_fixture["reply"]["sessions"].clone();
+        let expected_inventory: Vec<skiff_core::session::SessionInfo> = serde_json::from_value(inventory.clone()).unwrap();
         let peer = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let mut stream = BufReader::new(stream);
@@ -447,6 +456,17 @@ mod tests {
                 let mut bytes = serde_json::to_vec(&response).unwrap(); bytes.push(b'\n');
                 stream.get_mut().write_all(&bytes).await.unwrap();
             }
+            for (id, response) in [
+                (6, serde_json::json!({"type":"sessions","sessions":inventory})),
+                (7, serde_json::json!({"type":"error","message":"inventory unavailable"})),
+            ] {
+                let mut line = String::new();
+                stream.read_line(&mut line).await.unwrap();
+                assert_eq!(serde_json::from_str::<serde_json::Value>(&line).unwrap(), serde_json::json!({"id":id,"cmd":"list_sessions"}));
+                let mut response = response; response["id"] = id.into();
+                let mut bytes = serde_json::to_vec(&response).unwrap(); bytes.push(b'\n');
+                stream.get_mut().write_all(&bytes).await.unwrap();
+            }
             // Keep the one connection alive through the reuse assertions.
             let mut line = String::new();
             stream.read_line(&mut line).await.ok();
@@ -465,6 +485,10 @@ mod tests {
         assert_eq!(second.version, first.version);
         assert_eq!(screen_now(&app, "snapshot", 2).await.unwrap(), vec!["", "λ  "]);
         assert_eq!(screen_now(&app, "snapshot", 2).await.unwrap_err(), "unknown variant `screen`");
+        let listed = inventory_now(&app).await.unwrap();
+        assert_eq!(listed, expected_inventory);
+        assert_eq!(serde_json::to_value(&listed).unwrap(), serde_json::to_value(&expected_inventory).unwrap());
+        assert_eq!(inventory_now(&app).await.unwrap_err(), "inventory unavailable");
         assert!(Arc::ptr_eq(&owner, app.host.lock().await.as_ref().unwrap()));
         assert_eq!(std::fs::read_to_string(config).unwrap(), "# existing config\n");
         assert_eq!(std::fs::read(ledger).unwrap(), b"existing ledger fixture");

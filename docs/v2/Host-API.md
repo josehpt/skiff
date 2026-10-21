@@ -1,4 +1,4 @@
-# Host API — M0 contract and local M1a/M1b seams
+# Host API — M0 contract and local M1a/M1b/M1c seams
 
 Tracking: [M0 #156](https://github.com/solutionscay/skiff/issues/156),
 [epic #155](https://github.com/solutionscay/skiff/issues/155).
@@ -17,7 +17,7 @@ push to the separate wiki repository.
   Selection is not implemented in M0. No cross-Host aggregation is implied.
 - **Capability**: `{ name, version }`, a feature's major contract. `sessions@1`
   is the M0 operation family; M1a adds `connection_status@1` and M1b adds
-  read-only `session_screen@1`. Unknown names/majors are retained as metadata
+  read-only `session_screen@1`; M1c adds `session_inventory@1`. Unknown names/majors are retained as metadata
   and ignored unless an operation requires them.
 
 The ownership rule is: if data would differ on another Host, it must eventually
@@ -41,8 +41,8 @@ input/output queues, lag recovery and terminal framing are unchanged.
 `skiff-client::host::HostConnection` is an opt-in M0 interface over Transport.
 It has no concrete socket or process-ownership type in its public API. It
 negotiates Hello, gates typed requests, correlates replies, offers an event
-receiver, and can disconnect. The CLI and daemon do not use it. M1a integrates desktop connection status; M1b adds one text snapshot
-through the same local adapter, as described below.
+receiver, and can disconnect. The CLI and daemon do not use it. M1a integrates desktop connection status, M1b adds a text snapshot, and M1c
+adds the desktop inventory read through the same local adapter, as described below.
 A local UnixStream fixture and a fake duplex stream exercise the same interface.
 M0 fixtures wrote no identity/config file; M1a provisions local bootstrap
 identity as described below, without changing the legacy daemon protocol.
@@ -287,13 +287,84 @@ Client. The desktop entry-point fixture checks both returned text and the
 older-daemon error on the same accepted status connection. Existing M0/M1a and
 bootstrap regression fixtures stay enabled in CI.
 
-Next excluded boundary: session inventory would need a deliberately scoped
-lossless schema for the GUI's current session metadata before routing it through
-the Host. Terminal snapshots/events, mutation/lifecycle and endpoint lifecycle
-policy require their own increments. No SSH/remote transport, picker, service,
+M1b deliberately deferred inventory until a lossless GUI metadata schema was
+specified; M1c below supplies it. Terminal snapshots/events, mutation/lifecycle
+and endpoint lifecycle policy still require their own increments. No SSH/remote transport, picker, service,
 projects/files/ledger/Git movement, migrations or broad GUI conversion is part
 of M1b. Bootstrap identity remains local adapter identity as described in M1a;
 this slice does not turn legacy skiffd into an authoritative Host service.
+
+## M1c: lossless desktop session inventory read
+
+Only the existing Tauri `list_sessions` read now calls `inventory_now`, then
+`legacy_inventory` on the same selected local HostConnection. Internal daemon
+compatibility/reload checks still use their original legacy Client calls, avoiding
+any bootstrap dependency cycle. No UI source, session mutation, event subscription
+or other command path is converted.
+
+Additive API-major-1 capability `session_inventory@1` has request
+`{ cmd: "session_inventory" }` and response `{ kind: "session_inventory", sessions }`.
+It is independent of `sessions@1`; M0 ListSessions/Session remains unchanged, and
+local mutation/subscription operations are still unsupported. An InventorySource
+on the same LegacyReadOnly/Arc<Client> sends exactly one existing
+`{ id, cmd: "list_sessions" }` frame to skiffd. It neither chooses another endpoint
+nor falls back to raw local access when capability/version validation fails.
+
+`skiff-host-api::inventory::InventorySession` is deliberately only a read view of
+today's desktop SessionInfo. It owns primitive/nested types, has no core re-export
+or dependency, no SessionSpec, and no I/O. Its complete current field list is:
+
+- Identity/display/program: `id`, `label`, `role`, `cwd`, `command`,
+  `foreground_program`, `args`, `name`, `title`, `theme`.
+- Observed session state: `state`, `cols`, `rows`, `pid`, `exit_code`,
+  `started_at`, `last_output_at`, `unread`, `agent_exit`, `peek`, `interactive`,
+  `input_gen`, `coordinator`.
+- Existing read metadata: `away` (`path, command, at`), `was`/`resume`
+  (`agent, title`), `watch` (`since, pids, failure, follows`), with watch failure
+  (`kind, message, at`). These are metadata already in the session list, not
+  project, filesystem, ledger or watcher-service APIs.
+
+Role/state enums retain their existing four lowercase variants each. Integer
+widths/signedness, vector ordering and duplicates, empty strings, zero values and
+all 27 fields are preserved. Paths are opaque UTF-8 host strings with no filesystem
+lookup, normalization or lossy conversion. Paths decoded from the legacy JSON wire
+are UTF-8; an out-of-domain non-UTF-8 core path is explicitly rejected.
+
+Serde defaults and null/omission rules match legacy output: false coordinator and
+absent watch are omitted; nullable display/history fields remain null; missing
+old-daemon counters/flags/lists get the same defaults; watch follows None means
+unknown (omitted), while Some(empty) remains an empty array. Unknown source fields
+are ignored by the existing core decoder as before; the view is lossless for the
+current desktop model, not an arbitrary future JSON extension bag.
+
+The adapter maps core → API → core explicitly, retaining the existing Tauri
+`Vec<SessionInfo>` result and JSON shape. Struct destructuring/initializers and
+enum matches are exhaustive, without `..`/wildcard fallbacks, so added core/API
+fields or variants require deliberate projection review at compile time. Golden
+fixtures plus legacy-vs-Host JSON equality cover full metadata, minimal old-daemon
+data, all role/state combinations, extrema and nested optional semantics.
+
+The operation shares the bounded read lane/20-second budget with screens, waits
+rather than producing new HostBusy failures, and retains the status reservation.
+Capability/version rejection happens before dispatch. Decode provenance is retained
+through request_decoded: correlated malformed rows/nested data are MalformedContract,
+genuine daemon Error is OperationFailed even with identical diagnostic text, and
+stalls/disconnect are TimedOut/TransportLost. The compatibility helper preserves
+legacy error text. No retry, input or request replay is introduced.
+
+Tests include fake validation/ordering/metadata/deadline/cancellation, negotiated
+Host transport, and a real selected-socket comparison of exact legacy frames,
+ordering, duplicates, all fields and serialized output. They also cover malformed
+inventory, genuine service errors with decode-like messages, a withheld reply,
+malformed reply followed by EOF and an unused second endpoint. The real desktop
+read entry point verifies the full result and service error on the same connection
+as status/screen. Existing M0/M1a/M1b regressions remain in the boundary CI job.
+
+Next excluded boundary: live session events/subscriptions still use the legacy
+stream and need their own scoped contract/continuity work; inventory adoption does
+not authorize mutation/lifecycle actions. Endpoint lifecycle guards, authoritative
+Host Hello, SSH/remote selection/service, data conversion and migrations remain
+outside M1c. Local bootstrap/adapter-generation identity limitations are unchanged.
 
 ## M0 demo and handoff
 
@@ -304,7 +375,7 @@ performs the identical call. Test-only paired streams/private sockets prove the
 old Ping JSON, protocol 27, ordered raw input and snapshot/output bytes still work.
 Existing config/ledger fixture tests cover their unchanged on-disk contracts.
 
-Remaining M1 work includes routing beyond status, capability-driven surfaces, endpoint-local
+Remaining M1 work includes routing beyond these read seams, capability-driven surfaces, endpoint-local
 lifecycle guards, persistence/Hello rollout and the session/data-plane topology.
 M2–M6 own transport, services and data APIs. This document intentionally does not
 implement SSH, a host process, host selection, migrations or data-location changes.

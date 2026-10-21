@@ -19,6 +19,7 @@ use tokio::{
 
 use crate::transport::Transport;
 
+mod inventory;
 pub mod local;
 
 /// The one in-process M1a operation; no concrete socket/process type in the seam.
@@ -36,12 +37,18 @@ pub trait ScreenSource: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<Response, Error>> + Send + '_>>;
 }
 
+/// Read-only desktop inventory, independent of core session lifecycle types.
+pub trait InventorySource: Send + Sync {
+    fn inventory(&self) -> Pin<Box<dyn Future<Output = Result<Response, Error>> + Send + '_>>;
+}
+
 enum Backend {
     Wire(Engine),
     LocalReadOnly {
         source: Arc<dyn StatusSource>,
         screen: Option<Arc<dyn ScreenSource>>,
-        screen_slots: tokio::sync::Semaphore,
+        inventory: Option<Arc<dyn InventorySource>>,
+        read_slots: tokio::sync::Semaphore,
         closed: watch::Sender<bool>,
         slots: tokio::sync::Semaphore,
     },
@@ -311,7 +318,7 @@ impl HostConnection {
         hello: Hello,
         previous: Option<&Hello>,
     ) -> Result<Self, Error> {
-        Self::local_readonly(source, None, hello, previous)
+        Self::local_readonly(source, None, None, hello, previous)
     }
 
     /// M1b adds only session_screen; broad sessions@1 stays unavailable locally.
@@ -321,12 +328,24 @@ impl HostConnection {
         hello: Hello,
         previous: Option<&Hello>,
     ) -> Result<Self, Error> {
-        Self::local_readonly(source, Some(screen), hello, previous)
+        Self::local_readonly(source, Some(screen), None, hello, previous)
+    }
+
+    /// M1c adds only the lossless read-only inventory, not sessions@1.
+    pub fn local_inventory(
+        source: Arc<dyn StatusSource>,
+        screen: Arc<dyn ScreenSource>,
+        inventory: Arc<dyn InventorySource>,
+        hello: Hello,
+        previous: Option<&Hello>,
+    ) -> Result<Self, Error> {
+        Self::local_readonly(source, Some(screen), Some(inventory), hello, previous)
     }
 
     fn local_readonly(
         source: Arc<dyn StatusSource>,
         screen: Option<Arc<dyn ScreenSource>>,
+        inventory: Option<Arc<dyn InventorySource>>,
         hello: Hello,
         previous: Option<&Hello>,
     ) -> Result<Self, Error> {
@@ -334,6 +353,7 @@ impl HostConnection {
         if hello.capabilities.iter().any(|c| {
             c.name != skiff_host_api::CONNECTION_STATUS
                 && !(screen.is_some() && c.name == skiff_host_api::SESSION_SCREEN)
+                && !(inventory.is_some() && c.name == skiff_host_api::SESSION_INVENTORY)
         }) {
             return Err(Error::MalformedContract {
                 message: "local adapter cannot advertise capabilities without a source".into(),
@@ -342,12 +362,13 @@ impl HostConnection {
         let limit = hello.limits.max_in_flight.min(MAX_PENDING);
         let slots = tokio::sync::Semaphore::new(limit);
         // Reserve one slot for status while Mission control fans out reads.
-        let screen_slots = tokio::sync::Semaphore::new(limit.saturating_sub(1).max(1));
+        let read_slots = tokio::sync::Semaphore::new(limit.saturating_sub(1).max(1));
         Self::negotiated(
             Backend::LocalReadOnly {
                 source,
                 screen,
-                screen_slots,
+                inventory,
+                read_slots,
                 closed: watch::channel(false).0,
                 slots,
             },
@@ -384,7 +405,8 @@ impl HostConnection {
             Backend::LocalReadOnly {
                 source,
                 screen,
-                screen_slots,
+                inventory,
+                read_slots,
                 closed,
                 slots,
             } => {
@@ -408,12 +430,28 @@ impl HostConnection {
                             // Mission control fans out every visible screen. Queue
                             // inside the existing deadline instead of introducing
                             // HostBusy errors for boards with more than 64 panes.
-                            let _read = screen_slots
+                            let _read = read_slots
                                 .acquire()
                                 .await
                                 .map_err(|_| Error::TransportLost)?;
                             let _slot = slots.acquire().await.map_err(|_| Error::TransportLost)?;
                             screen.screen(session.clone(), *rows).await
+                        })
+                    }
+                    Request::SessionInventory => {
+                        let inventory =
+                            inventory
+                                .as_ref()
+                                .ok_or_else(|| Error::UnsupportedCapability {
+                                    capability: capability.clone(),
+                                })?;
+                        Box::pin(async move {
+                            let _read = read_slots
+                                .acquire()
+                                .await
+                                .map_err(|_| Error::TransportLost)?;
+                            let _slot = slots.acquire().await.map_err(|_| Error::TransportLost)?;
+                            inventory.inventory().await
                         })
                     }
                     _ => return Err(Error::UnsupportedCapability { capability }),

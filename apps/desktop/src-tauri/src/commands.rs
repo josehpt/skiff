@@ -5,8 +5,7 @@ use crate::{connection::{App, ensure_client, err}, input::Sent};
 
 #[tauri::command]
 pub(crate) async fn list_sessions(app: State<'_, App>) -> Result<Vec<SessionInfo>, String> {
-    let (c, _) = ensure_client(&app).await?;
-    c.list_sessions().await.map_err(err)
+    crate::connection::inventory_now(&app).await
 }
 
 #[tauri::command]

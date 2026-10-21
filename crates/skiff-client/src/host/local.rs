@@ -15,7 +15,7 @@ use skiff_host_api::{
 };
 use uuid::Uuid;
 
-use super::{HostConnection, ScreenSource, StatusSource};
+use super::{HostConnection, InventorySource, ScreenSource, StatusSource};
 use crate::Client;
 
 struct Selection {
@@ -88,6 +88,7 @@ impl PendingLocalConnection {
             capabilities: vec![
                 Capability::connection_status(),
                 Capability::session_screen(),
+                Capability::session_inventory(),
             ],
             limits: Limits {
                 max_frame_bytes: 8 * 1024 * 1024,
@@ -97,8 +98,13 @@ impl PendingLocalConnection {
         let connection = {
             let mut previous = self.selection.0.previous.lock().unwrap();
             let source = Arc::new(LegacyReadOnly(self.client.clone()));
-            let connection =
-                HostConnection::local_screen(source.clone(), source, hello, previous.as_ref())?;
+            let connection = HostConnection::local_inventory(
+                source.clone(),
+                source.clone(),
+                source,
+                hello,
+                previous.as_ref(),
+            )?;
             *previous = Some(connection.hello().clone());
             Arc::new(connection)
         };
@@ -192,6 +198,76 @@ impl ScreenSource for LegacyReadOnly {
     }
 }
 
+impl InventorySource for LegacyReadOnly {
+    fn inventory(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, Error>> + Send + '_>>
+    {
+        Box::pin(async {
+            match self
+                .0
+                .request_decoded(skiff_core::protocol::Request::ListSessions)
+                .await
+            {
+                Ok(skiff_core::protocol::Response::Sessions { sessions }) => {
+                    let sessions = sessions
+                        .into_iter()
+                        .map(super::inventory::project_session)
+                        .collect::<Result<_, _>>()?;
+                    Ok(Response::SessionInventory { sessions })
+                }
+                Ok(skiff_core::protocol::Response::Error { message }) => {
+                    Err(Error::OperationFailed { message })
+                }
+                Ok(other) => Err(Error::MalformedContract {
+                    message: format!("unexpected reply: {other:?}"),
+                }),
+                Err(e) if e.downcast_ref::<crate::ReplyTimeout>().is_some() => Err(Error::TimedOut),
+                Err(e) if e.downcast_ref::<crate::ReplyDecodeError>().is_some() => {
+                    Err(Error::MalformedContract {
+                        message: e.to_string(),
+                    })
+                }
+                Err(_) if self.0.is_closed() => Err(Error::TransportLost),
+                Err(e) => Err(Error::MalformedContract {
+                    message: format!("{e:#}"),
+                }),
+            }
+        })
+    }
+}
+
+/// Preserve the existing Tauri list schema until a deliberate GUI type migration.
+pub async fn legacy_inventory(
+    connection: &HostConnection,
+) -> anyhow::Result<Vec<skiff_core::session::SessionInfo>> {
+    match connection
+        .request(Request::SessionInventory)
+        .await
+        .map_err(legacy_read_error)?
+    {
+        Response::SessionInventory { sessions } => Ok(sessions
+            .into_iter()
+            .map(super::inventory::restore_session)
+            .collect()),
+        _ => Err(Error::MalformedContract {
+            message: "expected session inventory".into(),
+        }
+        .into()),
+    }
+}
+
+fn legacy_read_error(error: Error) -> anyhow::Error {
+    match error {
+        Error::OperationFailed { message } | Error::MalformedContract { message } => {
+            anyhow::Error::msg(message)
+        }
+        Error::TimedOut => crate::ReplyTimeout(std::time::Duration::from_secs(20)).into(),
+        Error::TransportLost => anyhow::Error::msg("skiffd connection closed"),
+        other => other.into(),
+    }
+}
+
 /// Temporary desktop compatibility projection. The Host request remains typed;
 /// only its existing Tauri caller receives the unchanged legacy error text.
 /// Capability/version failures propagate explicitly, never via legacy fallback.
@@ -206,14 +282,7 @@ pub async fn legacy_screen(
             rows,
         })
         .await
-        .map_err(|error| match error {
-            Error::OperationFailed { message } | Error::MalformedContract { message } => {
-                anyhow::Error::msg(message)
-            }
-            Error::TimedOut => crate::ReplyTimeout(std::time::Duration::from_secs(20)).into(),
-            Error::TransportLost => anyhow::Error::msg("skiffd connection closed"),
-            other => other.into(),
-        })?;
+        .map_err(legacy_read_error)?;
     match reply {
         Response::SessionScreen { lines } => Ok(lines),
         _ => Err(Error::MalformedContract {

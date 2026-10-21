@@ -8,6 +8,7 @@ mod config;
 mod diagnostics;
 mod input;
 mod ledger;
+mod quit;
 mod reload;
 mod skiff_agent;
 mod streaming;
@@ -50,6 +51,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(App::default())
+        .manage(quit::Guard::default())
         // The window starts hidden: GTK takes a header bar only before it shows.
         .setup(|app| {
             std::thread::spawn(cli_path::sync);
@@ -69,7 +71,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             native_menu::set_menu,
-            native_menu::quit_app,
+            quit::quit_app,
+            quit::guard_quit,
             native_menu::menu_layout,
             native_menu::set_menu_layout,
             native_menu::set_window_dark,
@@ -168,6 +171,9 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
         .run(|_app, _event| {
+            if let tauri::RunEvent::ExitRequested { api, .. } = &_event {
+                quit::requested(_app, api);
+            }
             // A workspace file opened from Finder while Skiff runs, or to start it.
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Opened { urls } = &_event {

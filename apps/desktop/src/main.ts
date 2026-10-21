@@ -34,7 +34,7 @@ import { nextUnread, nextWaiting, selectProject, showGroup, showSingle } from ".
 import { closeMission, goToSession } from "./workspace/missionMotion";
 import { missionOpen, restoreRunning } from "./workspace/missionControl";
 import { startLedger } from "./workspace/ledger";
-import { startWorkspaces } from "./workspace/profile";
+import { startWorkspaceQuitGuard, startWorkspaces } from "./workspace/profile";
 
 configureRender(render);
 configurePaneActions({ focusPane, closePane, dragSessions });
@@ -51,6 +51,7 @@ document.addEventListener("contextmenu", (e) => {
 });
 
 async function boot() {
+  await startWorkspaceQuitGuard();
   // `tauri dev` build: a badge in the status bar tells it apart from an installed Skiff.
   if (import.meta.env.DEV) {
     const badge = document.createElement("span");

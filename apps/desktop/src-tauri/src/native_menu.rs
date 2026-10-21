@@ -26,12 +26,6 @@ pub(crate) struct MenuItemSpec {
 
 /// The menu bar. The page owns the command list and sends it whole on every
 /// change; a click comes back as `skiff:menu` with the item's id.
-/// Closes the app. Sessions live in skiffd and keep running.
-#[tauri::command]
-pub(crate) fn quit_app(app: AppHandle) {
-    app.exit(0);
-}
-
 #[tauri::command]
 pub(crate) fn set_menu(app: AppHandle, menus: Vec<MenuSpec>) -> Result<(), String> {
     #[cfg(target_os = "linux")]

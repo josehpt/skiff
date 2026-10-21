@@ -346,6 +346,7 @@ function commit(l: Loaded | null, focus = true) {
     ? { path: l.path, profile: l.profile, base: canon(l.profile), revision: l.revision, disk: "ok", kept: false, answered: false }
     : null;
   autoOpened.clear();
+  allWork = false;
   useTreeView(doc ? treeView : null);
   if (l) remember(l.path);
   wasEdited = workspaceEdited();
@@ -356,6 +357,7 @@ function commit(l: Loaded | null, focus = true) {
 function commitUntitled() {
   doc = { path: null, profile: emptyProfile(), base: canon(emptyProfile()), revision: null, disk: "ok", kept: false, answered: false };
   autoOpened.clear();
+  allWork = false;
   useTreeView(treeView);
   store(LAST_KEY, null);
   wasEdited = false;
@@ -656,6 +658,8 @@ export function editWorkspace() {
   };
   const fleetBoxes = new Map<string, HTMLInputElement>();
   const projectBoxes = new Map<string, HTMLInputElement>();
+  // Fleet coverage changes the checkbox display, not an explicit inclusion.
+  const explicitProjects = new Set(d.profile.projects.map(trimPath));
   const kidsOf = new Map<string, HTMLInputElement[]>();
   const loose: HTMLInputElement[] = [];
   const tree = h("div", "ws-tree");
@@ -664,8 +668,13 @@ export function editWorkspace() {
   const inList = (p: Project) => d.profile.projects.some((x) => trimPath(x) === trimPath(p.path));
   const projectBox = (p: Project, nested: boolean) => {
     const { l, c } = box(p.name, inList(p), nested);
+    c.value = trimPath(p.path);
     l.title = p.path;
     projectBoxes.set(trimPath(p.path), c);
+    c.addEventListener("change", () => {
+      if (c.checked) explicitProjects.add(trimPath(p.path));
+      else explicitProjects.delete(trimPath(p.path));
+    });
     tree.append(l);
     return c;
   };
@@ -682,7 +691,7 @@ export function editWorkspace() {
     const fc = fleetBoxes.get(f)!;
     const kids = kidsOf.get(f)!;
     for (const k of kids) {
-      if (fc.checked) k.checked = true;
+      k.checked = fc.checked || explicitProjects.has(k.value);
       k.disabled = fc.checked;
     }
     fc.indeterminate = !fc.checked && kids.some((k) => k.checked);
@@ -698,8 +707,6 @@ export function editWorkspace() {
   };
   for (const [f, fc] of fleetBoxes) {
     fc.addEventListener("change", () => {
-      // Unchecking a fleet clears its projects too.
-      if (!fc.checked) for (const k of kidsOf.get(f)!) k.checked = false;
       syncFleet(f);
       syncAll();
     });
@@ -712,7 +719,8 @@ export function editWorkspace() {
   for (const c of loose) c.addEventListener("change", syncAll);
   all.addEventListener("change", () => {
     for (const c of [...fleetBoxes.values(), ...loose]) c.checked = all.checked;
-    if (!all.checked) for (const c of projectBoxes.values()) c.checked = false;
+    if (!all.checked) explicitProjects.clear();
+    else for (const p of S.projects) if (!p.fleet) explicitProjects.add(trimPath(p.path));
     for (const f of fleets) syncFleet(f);
     syncAll();
   });
@@ -780,8 +788,7 @@ export function editWorkspace() {
     // Missing references keep their place unless repaired or removed.
     let projects = d.profile.projects.filter((x) => !S.projects.some((p) => trimPath(p.path) === trimPath(x)));
     let fleetsNext = d.profile.fleets.filter((f) => !fleets.includes(f));
-    // A project under a checked fleet is the fleet's: only the fleet goes in the file.
-    for (const [path, c] of projectBoxes) if (c.checked && !c.disabled) projects.push(path);
+    for (const path of projectBoxes.keys()) if (explicitProjects.has(path)) projects.push(path);
     for (const [f, c] of fleetBoxes) if (c.checked) fleetsNext.push(f);
     for (const [m, sel] of repairs) {
       if (sel.value === "keep") continue;
@@ -992,6 +999,16 @@ function renderWorkspaceStatus(state: ReturnType<typeof barState>) {
 
 // ── Start ──────────────────────────────────────────────────────────────────
 
+/** Register both exit routes before menus or documents become interactive. */
+export async function startWorkspaceQuitGuard() {
+  await listen("skiff:quit-requested", () => quitApp());
+  await getCurrentWindow().onCloseRequested((e) => {
+    e.preventDefault();
+    quitApp();
+  });
+  await invoke("guard_quit");
+}
+
 /**
  * At start, once projects are in: the file the app was started with, else
  * the last saved workspace, read from disk as Clean. A file that cannot
@@ -1004,13 +1021,6 @@ export async function startWorkspaces() {
     void invoke("workspace_took", { path: e.payload }).catch(() => null);
     void openWorkspace(e.payload);
   });
-  // The window's close is Quit: the same guard.
-  void getCurrentWindow()
-    .onCloseRequested((e) => {
-      e.preventDefault();
-      quitApp();
-    })
-    .catch(console.error);
   window.addEventListener("focus", () => void checkDisk());
   setInterval(() => void checkDisk(), 2000);
 

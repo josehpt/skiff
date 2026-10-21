@@ -24,8 +24,8 @@
  * change to `ledger.db`.
  *
  * An open workspace (#154) filters the rows by their project: its projects'
- * work, and work with no project. A plan shows when one of its tasks does,
- * with only those tasks under it. All work, in the head, shows every row.
+ * work, and work with no project. A plan shows by its own project or a visible
+ * task, with only visible tasks under it. All work, in the head, shows every row.
  * The filter is a view: no row changes.
  *
  * The person can fold the panel to a rail: a chevron, and the amber count of
@@ -199,10 +199,9 @@ function units(): Unit[] {
       const all = rows.filter((k) => k.kind === "task" && k.parent === r.uid);
       // Each task shows by its own project. The plan heads the ones that show.
       const kids = all.filter((k) => inView(k, scope)).map(look);
-      if (all.length && !kids.length) continue;
       if (!kids.length) {
         if (!inView(r, scope)) continue;
-        // A plan with no task stands by its own state.
+        // A heading with no visible task keeps its own state.
         const st: State = r.state === "done" || r.state === "pending" || r.state === "blocked" ? r.state : "sent";
         out.push({ r, st, kids, closed: r.closed_at, working: false });
         continue;

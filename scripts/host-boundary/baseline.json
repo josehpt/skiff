@@ -221,7 +221,7 @@
       "@tauri-apps/api/event",
       "invoke"
     ],
-    "sha256": "eeaccef237c62ebdbf815349217c39ecaeefd34a13394624980aad5ead5fff49"
+    "sha256": "698dcfcb50ca379ef893eb290e9a10cf1d223d98a9732eb350ff7e3648b76255"
   },
   "apps/desktop/src/app/daemonRestart.ts": {
     "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
@@ -240,7 +240,7 @@
       "local provider: apps/desktop/src/app/stateQueries.ts",
       "local provider: apps/desktop/src/workspace/view.ts"
     ],
-    "sha256": "a4551d0cc4aecbdad59ad1c1526e38fcefbc943adf84d26bdb5408305d2ecefd"
+    "sha256": "827c2f7c601a4f4aab24b75209e5239826c3a7154ba7dc23dcad13cd9a23abc2"
   },
   "apps/desktop/src/app/hostCaps.ts": {
     "ownership": "Host capability gate: the page's only invoke for session/terminal commands, each refused unless the selected Host advertises its capability; Rust routes them through HostConnection",

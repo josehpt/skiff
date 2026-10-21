@@ -2,9 +2,11 @@
  * The selected Host's data plane (`skiff-host`): it serves projects and Git,
  * apart from skiffd's sessions and terminals. The page checks it on its own
  * and reads projects and Git again when a new data connection comes up: the
- * service started late, restarted, or the link came back. No page reload,
- * and no terminal stream is touched. Each new connection, or its loss, is a
- * new data epoch: a reply asked for in an older epoch is not shown.
+ * service started late, restarted, or the link came back. A read that
+ * failed is tried again at the next check, on the same connection too. No
+ * page reload, and no terminal stream is touched. Each new connection, or
+ * its loss, is a new data epoch: a reply asked for in an older epoch is not
+ * shown.
  */
 import { invoke } from "@tauri-apps/api/core";
 
@@ -38,8 +40,9 @@ export function dataChange(prev: DataStatus | null, next: DataStatus): "reload" 
 }
 
 export interface DataHooks {
-  /** A new data connection: capabilities, projects and Git again. */
-  reload(): Promise<void>;
+  /** A new data connection: capabilities, projects and Git again. False:
+   *  a read failed, so the next ready check reads again. */
+  reload(): Promise<boolean>;
   /** Out of reach, and why. */
   down(message: string | null): void;
   /** What the page shows came from a good read, so a first ready status needs none. */
@@ -49,6 +52,8 @@ export interface DataHooks {
 let last: DataStatus | null = null;
 let timer: number | undefined;
 let checking = false;
+/** The last reload failed: the next ready check reads again. */
+let unfinished = false;
 
 /** One check, and what it changes. Returns the status, or null when the check failed. */
 export async function checkDataPlane(hooks: DataHooks): Promise<DataStatus | null> {
@@ -61,7 +66,7 @@ export async function checkDataPlane(hooks: DataHooks): Promise<DataStatus | nul
     const change = first && next.ready && hooks.fresh() ? null : dataChange(last, next);
     if (!next.waiting) last = next;
     if (change) epoch++;
-    if (change === "reload") await hooks.reload();
+    if (change === "reload" || (next.ready && !change && unfinished)) unfinished = !(await hooks.reload());
     else if (change === "down") hooks.down(next.message);
     return next;
   } finally {

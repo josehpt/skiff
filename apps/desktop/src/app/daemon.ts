@@ -289,10 +289,15 @@ export async function loadProjects() {
 export function followDataPlane() {
   watchDataPlane({
     async reload() {
-      await loadHostCaps().catch(console.error);
+      const caps = await loadHostCaps().then(
+        () => true,
+        (e) => (console.error(e), false),
+      );
       await loadProjects();
       reloadChanges();
       refreshHostDiff();
+      // Either read failed: the next check on this connection reads again.
+      return caps && S.projectsError === null;
     },
     down(message) {
       S.dataState = "unavailable";

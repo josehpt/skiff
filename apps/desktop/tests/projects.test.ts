@@ -5,7 +5,7 @@ import { moduleFromSource } from "./workspaceHarness.ts";
 /** The real `loadProjects`: which calls it makes for each Host and what it
  *  shows. The Tauri side is a fake that answers as the selected Host's data
  *  plane would, or fails as it does when no skiff-host answers. */
-function page(o: { remote: boolean; caps: string[]; fail?: string }) {
+function page(o: { remote: boolean; caps: string[]; fail?: string; capsFail?: string; dataPlane?: unknown }) {
   const S: any = { agents: [{ id: "a" }], projects: [], closedProjects: [], projectsError: null, selectedProject: null, dataState: "loading", dataNote: null };
   const calls: string[] = [];
   const projects = [
@@ -29,10 +29,19 @@ function page(o: { remote: boolean; caps: string[]; fail?: string }) {
       "./hosts": { isRemote: () => o.remote, hostName: () => "devbox" },
       "./render": { render() {} },
       "./state": { S, sessions: new Map(), removeErrors: new Map(), OTHER: "\u0000other" },
-      "./hostCaps": { hostCan: (c: string) => o.caps.includes(c), hostInvoke: async () => [] },
+      "./hostCaps": {
+        hostCan: (c: string) => o.caps.includes(c),
+        hostInvoke: async () => [],
+        loadHostCaps: async () => {
+          calls.push("host_capabilities");
+          if (o.capsFail) throw o.capsFail;
+        },
+      },
+      "./dataPlane": o.dataPlane ?? {},
+      "../terminal/peek": { refreshHostDiff() {} },
       "../diagnostics/stalls": { work() {} },
       "../workspace/files": { loadFilesSetting: async () => void calls.push("files_projects") },
-      "../workspace/changes": { loadChangesSetting: async () => void calls.push("hidden_changes_projects") },
+      "../workspace/changes": { loadChangesSetting: async () => void calls.push("hidden_changes_projects"), reloadChanges() {} },
       "../appearance/themes": { loadProjectThemes: async () => void calls.push("project_themes") },
       "./skiffAgent": { loadSkiffAgent: async () => void calls.push("get_skiff_agent") },
       "./stateQueries": { place: () => null },
@@ -80,4 +89,33 @@ test("this Mac without its service still asks, and the cause shows; nothing else
   assert.match(p.S.projectsError, /skiff-host did not start/);
   assert.equal(p.S.dataState, "unavailable");
   assert.match(p.S.dataNote, /skiff-host did not start/);
+});
+
+test("review M4 P2: a failed project or capability read on a live data connection is read again by the next check", async () => {
+  // The real dataPlane module over one live connection, and the real page hooks.
+  const live = (o: any) => {
+    const dataPlane = moduleFromSource(
+      "../src/app/dataPlane.ts",
+      { "@tauri-apps/api/core": { invoke: async () => ({ ready: true, waiting: false, host_id: "H", instance_id: "i", connection: 1, capabilities: [], message: null }) } },
+      { window: { setTimeout() {}, clearTimeout() {} }, Promise },
+      "",
+    );
+    let hooks: any;
+    const p = page(Object.assign(o, { remote: true, caps: ["projects"], dataPlane: { watchDataPlane: (h: unknown) => (hooks = h) } }));
+    p.mod.followDataPlane();
+    const count = (cmd: string) => p.calls.filter((c) => c === cmd).length;
+    return { p, o, count, check: () => dataPlane.checkDataPlane(hooks) };
+  };
+  for (const [what, cmd] of [["fail", "list_projects"], ["capsFail", "host_capabilities"]]) {
+    const o: any = { [what]: `the ${cmd} read failed` };
+    const l = live(o);
+    // The first ready check reads, and that read fails.
+    await l.check();
+    assert.equal(l.count(cmd), 1, what);
+    // Repaired: the next check on the same connection reads again, once.
+    o[what] = undefined;
+    for (let i = 0; i < 10; i++) await l.check();
+    assert.equal(l.count(cmd), 2, what);
+    assert.equal(l.p.S.dataState, "ready", what);
+  }
 });

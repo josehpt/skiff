@@ -8,8 +8,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::{atomic::{AtomicBool, Ordering}, mpsc, Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -200,13 +199,24 @@ pub fn changes(dir: &Path) -> Result<Vec<Change>> {
 }
 
 /// [`changes`] of `root`, opened before `dir` was checked as a worktree.
-/// Git runs at `dir`, which must name `root` before and after; untracked
-/// files are counted under `root` itself.
+/// Git runs in `root` itself, and `dir` must name `root` before and after;
+/// untracked files are counted under `root` itself.
 pub fn changes_in(root: &Root, dir: &Path) -> Result<Vec<Change>> {
     root.check(dir)?;
-    let status = git(dir, &["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"])?;
+    let run = |args: &[&str]| -> Result<String> {
+        let out = git_in(root, dir).args(args).output().context("run git")?;
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            if stderr.is_empty() {
+                bail!("git {} failed: {}", args.join(" "), out.status);
+            }
+            bail!(stderr);
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+    let status = run(&["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"])?;
     // Fails in a repository with no commit yet: every file then shows no count.
-    let numstat = git(dir, &["diff", "HEAD", "--numstat", "-z", "--no-renames"]).unwrap_or_default();
+    let numstat = run(&["diff", "HEAD", "--numstat", "-z", "--no-renames"]).unwrap_or_default();
     let mut counts = std::collections::HashMap::new();
     for rec in numstat.split('\0').filter(|r| !r.is_empty()) {
         let mut f = rec.splitn(3, '\t');
@@ -288,8 +298,10 @@ pub fn diff_script(dir: &Path, file: Option<&str>, command: Option<&str>) -> Str
 
 /// The most diff text [`diff_in`] answers with, in bytes.
 pub const DIFF_LIMIT: usize = 512 * 1024;
-/// How long one git run for [`diff_in`] may take before it is killed.
+/// How long every git run for one [`diff_in`] may take together before it is killed.
 const DIFF_TIMEOUT: Duration = Duration::from_secs(20);
+/// The most a git run before the diff itself may print, in bytes.
+const PREFLIGHT_LIMIT: usize = 64 * 1024;
 
 /// A diff as plain text, for a viewer: never colored, never from an
 /// external diff tool or a textconv filter, never over [`DIFF_LIMIT`].
@@ -313,25 +325,31 @@ pub fn is_relative_file(rel: &str) -> bool {
 }
 
 /// One changed file's diff against HEAD, or the whole worktree's, as
-/// [`changes_in`] reads it: git runs at `dir`, which must name `root` before
-/// and after, and an untracked file is read under `root` itself, never
+/// [`changes_in`] reads it: git runs in `root` itself, `dir` must name `root`
+/// before and after, and an untracked file is read under `root` itself, never
 /// followed if it is a link, never opened if it is not a regular file. The
-/// whole-worktree diff leaves untracked files out, as `git diff` does.
+/// whole-worktree diff leaves untracked files out, as `git diff` does. Every
+/// git run together takes at most [`DIFF_TIMEOUT`].
 pub fn diff_in(root: &Root, dir: &Path, file: Option<&str>) -> Result<Diff> {
+    diff_within(root, dir, file, Deadline::after(DIFF_TIMEOUT))
+}
+
+fn diff_within(root: &Root, dir: &Path, file: Option<&str>, deadline: Deadline) -> Result<Diff> {
     root.check(dir)?;
+    let git = |args: &[&str], limit| git_bounded(root, dir, args, limit, deadline);
     let diff = match file {
-        None => tracked_diff(dir, None)?,
+        None => tracked_diff(git, None)?,
         Some(f) => {
             if !is_relative_file(f) {
                 bail!("{f} is not a file path in this worktree");
             }
             // Literal: a `*` or `:` in a name is not a pattern.
             let spec = format!(":(literal){f}");
-            let status = git(dir, &["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all", "--", &spec])?;
+            let status = preflight(git, &["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all", "--", &spec])?;
             match status.split('\0').find(|r| r.len() > 3 && &r[3..] == f) {
                 None => Diff::default(),
                 Some(r) if r.starts_with("??") => untracked_diff(root, f)?,
-                Some(_) => tracked_diff(dir, Some(&spec))?,
+                Some(_) => tracked_diff(git, Some(&spec))?,
             }
         }
     };
@@ -340,18 +358,27 @@ pub fn diff_in(root: &Root, dir: &Path, file: Option<&str>) -> Result<Diff> {
     Ok(diff)
 }
 
-fn tracked_diff(dir: &Path, spec: Option<&str>) -> Result<Diff> {
+/// A git run before the diff, as text: more than [`PREFLIGHT_LIMIT`] is an error.
+fn preflight(git: impl Fn(&[&str], usize) -> Result<(Vec<u8>, bool)>, args: &[&str]) -> Result<String> {
+    let (out, cut) = git(args, PREFLIGHT_LIMIT)?;
+    if cut {
+        bail!("git {} printed more than {} KiB", args[0], PREFLIGHT_LIMIT / 1024);
+    }
+    Ok(String::from_utf8_lossy(&out).into_owned())
+}
+
+fn tracked_diff(git: impl Fn(&[&str], usize) -> Result<(Vec<u8>, bool)>, spec: Option<&str>) -> Result<Diff> {
     // No commit yet: everything is compared with the empty tree.
-    let base = match git(dir, &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]) {
+    let base = match preflight(&git, &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]) {
         Ok(head) => head,
-        Err(_) => git(dir, &["hash-object", "-t", "tree", "/dev/null"])?,
+        Err(_) => preflight(&git, &["hash-object", "-t", "tree", "/dev/null"])?,
     };
     let base = base.trim();
     let mut args = vec!["-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", base];
     if let Some(spec) = spec {
         args.extend(["--", spec]);
     }
-    let (out, truncated) = git_bounded(dir, &args, DIFF_LIMIT)?;
+    let (out, truncated) = git(&args, DIFF_LIMIT)?;
     let (text, truncated) = cap(out, truncated);
     // Content lines start with ` `, `+` or `-`: this line is git's own.
     let binary = spec.is_some() && text.lines().any(|l| l.starts_with("Binary files "));
@@ -404,23 +431,63 @@ fn untracked_diff(root: &Root, rel: &str) -> Result<Diff> {
     Ok(Diff { text, truncated: cut, binary: false, untracked: true })
 }
 
-/// At most [`DIFF_LIMIT`] bytes of text. Cut text ends at its last whole line.
-fn cap(mut out: Vec<u8>, truncated: bool) -> (String, bool) {
-    let truncated = truncated || out.len() > DIFF_LIMIT;
+/// At most [`DIFF_LIMIT`] bytes of UTF-8 text, counted after an invalid
+/// byte becomes U+FFFD (three bytes). Cut text ends at its last whole line.
+fn cap(out: Vec<u8>, truncated: bool) -> (String, bool) {
+    let mut text = String::from_utf8_lossy(&out).into_owned();
+    let truncated = truncated || text.len() > DIFF_LIMIT;
     if truncated {
-        out.truncate(DIFF_LIMIT);
-        let end = out.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
-        out.truncate(end);
+        // A newline is one byte, so the cut is on a character boundary.
+        let head = &text.as_bytes()[..text.len().min(DIFF_LIMIT)];
+        let end = head.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
+        text.truncate(end);
     }
-    (String::from_utf8_lossy(&out).into_owned(), truncated)
+    (text, truncated)
 }
 
-/// Runs `git -C <dir> <args>` with [`bounded`] and [`DIFF_TIMEOUT`].
-fn git_bounded(dir: &Path, args: &[&str], limit: usize) -> Result<(Vec<u8>, bool)> {
+/// `git`, started in the folder `root` holds open rather than at its path:
+/// a path swapped for another folder, even for a moment, is never read.
+/// `dir` names `root`, for a system that cannot start a process in an open folder.
+fn git_in(root: &Root, dir: &Path) -> Command {
     let mut cmd = Command::new("git");
+    #[cfg(unix)]
+    {
+        use std::os::{fd::AsRawFd, unix::process::CommandExt};
+        let _ = dir;
+        let fd = root.dir.as_raw_fd();
+        // SAFETY: fchdir(2) is async-signal-safe. The fd is `root`'s, open
+        // while the caller borrows it, and the child inherits it until exec.
+        unsafe {
+            cmd.pre_exec(move || if libc::fchdir(fd) == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) });
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = root;
+        cmd.arg("-C").arg(dir);
+    }
+    cmd
+}
+
+/// When a run, or several that share it, must be done.
+#[derive(Clone, Copy)]
+struct Deadline {
+    at: Instant,
+    after: Duration,
+}
+
+impl Deadline {
+    fn after(after: Duration) -> Deadline {
+        Deadline { at: Instant::now() + after, after }
+    }
+}
+
+/// Runs `git <args>` in `root` with [`bounded`].
+fn git_bounded(root: &Root, dir: &Path, args: &[&str], limit: usize, deadline: Deadline) -> Result<(Vec<u8>, bool)> {
+    let mut cmd = git_in(root, dir);
     // A read: git takes no optional lock and writes no index.
-    cmd.arg("-C").arg(dir).args(args).env("GIT_OPTIONAL_LOCKS", "0");
-    bounded(cmd, limit, DIFF_TIMEOUT).map_err(|e| match e.downcast_ref::<Failed>() {
+    cmd.args(args).env("GIT_OPTIONAL_LOCKS", "0");
+    bounded(cmd, limit, deadline).map_err(|e| match e.downcast_ref::<Failed>() {
         Some(Failed(err)) if err.is_empty() => anyhow!("git {} failed", args.join(" ")),
         Some(Failed(err)) => anyhow!("{err}"),
         None => e,
@@ -437,64 +504,135 @@ impl std::fmt::Display for Failed {
 }
 impl std::error::Error for Failed {}
 
+/// How long a command's pipes are still read after it exits: a helper it
+/// started may hold them open, and never close them.
+const DRAIN_GRACE: Duration = Duration::from_millis(200);
+/// The start of a command's errors that is kept.
+const ERROR_LIMIT: usize = 4096;
+
 /// Runs `cmd` and keeps at most `limit` bytes of its output, and the start
-/// of its errors. More output, or a run past `timeout`, kills it. True: the
-/// output was cut.
-fn bounded(mut cmd: Command, limit: usize, timeout: Duration) -> Result<(Vec<u8>, bool)> {
-    use std::io::Read;
+/// of its errors. More output, or a run past `deadline`, kills it. True: the
+/// output was cut. Its pipes are read here, never past the deadline, nor
+/// past [`DRAIN_GRACE`] after it exits; then the process group it leads,
+/// any helper it started included, is killed.
+#[cfg(unix)]
+fn bounded(mut cmd: Command, limit: usize, deadline: Deadline) -> Result<(Vec<u8>, bool)> {
+    use std::{
+        io::Read,
+        os::{fd::AsRawFd, fd::OwnedFd, unix::process::CommandExt},
+    };
     let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .process_group(0)
         .spawn()
         .context("start the command")?;
-    let mut stdout = child.stdout.take().expect("piped stdout");
-    let mut stderr = child.stderr.take().expect("piped stderr");
-    // Drained to the end, so git never waits on a full pipe; the start is kept.
-    let errors = std::thread::spawn(move || {
-        let mut kept = Vec::new();
-        let _ = (&mut stderr).take(4096).read_to_end(&mut kept);
-        let _ = std::io::copy(&mut stderr, &mut std::io::sink());
-        kept
-    });
-    // The child stays unreaped until `try_wait` below, so a kill never
-    // reaches another process.
-    let child = Arc::new(Mutex::new(child));
-    let timed_out = Arc::new(AtomicBool::new(false));
-    let (done, finished) = mpsc::channel::<()>();
-    let watchdog = {
-        let (child, timed_out) = (child.clone(), timed_out.clone());
-        std::thread::spawn(move || {
-            if let Err(mpsc::RecvTimeoutError::Timeout) = finished.recv_timeout(timeout) {
-                timed_out.store(true, Ordering::SeqCst);
-                let _ = child.lock().unwrap().kill();
-            }
-        })
-    };
-    let mut out = Vec::new();
-    let read = (&mut stdout).take(limit as u64 + 1).read_to_end(&mut out);
-    let truncated = out.len() > limit;
-    out.truncate(limit);
-    drop(stdout);
-    if truncated {
-        let _ = child.lock().unwrap().kill();
-    }
-    let status = loop {
-        if let Some(status) = child.lock().unwrap().try_wait().context("wait for git")? {
-            break status;
+    let pid = child.id() as libc::pid_t;
+    let mut pipes: [Option<std::fs::File>; 2] = [
+        child.stdout.take().map(|p| OwnedFd::from(p).into()),
+        child.stderr.take().map(|p| OwnedFd::from(p).into()),
+    ];
+    for p in pipes.iter().flatten() {
+        // SAFETY: fcntl(2) on an fd this function owns.
+        unsafe {
+            let flags = libc::fcntl(p.as_raw_fd(), libc::F_GETFL);
+            libc::fcntl(p.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK);
         }
-        std::thread::sleep(Duration::from_millis(5));
-    };
-    let _ = done.send(());
-    let _ = watchdog.join();
-    let err = String::from_utf8_lossy(&errors.join().unwrap_or_default()).trim().to_string();
-    if timed_out.load(Ordering::SeqCst) {
-        bail!("git took longer than {}s", timeout.as_secs_f32());
     }
-    read.context("read git output")?;
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let (mut truncated, mut timed_out) = (false, false);
+    let mut exited: Option<Instant> = None;
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        if exited.is_none() && has_exited(pid) {
+            exited = Some(Instant::now());
+        }
+        let open: Vec<usize> = (0..2).filter(|&i| pipes[i].is_some()).collect();
+        if open.is_empty() && exited.is_some() {
+            break;
+        }
+        let end = exited.map_or(deadline.at, |t| deadline.at.min(t + DRAIN_GRACE));
+        let now = Instant::now();
+        if now >= end {
+            timed_out = exited.is_none();
+            break;
+        }
+        // Woken now and then to see whether the command exited.
+        let wait = (end - now).min(Duration::from_millis(20));
+        let mut fds: Vec<libc::pollfd> = open
+            .iter()
+            .map(|&i| libc::pollfd { fd: pipes[i].as_ref().unwrap().as_raw_fd(), events: libc::POLLIN, revents: 0 })
+            .collect();
+        // SAFETY: `fds` holds `fds.len()` entries for fds open here.
+        if unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, wait.as_millis().max(1) as libc::c_int) } < 0 {
+            let e = std::io::Error::last_os_error();
+            if e.kind() != std::io::ErrorKind::Interrupted {
+                return Err(e).context("wait for the command's output");
+            }
+            continue;
+        }
+        for (fd, &i) in fds.iter().zip(&open) {
+            if fd.revents == 0 {
+                continue;
+            }
+            match pipes[i].as_mut().unwrap().read(&mut buf) {
+                Ok(0) => pipes[i] = None,
+                Ok(n) => {
+                    // Read to the end, so the command never waits on a full pipe; the start is kept.
+                    let (kept, most) = if i == 0 { (&mut out, limit + 1) } else { (&mut err, ERROR_LIMIT) };
+                    let room = most.saturating_sub(kept.len());
+                    kept.extend_from_slice(&buf[..n.min(room)]);
+                }
+                Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted) => {}
+                Err(_) => pipes[i] = None,
+            }
+        }
+        if out.len() > limit {
+            truncated = true;
+            out.truncate(limit);
+            break;
+        }
+    }
+    drop(pipes);
+    // The leader is not reaped yet, so the group id is still its own and the
+    // kill reaches no other process. A helper that left the group is cut off
+    // by the closed pipes instead.
+    // SAFETY: kill(2) of this command's own process group.
+    unsafe { libc::kill(-pid, libc::SIGKILL) };
+    let status = child.wait().context("wait for the command")?;
+    let err = String::from_utf8_lossy(&err).trim().to_string();
+    if timed_out {
+        bail!("git took longer than {}s", deadline.after.as_secs_f32());
+    }
     if !truncated && !status.success() {
         return Err(Failed(err).into());
     }
+    Ok((out, truncated))
+}
+
+/// The child `pid` exited. It is left unreaped.
+#[cfg(unix)]
+fn has_exited(pid: libc::pid_t) -> bool {
+    // SAFETY: waitid(2) with WNOWAIT only reads the child's state.
+    unsafe {
+        let mut info: libc::siginfo_t = std::mem::zeroed();
+        let r = libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOHANG | libc::WNOWAIT);
+        // With WNOHANG and no exit yet, the pid stays zero.
+        r == 0 && info.si_pid() != 0
+    }
+}
+
+/// Without process groups: the output is cut at `limit`, and the time is not bounded.
+#[cfg(not(unix))]
+fn bounded(mut cmd: Command, limit: usize, _deadline: Deadline) -> Result<(Vec<u8>, bool)> {
+    let o = cmd.stdin(Stdio::null()).output().context("start the command")?;
+    if !o.status.success() {
+        return Err(Failed(String::from_utf8_lossy(&o.stderr).trim().to_string()).into());
+    }
+    let mut out = o.stdout;
+    let truncated = out.len() > limit;
+    out.truncate(limit);
     Ok((out, truncated))
 }
 
@@ -884,16 +1022,179 @@ mod tests {
             c.args(["-c", script]);
             c
         };
+        let within = Deadline::after;
         let started = std::time::Instant::now();
-        let slow = bounded(sh("sleep 30"), 10, Duration::from_millis(300));
+        let slow = bounded(sh("sleep 30"), 10, within(Duration::from_millis(300)));
         assert!(slow.is_err_and(|e| e.to_string().contains("longer than")));
         assert!(started.elapsed() < Duration::from_secs(10));
         let started = std::time::Instant::now();
-        let (out, cut) = bounded(sh("yes"), 4096, Duration::from_secs(20)).unwrap();
+        let (out, cut) = bounded(sh("yes"), 4096, within(Duration::from_secs(20))).unwrap();
         assert!(cut && out.len() == 4096 && started.elapsed() < Duration::from_secs(10));
-        let failed = bounded(sh("echo why >&2; exit 3"), 10, Duration::from_secs(20));
+        let failed = bounded(sh("echo why >&2; exit 3"), 10, within(Duration::from_secs(20)));
         assert!(failed.is_err_and(|e| e.to_string() == "why"));
-        assert_eq!(bounded(sh("printf ok"), 10, Duration::from_secs(20)).unwrap(), (b"ok".to_vec(), false));
+        assert_eq!(bounded(sh("printf ok"), 10, within(Duration::from_secs(20))).unwrap(), (b"ok".to_vec(), false));
+    }
+
+    /// Review M4 P2: a helper the command starts may hold its stdout or
+    /// stderr open after it exits, or for ever. The pipes are read only
+    /// until the deadline, or briefly after the command exits, and the
+    /// helper is killed with the command's process group.
+    #[cfg(unix)]
+    #[test]
+    fn a_helper_holding_the_pipes_never_holds_the_run() {
+        let base = std::env::temp_dir().join(format!("skiff-helper-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let pidfile = |n: &str| base.join(n);
+        let sh = |script: String| {
+            let mut c = Command::new("sh");
+            c.args(["-c", &script]);
+            c
+        };
+        let alive = |f: &Path| {
+            let pid: i32 = std::fs::read_to_string(f).unwrap().trim().parse().unwrap();
+            // SAFETY: signal 0 only asks whether the process exists.
+            unsafe { libc::kill(pid, 0) == 0 }
+        };
+        let quick = |c, d| {
+            let started = Instant::now();
+            let r = bounded(c, 1 << 20, Deadline::after(d));
+            (r, started.elapsed())
+        };
+        // Exits at once, a helper keeps stdout: git's output, without waiting for the helper.
+        let (r, took) = quick(sh(format!("sleep 30 & echo $! > {}; echo out", pidfile("out").display())), Duration::from_secs(20));
+        assert_eq!(r.unwrap(), (b"out\n".to_vec(), false));
+        assert!(took < Duration::from_secs(3), "{took:?}");
+        // A helper on stderr only.
+        let (r, took) = quick(sh(format!("sleep 30 >/dev/null & echo $! > {}; echo out", pidfile("err").display())), Duration::from_secs(20));
+        assert_eq!(r.unwrap(), (b"out\n".to_vec(), false));
+        assert!(took < Duration::from_secs(3), "{took:?}");
+        // Never exits, and its helper holds both: the deadline, not the helper.
+        let (r, took) = quick(sh(format!("sleep 30 & echo $! > {}; sleep 30", pidfile("both").display())), Duration::from_millis(500));
+        assert!(r.is_err_and(|e| e.to_string().contains("longer than")));
+        assert!(took < Duration::from_secs(3), "{took:?}");
+        // No helper is left running.
+        std::thread::sleep(Duration::from_millis(100));
+        let left: Vec<_> = ["out", "err", "both"].into_iter().filter(|n| alive(&pidfile(n))).collect();
+        std::fs::remove_dir_all(&base).unwrap();
+        assert!(left.is_empty(), "still running: {left:?}");
+    }
+
+    /// A private repository at `base/name` with one commit of `a.txt`.
+    #[cfg(unix)]
+    fn committed(base: &Path, name: &str, a: &str) -> PathBuf {
+        let root = base.join(name);
+        std::fs::create_dir_all(&root).unwrap();
+        let run = |args: &[&str]| assert!(Command::new("git").arg("-C").arg(&root).args(args).status().unwrap().success());
+        run(&["init", "-q"]);
+        std::fs::write(root.join("a.txt"), a).unwrap();
+        run(&["add", "a.txt"]);
+        run(&["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-qm", "init"]);
+        root
+    }
+
+    /// An executable script at `path`.
+    #[cfg(unix)]
+    fn script(path: &Path, body: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(path, format!("#!/bin/sh\n{body}")).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// Review M4 P2: git's status, revision and base runs before the diff
+    /// share its deadline. An fsmonitor hook that stalls the status no
+    /// longer stalls the request, and is killed with git.
+    #[cfg(unix)]
+    #[test]
+    fn a_stalled_status_before_the_diff_is_bounded() {
+        let base = std::env::temp_dir().join(format!("skiff-preflight-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let root = committed(&base, "repo", "1\n");
+        let hook = base.join("hook");
+        script(&hook, &format!("echo $$ > {}\nsleep 30\n", base.join("hook.pid").display()));
+        assert!(Command::new("git").arg("-C").arg(&root).args(["config", "core.fsmonitor"]).arg(&hook).status().unwrap().success());
+        std::fs::write(root.join("a.txt"), "2\n").unwrap();
+        let held = Root::open(&root).unwrap();
+        let started = Instant::now();
+        let got = diff_within(&held, &root, Some("a.txt"), Deadline::after(Duration::from_secs(1)));
+        let took = started.elapsed();
+        std::thread::sleep(Duration::from_millis(100));
+        let hook_pid: Option<i32> = std::fs::read_to_string(base.join("hook.pid")).ok().and_then(|p| p.trim().parse().ok());
+        // SAFETY: signal 0 only asks whether the process exists.
+        let hook_alive = hook_pid.is_some_and(|p| unsafe { libc::kill(p, 0) == 0 });
+        std::fs::remove_dir_all(&base).unwrap();
+        assert!(hook_pid.is_some(), "the hook never ran");
+        assert!(got.is_err_and(|e| e.to_string().contains("longer than")));
+        assert!(took < Duration::from_secs(4), "{took:?}");
+        assert!(!hook_alive);
+    }
+
+    /// Review M4 P2: the worktree's path swapped for another repository
+    /// between git runs, and swapped back before the last check. Git runs
+    /// in the folder held open, so the other repository is never read. The
+    /// swap is made by an fsmonitor hook of the worktree's own status run,
+    /// and undone by one of the other repository's.
+    #[cfg(unix)]
+    #[test]
+    fn git_runs_in_the_held_root_even_while_its_path_names_another() {
+        let base = std::env::temp_dir().join(format!("skiff-anchor-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let root = committed(&base, "repo", "inside\n");
+        let other = committed(&base, "other", "inside\n");
+        std::fs::write(other.join("a.txt"), "OUTSIDE_PRIVATE_CONTENT\n").unwrap();
+        std::fs::write(root.join("a.txt"), "changed\n").unwrap();
+        let (moved, done) = (base.join("moved"), base.join("swapped"));
+        let set = |repo: &Path, hook: &Path| assert!(Command::new("git").arg("-C").arg(repo).args(["config", "core.fsmonitor"]).arg(hook).status().unwrap().success());
+        let (swap, restore) = (base.join("swap"), base.join("restore"));
+        script(&swap, &format!(
+            "[ -e {done} ] && exit 1\ntouch {done}\nmv {root} {moved}\nln -s {other} {root}\nexit 1\n",
+            done = done.display(), root = root.display(), moved = moved.display(), other = other.display(),
+        ));
+        script(&restore, &format!(
+            "[ -L {root} ] && rm {root} && mv {moved} {root}\nexit 1\n",
+            root = root.display(), moved = moved.display(),
+        ));
+        set(&root, &swap);
+        set(&other, &restore);
+        let held = Root::open(&root).unwrap();
+        let got = diff_in(&held, &root, Some("a.txt")).map_err(|e| e.to_string());
+        let swapped = done.exists();
+        // Whichever way it ended, the fixture is put back before it is removed.
+        if root.is_symlink() {
+            std::fs::remove_file(&root).unwrap();
+            std::fs::rename(&moved, &root).unwrap();
+        }
+        std::fs::remove_dir_all(&base).unwrap();
+        assert!(swapped, "the hook never swapped the path");
+        let text = format!("{got:?}");
+        assert!(!text.contains("OUTSIDE_PRIVATE_CONTENT"), "{text}");
+        // The held folder's own diff, or a refusal: never the other's.
+        assert!(got.as_ref().map_or_else(|e| e.contains("replaced"), |d| d.text.contains("+changed")), "{text}");
+    }
+
+    /// Review M4 P3: invalid UTF-8 becomes U+FFFD, three bytes for one, so
+    /// the cap is on the text that is answered, and a cut says so.
+    #[cfg(unix)]
+    #[test]
+    fn the_diff_limit_holds_after_invalid_utf8_is_replaced() {
+        let base = std::env::temp_dir().join(format!("skiff-utf8cap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let root = committed(&base, "repo", "1\n");
+        let mut bytes = vec![0xffu8; 400_000];
+        bytes.push(b'\n');
+        std::fs::write(root.join("a.txt"), &bytes).unwrap();
+        std::fs::write(root.join("new.txt"), &bytes).unwrap();
+        let held = Root::open(&root).unwrap();
+        let got: Vec<_> = ["a.txt", "new.txt"].iter().map(|f| diff_in(&held, &root, Some(f)).unwrap()).collect();
+        std::fs::remove_dir_all(&base).unwrap();
+        for d in got {
+            assert!(d.truncated && !d.binary && d.text.len() <= DIFF_LIMIT, "{}: {}", d.truncated, d.text.len());
+            assert!(d.text.is_empty() || d.text.ends_with('\n'));
+        }
+        // Under the limit, valid text is untouched.
+        assert_eq!(cap("é\n".into(), false), ("é\n".to_string(), false));
     }
 
     #[test]

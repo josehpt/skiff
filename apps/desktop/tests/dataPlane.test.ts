@@ -15,8 +15,10 @@ function plane() {
   );
   const seen: string[] = [];
   let fresh = true;
+  /** What each reload answers: false, a read failed. */
+  const answers: boolean[] = [];
   const hooks = {
-    reload: async () => void seen.push(`reload@${mod.dataEpoch()}`),
+    reload: async () => (seen.push(`reload@${mod.dataEpoch()}`), answers.shift() ?? true),
     down: (m: string | null) => void seen.push(`down:${m}@${mod.dataEpoch()}`),
     fresh: () => fresh,
   };
@@ -24,7 +26,7 @@ function plane() {
     status = { ready: false, waiting: false, host_id: null, instance_id: null, connection: 0, capabilities: [], message: null, ...s };
   };
   const check = () => mod.checkDataPlane(hooks);
-  return { mod, set, check, seen, notFresh: () => (fresh = false) };
+  return { mod, set, check, seen, answers, notFresh: () => (fresh = false) };
 }
 
 const ready = (connection: number, instance = "i1", host = "H") => ({ ready: true, host_id: host, instance_id: instance, connection, capabilities: ["projects@1", "git_status@1", "git_diff@1"] });
@@ -80,4 +82,17 @@ test("each change of data connection or Host is a new epoch, so older replies ar
   assert.equal(mod.dataChange(s({}), s({ ready: false, message: "lost" })), "down");
   assert.equal(mod.dataChange(s({ ready: false, message: "a" }), s({ ready: false, message: "b" })), "down");
   assert.equal(mod.dataChange(s({}), s({ ready: false, waiting: true })), null);
+});
+
+test("review M4 P2: a reload that failed is tried again on the same connection, until one finishes", async () => {
+  const p = plane();
+  p.notFresh();
+  p.set(ready(1));
+  // The first read fails (a project or capability error), the second finishes.
+  p.answers.push(false, true);
+  await p.check();
+  assert.deepEqual(p.seen, ["reload@1"]);
+  // The same live connection: the read is tried again, in the same epoch, then never again.
+  for (let i = 0; i < 10; i++) await p.check();
+  assert.deepEqual(p.seen, ["reload@1", "reload@1"]);
 });

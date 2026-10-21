@@ -39,12 +39,13 @@ async fn a_worktree_replaced_while_git_runs_is_refused_not_read() {
     std::fs::create_dir_all(config.parent().unwrap()).unwrap();
     std::fs::write(&config, format!("[[project]]\nname = \"app\"\npath = \"{}\"\n", root.display())).unwrap();
 
-    // `git -C <dir> ...`: the root is its only worktree, `victim.txt` is
-    // untracked, and once `swap` exists the diff replaces the root's path
-    // with a link to `outside` (with `diff-swap` too, status does it).
+    // `git [-C <dir>] ...` (a worktree's runs start in its held folder, with
+    // no `-C`): the root is its only worktree, `victim.txt` is untracked, and
+    // once `swap` exists the diff replaces the root's path with a link to
+    // `outside` (with `diff-swap` too, status does it).
     let swap = dir.join("swap");
     let script = format!(
-        "#!/bin/sh\nshift 2\ncase \"$1\" in\n\
+        "#!/bin/sh\n[ \"$1\" = -C ] && shift 2\ncase \"$1\" in\n\
          worktree) printf 'worktree %s\\0HEAD 0000000\\0branch refs/heads/main\\0\\0' '{root}' ;;\n\
          status) printf '?? victim.txt\\0'; [ -e '{swap}' ] && [ -e '{dir}/diff-swap' ] && mv '{root}' '{dir}/original-repo' && ln -s '{outside}' '{root}'; exit 0 ;;\n\
          diff) [ -e '{swap}' ] && mv '{root}' '{dir}/original-repo' && ln -s '{outside}' '{root}'; exit 1 ;;\n\

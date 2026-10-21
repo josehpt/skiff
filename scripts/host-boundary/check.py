@@ -21,6 +21,34 @@ RUST_HOST = {"skiff_core", "config", "ledger", "skipper", "agent_folder", "skiff
 JS_IO = {"invoke", "fetch", "XMLHttpRequest", "WebSocket", "require", "Deno", "Bun"}
 
 
+def regex_can_start(lexed):
+    # A run of ! operators preserves whether an operand was expected before
+    # it: !/regex/ is prefix negation, but value! / divisor is TS postfix
+    # non-null assertion followed by division. Comments are already skipped.
+    i = len(lexed) - 1
+    while i >= 0 and lexed[i] == ("punct", "!"):
+        i -= 1
+    return i < 0 or lexed[i][1] in {
+        "(", "[", "{", "=", ":", ",", ";", "?", "&", "|", ">", "return", "throw",
+    }
+
+
+def regex_end(source, start):
+    """Only consume a closed, single-line regex; otherwise keep scanning code."""
+    i, character_class = start + 1, False
+    while i < len(source):
+        if source[i] in "\r\n\u2028\u2029": return None
+        if source[i] == "\\":
+            if i + 1 == len(source) or source[i + 1] in "\r\n\u2028\u2029": return None
+            i += 2
+            continue
+        if source[i] == "[": character_class = True
+        elif source[i] == "]": character_class = False
+        elif source[i] == "/" and not character_class: return i + 1
+        i += 1
+    return None
+
+
 def tokens(source, rust=False, _expression=False):
     """Keep string import specifiers; skip comments, including nested Rust ones."""
     out, i = [], 0
@@ -44,20 +72,11 @@ def tokens(source, rust=False, _expression=False):
                 end = source.find('"' + (raw[1] or ''), start)
                 i = len(source) if end < 0 else end + 1 + len(raw[1] or '')
                 out.append(("string", source[start:end]))
-            elif (_expression and source[i] == "/" and
-                  (not out or out[-1][1] in {"(", "[", "{", "=", ":", ",", ";", "!", "?", "&", "|", ">", "return", "throw"})):
-                # Regex literals may contain braces/backticks. Distinguish the
-                # common expression-start positions from arithmetic division.
-                i += 1
-                character_class = False
-                while i < len(source):
-                    if source[i] == "\\": i += 2; continue
-                    if source[i] == "[": character_class = True
-                    elif source[i] == "]": character_class = False
-                    elif source[i] == "/" and not character_class:
-                        i += 1
-                        break
-                    i += 1
+            elif (_expression and source[i] == "/" and regex_can_start(out)
+                  and (end := regex_end(source, i)) is not None):
+                # Regex braces/backticks are inert, but a failed regex guess
+                # must never swallow the rest of an interpolation or file.
+                i = end
                 out.append(("regex", ""))
             elif not rust and source[i] == "`":
                 # Literal chunks are inert; ${...} is executable code, including

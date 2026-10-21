@@ -137,6 +137,56 @@ class BoundaryTests(unittest.TestCase):
                     self.assert_new_caller_rejected(root, baseline, name,
                                                    'export const load = async () => ' + expression + ';')
 
+    def test_postfix_non_null_division_cannot_hide_later_io_from_inventory(self):
+        review_fixture = """export const load = (n: number | undefined, url: string) => {
+  const label = `${n! / 2}`;
+  return fetch(url).then(() => label);
+};"""
+        for source in [
+            review_fixture,
+            review_fixture.replace("n! / 2", "n! /* assertion */ / 2 / 3"),
+            review_fixture.replace("n! / 2", "(n!)! / 2"),
+            review_fixture.replace("`${n! / 2}`", "`outer ${`inner ${n! / 2}`}`"),
+            review_fixture.replace("return fetch(url).then(() => label);",
+                                   'fetch(url); const pattern = /safe/; return label;'),
+        ]:
+            for previously_clean in (False, True):
+                with self.subTest(source=source, previously_clean=previously_clean), tempfile.TemporaryDirectory() as folder:
+                    root = Path(folder)
+                    self.desktop_fixture(root)
+                    name = "apps/desktop/src/verification-preview.ts"
+                    if previously_clean:
+                        self.fixture(root, name, 'export const load = () => "safe";')
+                    baseline = check.inventory(root)
+                    self.assertNotIn(name, baseline)
+                    self.assert_new_caller_rejected(root, baseline, name, source)
+                    self.assertIn("fetch", check.inventory(root)[name]["reasons"])
+
+    def test_prefix_negation_regex_and_nested_interpolation_remain_supported(self):
+        for expression in [
+            '`${!/}/.test(value) ? fetch(url) : ""}`',
+            '`${!!/[}`]/.test(value) ? fetch(url) : ""}`',
+            r'`${!/a\/[}`]/.test(value) ? fetch(url) : ""}`',
+            '`outer ${`inner ${!/}/.test(value) ? fetch(url) : ""}`}`',
+        ]:
+            with self.subTest(expression=expression), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                self.desktop_fixture(root)
+                baseline = check.inventory(root)
+                self.assert_new_caller_rejected(root, baseline, "apps/desktop/src/preview.ts",
+                                               'export const load = () => ' + expression + ';')
+        # Regex contents stay inert; prefix ! and !! must not be treated as
+        # postfix assertions, even with regex braces/backticks and I/O words.
+        for source in ['`${!/fetch[}`]/.test(value)}`', '`${!!/fetch[}`]/.test(value)}`']:
+            with self.subTest(source=source): self.assertEqual(check.risks(source, ".ts"), [])
+
+    def test_unterminated_regex_guess_does_not_consume_later_code(self):
+        # Even incomplete input must not let a guessed regex swallow later I/O.
+        for guessed_regex in ["/unfinished", "/[unfinished", "/unfinished\\"]:
+            with self.subTest(guessed_regex=guessed_regex):
+                source = '`${!' + guessed_regex + '\n}`; fetch(url);'
+                self.assertIn("fetch", check.risks(source, ".ts"))
+
     def test_template_literal_text_and_escaped_interpolations_remain_inert(self):
         for source in [
             '`fetch(url) $\\{fetch(url)} \\${fetch(url)}`',

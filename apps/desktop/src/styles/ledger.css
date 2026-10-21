@@ -47,6 +47,9 @@
 .lg-row:hover { background-image: linear-gradient(var(--hover), var(--hover)); }
 /* A task under a plan: its dot sits under the plan's title. */
 .lg-row.kid { padding-left: calc(31 * var(--u)); }
+/* The lit row while the Ledger has the keys: as the current row in the list. */
+.lg-row.lit, .lg-row.need.lit { background-color: color-mix(in srgb, var(--pc, var(--project-default)) 22%, var(--bg-panel)); box-shadow: inset 2px 0 0 var(--pc, var(--project-default)); outline: none; }
+.lg-row:focus { outline: none; }
 /* A row whose click does nothing does not light on hover. */
 .lg-row.dead { cursor: default; }
 .lg-row.dead:hover { background-image: none; }

@@ -12,6 +12,11 @@
  * it, and it counts as one item. Rows slide to their new place, flash on a
  * change and fade in; a close slides the work down into Finished.
  *
+ * Ctrl+Shift+Right from Skipper's pane gives the keys to the panel, and opens
+ * a folded one. Ctrl+Shift+Up/Down, or the plain arrows, step the lit row.
+ * Enter does the row's click. Ctrl+Shift+Left or Esc gives the keys back to
+ * Skipper's pane. The lit row stays across redraws.
+ *
  * A click on a row does the main action for its state: open the pane or the
  * result. Small icons at the right edge do the rest, only when they apply:
  * the pane or the result. The panel never writes: only Skipper changes rows.
@@ -32,6 +37,8 @@ import { shownIds } from "../app/stateQueries";
 import type { SessionInfo } from "../platform/types";
 import { openPath, previewToken } from "../terminal/peek";
 import { holdFits, releaseFits } from "../terminal/terminal";
+import { panes } from "../terminal/terminalState";
+import type { Action } from "../app/keys";
 import { h } from "../ui/dom";
 import { isSlot } from "./layoutSlots";
 import { taskTitle } from "./model";
@@ -121,6 +128,8 @@ export async function loadLedger() {
 
 /** Reads the ledger now and on each change. main.ts calls it once. */
 export function startLedger() {
+  const panel = document.getElementById("ledger");
+  panel?.addEventListener("keydown", rowKey);
   void listen("skiff:ledger-changed", () => void loadLedger());
   void loadLedger();
 }
@@ -380,6 +389,7 @@ function line(r: Entry, st: State, label: string, a: Acts, o: { plan?: boolean; 
   const need = !o.fin && !!NEED[st];
   const row = h("div", `lg-row s-${st}` + (need ? " need" : "") + (o.plan ? " plan" : "") + (o.kid ? " kid" : "") + (o.fin ? " fin" : "") + (a.click ? "" : " dead"));
   row.dataset.key = r.uid;
+  row.tabIndex = -1;
   row.dataset.look = o.fin ? "fin" : `${st}:${label}`;
   const why = need && WHY[st] ? `${WHY[st]}\n` : "";
   row.title = `${why}${a.tip}\n\n${r.task}\n\n${times(r)}`;
@@ -521,11 +531,13 @@ export function renderLedger() {
   panel.hidden = !show;
   if (!show) {
     drawn = false;
+    keys = false;
     return;
   }
   panel.classList.toggle("folded", folded);
   if (folded && !folding) {
     drawn = false;
+    keys = false;
     renderRail(panel);
     return;
   }
@@ -568,9 +580,92 @@ export function renderLedger() {
   }
   list.replaceChildren(...out);
   if (move) animate(list, before);
+  if (keys) light();
   drawn = loaded;
   if (flashNext) {
     flashNext = false;
     flashNeed(panel);
   }
+}
+
+// ── Keys ────────────────────────────────────────────────────────────────────
+
+/** The keys are in the panel. */
+let keys = false;
+/** The lit row's uid. */
+let lit: string | null = null;
+
+const rowEls = () => [...document.querySelectorAll<HTMLElement>("#ledger .lg-list .lg-row[data-key]:not(.ghost)")];
+
+/** Lights the row `lit` names, else the first that needs the person, else the first, and gives it the keys. */
+function light() {
+  const rs = rowEls();
+  for (const r of rs) r.classList.remove("lit");
+  const r = rs.find((x) => x.dataset.key === lit) ?? rs.find((x) => x.classList.contains("need")) ?? rs[0];
+  if (!r) return;
+  lit = r.dataset.key!;
+  r.classList.add("lit");
+  r.focus({ preventScroll: true });
+  r.scrollIntoView({ block: "nearest" });
+}
+
+function step(dir: 1 | -1) {
+  const rs = rowEls();
+  if (!rs.length) return;
+  const i = rs.findIndex((x) => x.dataset.key === lit);
+  lit = rs[i < 0 ? 0 : (i + dir + rs.length) % rs.length].dataset.key!;
+  light();
+}
+
+/** Ctrl+Shift+Right: the keys go to the panel. A folded panel opens first. */
+function enter() {
+  if (folded) toggleLedger();
+  keys = true;
+  light();
+}
+
+/** Ctrl+Shift+Left or Esc: the keys go back to Skipper's pane. */
+function leave() {
+  keys = false;
+  for (const r of rowEls()) r.classList.remove("lit");
+  const s = skiffAgentSession();
+  if (s) panes.get(s.id)?.term.focus();
+}
+
+/** Plain keys on a lit row: the arrows step, Enter clicks, Esc leaves. */
+function rowKey(e: KeyboardEvent) {
+  if (!keys || e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
+  const r = (e.target as HTMLElement).closest<HTMLElement>(".lg-row[data-key]");
+  if (!r) return;
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") step(e.key === "ArrowDown" ? 1 : -1);
+  else if (e.key === "Enter") r.click();
+  else if (e.key === "Escape") leave();
+  else return;
+  e.preventDefault();
+}
+
+// The keys left the panel (a click, F6, a pane, an opened row): the light goes.
+document.addEventListener("focusin", (e) => {
+  if (!keys || document.getElementById("ledger")?.contains(e.target as Node)) return;
+  keys = false;
+  for (const r of rowEls()) r.classList.remove("lit");
+});
+
+/**
+ * The list keys while the Ledger is on screen. True when the Ledger took the
+ * key. From a project or fleet row, Ctrl+Shift+Right keeps its list meaning.
+ */
+export function ledgerKey(a: Action): boolean {
+  if (!ledgerShown()) return false;
+  if (keys) {
+    if (a === "session-next" || a === "session-prev") step(a === "session-next" ? 1 : -1);
+    else if (a === "list-project") leave();
+    else return a === "list-back";
+    return true;
+  }
+  if (a !== "list-back") return false;
+  const el = document.activeElement;
+  if (el?.classList.contains("project-pick") || el?.classList.contains("fleet-pick")) return false;
+  enter();
+  return true;
 }

@@ -24,6 +24,7 @@ import { copySelection, pasteClipboard } from "../terminal/terminalClipboard";
 import { fontTarget, setFontSize, stepPaneFont } from "../terminal/terminalFont";
 
 import { modeGate, modeKeyBlocked, toggleFocusMode, toggleMaximize } from "./modes";
+import { ledgerKey } from "../workspace/ledger";
 import { closePane, goBack, moveFocus, nextWaiting, removeFromGroup } from "../workspace/view";
 import { switcher } from "./commandUi";
 import { missionKey, missionOpen, toggleRunning, toggleSearch } from "../workspace/missionControl";
@@ -58,6 +59,8 @@ export function runAction(a: Action) {
   // The Skiff agent's key leaves the board on its pane, or closes the board and starts it.
   if (missionOpen() && (a === "settings" || (a === "skiff-agent" && !skiffAgentSession()))) closeMission();
   else if (missionOpen() && a !== "mission-control" && a !== "quit" && a !== "next-waiting" && a !== "skiff-agent") return;
+  // The Ledger takes the list keys while it has the keys, and Ctrl+Shift+Right into it. Focus mode keeps it.
+  if (ledgerKey(a)) return;
   // The native menu runs its accelerators through here, not through the key handler.
   if (modeKeyBlocked(a) || modeGate(a)) return;
   // The open palette holds every other action; its own key closes it.

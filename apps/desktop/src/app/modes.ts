@@ -5,7 +5,7 @@
  * with the same chrome and the Ledger hidden. Ctrl+Shift+Up/Down
  * step through the panes of the view, as they step through its rows in the
  * tree. While maximized, the next pane is maximized in its place.
- * Ctrl+Shift+Left/Right do nothing. Keys that go to another view (Next
+ * Ctrl+Shift+Left/Right do nothing, but for the Ledger beside Skipper. Keys that go to another view (Next
  * waiting, the palette, Back, a project key) work, and going there ends the
  * mode.
  */

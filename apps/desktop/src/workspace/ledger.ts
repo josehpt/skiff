@@ -47,6 +47,7 @@ interface Entry {
   pane_id: string | null;
   pane_gen: number | null;
   task: string;
+  sent_at: string;
   /** The short title Skipper gave it. */
   title: string | null;
   state: "sent" | "pending" | "blocked" | "done";
@@ -349,6 +350,21 @@ function taskActs(l: Look, fin: boolean): Acts {
   return { click: pane, tip: pane ? "Open pane" : "The pane is on another daemon", icons };
 }
 
+/** A ledger time (UTC, ISO) as local time: "Oct 20 21:37". */
+function stamp(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  const day = d.toLocaleDateString([], { month: "short", day: "numeric" });
+  return `${day} ${d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}`;
+}
+
+/** The row's times for its tooltip: sent, last change, and closed when it is. */
+function times(r: Entry): string {
+  const t = [`Sent ${stamp(r.sent_at)}`, `Updated ${stamp(r.updated_at)}`];
+  if (r.closed_at) t.push(`Closed ${stamp(r.closed_at)}`);
+  return t.join("\n");
+}
+
 /** One 20px line, with its actions. */
 function line(r: Entry, st: State, label: string, a: Acts, o: { plan?: boolean; kid?: boolean; fin?: boolean }): HTMLElement {
   const need = !o.fin && !!NEED[st];
@@ -356,7 +372,7 @@ function line(r: Entry, st: State, label: string, a: Acts, o: { plan?: boolean; 
   row.dataset.key = r.uid;
   row.dataset.look = o.fin ? "fin" : `${st}:${label}`;
   const why = need && WHY[st] ? `${WHY[st]}\n` : "";
-  row.title = `${why}${a.tip}\n\n${r.task}`;
+  row.title = `${why}${a.tip}\n\n${r.task}\n\n${times(r)}`;
   const acts = h("span", "lg-acts");
   for (const [name, tip, run] of a.icons) {
     const b = h("button", "lg-ico");
@@ -391,8 +407,8 @@ function unitRows(u: Unit, fin: boolean): HTMLElement[] {
 
 /** What the list draws. The panel is rebuilt only when it changes. */
 function signature(x: Sections): string {
-  const look = (l: Look) => [l.r.id, l.r.state, l.r.title, l.r.task, l.r.result_exists, l.st, l.where, opens(l)];
-  const unit = (u: Unit) => [u.r.id, u.st, u.r.title, u.r.task, u.r.result_exists, u.look ? look(u.look) : null, u.kids?.map(look)];
+  const look = (l: Look) => [l.r.id, l.r.state, l.r.title, l.r.task, l.r.updated_at, l.r.closed_at, l.r.result_exists, l.st, l.where, opens(l)];
+  const unit = (u: Unit) => [u.r.id, u.st, u.r.title, u.r.task, u.r.updated_at, u.r.closed_at, u.r.result_exists, u.look ? look(u.look) : null, u.kids?.map(look)];
   return JSON.stringify([error, x.working.map(unit), x.open.map(unit), x.finished.map(unit)]);
 }
 

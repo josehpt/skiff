@@ -72,13 +72,6 @@ type State = "pending" | "sent" | "approval" | "blocked" | "interrupted" | "gone
 
 /** The states that need the person, and the word that takes the pane name's place. */
 const NEED: Partial<Record<State, string>> = { approval: "asks approval", blocked: "blocked", interrupted: "restarted", gone: "pane gone", exited: "exited" };
-const WHY: Partial<Record<State, string>> = {
-  approval: "The agent asks approval in its pane.",
-  blocked: "The task is blocked. Skipper needs an answer.",
-  interrupted: "The pane restarted as a shell. The task stopped.",
-  gone: "The pane closed before the task finished.",
-  exited: "The pane's program ended before the task was done.",
-};
 /** The order of the needs, most urgent first: a plan shows the first its tasks have. */
 const URGENT: State[] = ["approval", "blocked", "interrupted", "gone", "exited"];
 
@@ -137,7 +130,7 @@ export function startLedger() {
 /**
  * The short title: the first sentence of the task text. It ends at the first
  * ". ", "; " or line break outside parentheses, and is cut at a space before
- * 80 characters. The row's ellipsis cuts the rest; the tooltip has it all.
+ * 80 characters. The row's ellipsis cuts the rest.
  */
 export function shortTitle(text: string): string {
   const t = text.trim();
@@ -330,10 +323,9 @@ const ICON = {
   result: '<svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 .65h4L8.35 3v6.35H2z"/><path d="M5.8.65V3.2h2.55"/></svg>',
 };
 
-/** What a row does: its click, its tooltip, and the icons at its right edge. */
+/** What a row does: its click and the icons at its right edge. */
 interface Acts {
   click: (() => void) | null;
-  tip: string;
   icons: [keyof typeof ICON, string, () => void][];
 }
 
@@ -358,30 +350,15 @@ function taskActs(l: Look, fin: boolean): Acts {
   const r = l.r;
   const res = result(r);
   const pane = opens(l) ? () => openPane(l.pane!) : null;
-  if (fin) return { click: res, tip: res ? "Open result" : "No result file", icons: [] };
+  if (fin) return { click: res, icons: [] };
   if (l.st === "done") {
     const icons: Acts["icons"] = [];
     if (pane) icons.push(["pane", "Open pane", pane]);
-    return { click: res, tip: res ? "Open result" : "No result file yet", icons };
+    return { click: res, icons };
   }
-  if (l.st === "gone") return { click: res, tip: res ? "Open result" : "The pane is gone. No result yet.", icons: [] };
+  if (l.st === "gone") return { click: res, icons: [] };
   const icons: Acts["icons"] = l.st === "interrupted" && res ? [["result", "Open result", res]] : [];
-  return { click: pane, tip: pane ? "Open pane" : "The pane is on another daemon", icons };
-}
-
-/** A ledger time (UTC, ISO) as local time: "Oct 20 21:37". */
-function stamp(iso: string): string {
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return iso;
-  const day = d.toLocaleDateString([], { month: "short", day: "numeric" });
-  return `${day} ${d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}`;
-}
-
-/** The row's times for its tooltip: sent, last change, and closed when it is. */
-function times(r: Entry): string {
-  const t = [`Sent ${stamp(r.sent_at)}`, `Updated ${stamp(r.updated_at)}`];
-  if (r.closed_at) t.push(`Closed ${stamp(r.closed_at)}`);
-  return t.join("\n");
+  return { click: pane, icons };
 }
 
 /** One 20px line, with its actions. */
@@ -391,8 +368,8 @@ function line(r: Entry, st: State, label: string, a: Acts, o: { plan?: boolean; 
   row.dataset.key = r.uid;
   row.tabIndex = -1;
   row.dataset.look = o.fin ? "fin" : `${st}:${label}`;
-  const why = need && WHY[st] ? `${WHY[st]}\n` : "";
-  row.title = `${why}${a.tip}\n\n${r.task}\n\n${times(r)}`;
+  // No tooltip: the title names the row for a screen reader.
+  row.setAttribute("aria-label", titleOf(r));
   const acts = h("span", "lg-acts");
   for (const [name, tip, run] of a.icons) {
     const b = h("button", "lg-ico");
@@ -421,7 +398,7 @@ function unitRows(u: Unit, fin: boolean): HTMLElement[] {
   const n = kids.length ? `${kids.filter((k) => k.st === "done").length}/${kids.length}` : "";
   // A plan row is a head for its tasks: its click opens plan.md.
   const res = result(u.r);
-  const row = line(u.r, fin ? "done" : u.st, n, { click: res, tip: res ? "Open plan.md" : "No plan.md yet", icons: [] }, { plan: true, fin });
+  const row = line(u.r, fin ? "done" : u.st, n, { click: res, icons: [] }, { plan: true, fin });
   return [row, ...kids.map((k) => taskRow(k, true, fin))];
 }
 

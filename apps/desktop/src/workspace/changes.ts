@@ -23,30 +23,20 @@ import { collapsed } from "../app/state";
 
 import { storedSet } from "../app/stored";
 import { isRemote } from "../app/hosts";
-import { hostCan } from "../app/hostCaps";
+import { hostCan, hostInvoke } from "../app/hostCaps";
 import { dataEpoch } from "../app/dataPlane";
 import type { Preview } from "./rowActs";
 
 type Change = { path: string; status: "M" | "A" | "D" | "U"; added: number | null; removed: number | null };
 
-/** Projects with `changes = false` in projects.toml. Changes show by default. */
-const hidden = new Set<string>();
+/** The project says it itself, from its Host's projects.toml. Changes show by default. */
+export const showsChanges = (p: Project) => p.changes !== false;
 
-/** A remote Host's project says it itself, from that Host's projects.toml. */
-export const showsChanges = (p: Project) => (isRemote() ? p.changes !== false : !hidden.has(p.name));
-
-/** Reads which projects hide changes. Called with every project reload. */
-export async function loadChangesSetting() {
-  const names = await invoke<string[]>("hidden_changes_projects").catch(() => []);
-  hidden.clear();
-  for (const n of names) hidden.add(n);
-}
-
+/** The Host keeps it (`project_config@1`); the next project read brings it back. */
 export async function setShowChanges(p: Project, show: boolean) {
   try {
-    await invoke("set_project_changes", { project: p.name, on: show });
-    if (show) hidden.delete(p.name);
-    else hidden.add(p.name);
+    await hostInvoke("project_config", "set_project_changes", { project: p.name, on: show });
+    p.changes = show ? null : false;
     render();
   } catch (e) {
     showError(e);

@@ -50,6 +50,13 @@ pub struct Project {
     /// `changes = false`: the Changes section is hidden. Absent: shown.
     #[serde(default)]
     pub changes: Option<bool>,
+    /// The project's own theme id. Absent: the app theme. Left out when
+    /// absent, so a row without it reads as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
+    /// Shows a Files tree under each worktree. Left out when off.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub files: bool,
 }
 
 impl Project {
@@ -79,6 +86,8 @@ impl Project {
             closed: p.closed,
             fleet: p.fleet.clone().filter(|f| !f.trim().is_empty()),
             changes: p.changes,
+            theme: p.theme.clone(),
+            files: p.files,
         }
     }
 }
@@ -194,8 +203,14 @@ pub fn data_url(file: &Path) -> Option<String> {
 /// Reads `projects.toml` again on every call. Projects load in parallel:
 /// each one runs git and searches its tree for an icon.
 pub fn list() -> Result<Vec<Project>> {
+    Ok(list_with_revision()?.0)
+}
+
+/// [`list`], and the revision of the very `[[project]]` tables it read.
+pub fn list_with_revision() -> Result<(Vec<Project>, String)> {
     let projects = crate::config::load()?.projects;
-    Ok(std::thread::scope(|s| {
+    let revision = crate::config::projects_revision(&projects);
+    let rows = std::thread::scope(|s| {
         let handles: Vec<_> = projects
             .iter()
             .map(|p| s.spawn(|| Project::from_config(p)))
@@ -204,7 +219,8 @@ pub fn list() -> Result<Vec<Project>> {
             .into_iter()
             .map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
             .collect()
-    }))
+    });
+    Ok((rows, revision))
 }
 
 pub fn find(name: &str) -> Result<ProjectConfig> {
@@ -212,7 +228,7 @@ pub fn find(name: &str) -> Result<ProjectConfig> {
         .projects
         .into_iter()
         .find(|p| p.name == name)
-        .ok_or_else(|| anyhow!("no such project: {name}"))
+        .ok_or_else(|| crate::config::Refused::NoProject(name.into()).into())
 }
 
 /// `<parent>/<dir>-worktrees/<branch with '/' as '-'>`.
@@ -228,15 +244,92 @@ pub fn worktree_path(project: &Path, branch: &str) -> PathBuf {
         .join(branch.replace('/', "-"))
 }
 
+/// A new branch name git would take, checked before git runs: its folder
+/// name comes from it, so it never climbs out of `<dir>-worktrees`.
+pub fn check_branch(branch: &str) -> Result<()> {
+    let bad = branch.is_empty()
+        || branch.starts_with(['-', '/', '.'])
+        || branch.ends_with(['/', '.'])
+        || branch.ends_with(".lock")
+        || branch.contains("..")
+        || branch.contains("//")
+        || branch.contains("@{")
+        || branch.chars().any(|c| c.is_control() || c.is_whitespace() || "~^:?*[\\".contains(c));
+    if bad {
+        return Err(crate::config::Refused::Invalid(format!("{branch:?} is not a branch name git takes")).into());
+    }
+    Ok(())
+}
+
 /// Adds a worktree on a new branch and returns it as git reports it.
 pub fn add_worktree(name: &str, branch: &str, base: Option<&str>) -> Result<Worktree> {
+    check_branch(branch)?;
+    if base.is_some_and(|b| b.is_empty() || b.starts_with('-')) {
+        return Err(crate::config::Refused::Invalid("not a base git takes".into()).into());
+    }
     let p = find(name)?;
+    if p.closed {
+        return Err(crate::config::Refused::NoProject(name.into()).into());
+    }
     let path = worktree_path(&p.path, branch);
     git::add_worktree(&p.path, branch, &path, base)?;
     git::list_worktrees(&p.path)?
         .into_iter()
         .find(|w| same_path(&w.path, &path))
         .ok_or_else(|| anyhow!("git added {} but does not list it", path.display()))
+}
+
+/// Why a worktree stays: the edit is refused, nothing is removed.
+#[derive(Debug)]
+pub enum Keep {
+    /// The project's main checkout.
+    Main,
+    /// A session that is not done runs in it.
+    Live(String),
+    /// Uncommitted changes, and no `force`.
+    Dirty,
+    /// Not a worktree of the project.
+    NotFound(String),
+}
+
+impl std::fmt::Display for Keep {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::Main => f.write_str("refusing to remove the main worktree"),
+            Self::Live(label) => write!(f, "session \"{label}\" is still running in this worktree"),
+            Self::Dirty => f.write_str("worktree has uncommitted changes"),
+            Self::NotFound(m) => f.write_str(m),
+        }
+    }
+}
+impl std::error::Error for Keep {}
+
+/// Removes a linked worktree of the named project. Refuses the main
+/// worktree, and any worktree a live session of `sessions` runs in.
+/// Refuses uncommitted changes unless `force`, which deletes them.
+pub fn remove_worktree(name: &str, path: &Path, force: bool, sessions: &[crate::session::SessionInfo]) -> Result<()> {
+    let p = find(name)?;
+    let wt = git::list_worktrees(&p.path)?
+        .into_iter()
+        .find(|w| same_path(&w.path, path))
+        .ok_or_else(|| Keep::NotFound(format!("{} is not a worktree of {name}", path.display())))?;
+    if wt.is_main {
+        return Err(Keep::Main.into());
+    }
+    // git reports realpaths; session cwds may go through symlinks.
+    let real = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let root = real(&wt.path);
+    let live = sessions
+        .iter()
+        .filter(|s| s.state != crate::session::SessionState::Done)
+        .find(|s| real(&s.cwd).starts_with(&root) || s.cwd.starts_with(path));
+    if let Some(s) = live {
+        return Err(Keep::Live(s.label.clone()).into());
+    }
+    if !force && wt.path.is_dir() && git::is_dirty(&wt.path)? {
+        return Err(Keep::Dirty.into());
+    }
+    git::remove_worktree(&p.path, &wt.path, force)
 }
 
 /// The agents Skiff offers, in menu order, with their default command.

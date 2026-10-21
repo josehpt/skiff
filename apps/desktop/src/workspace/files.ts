@@ -16,6 +16,8 @@ import { showError } from "../ui/alerts";
 import { ctxMenu } from "../ui/contextMenu";
 import { render } from "../app/render";
 import { storedSet } from "../app/stored";
+import { hostInvoke } from "../app/hostCaps";
+import { isRemote } from "../app/hosts";
 
 type Entry = { name: string; dir: boolean };
 type Listing = Entry[] | { error: string };
@@ -36,7 +38,8 @@ let version = 0;
 
 const join = (dir: string, name: string) => `${dir}/${name}`;
 
-export const showsFiles = (p: Project) => on.has(p.name);
+/** The tree reads this Mac's folders: a remote Host's project shows none (M5). */
+export const showsFiles = (p: Project) => !isRemote() && on.has(p.name);
 
 /** What the Files section draws for `w`, as a string. Equal strings mean an equal section. */
 export const filesSig = (w: Worktree) => (shown.has(w.path) ? `open:${version}` : "closed");
@@ -49,16 +52,16 @@ function store(dir: string, l: Listing) {
   version++;
 }
 
-/** Reads which projects show files. Called with every project reload. */
-export async function loadFilesSetting() {
-  const names = await invoke<string[]>("files_projects").catch(() => []);
+/** Which projects show files, from the Host's rows. Called with every project read. */
+export function filesFrom(list: Project[]) {
   on.clear();
-  for (const n of names) on.add(n);
+  for (const p of list) if (p.files) on.add(p.name);
 }
 
+/** The Host keeps the setting (`project_config@1`). The tree itself reads this Mac's folders (M5). */
 export async function setShowFiles(p: Project, show: boolean) {
   try {
-    await invoke("set_project_files", { project: p.name, on: show });
+    await hostInvoke("project_config", "set_project_files", { project: p.name, on: show });
     if (show) on.add(p.name);
     else on.delete(p.name);
     render();

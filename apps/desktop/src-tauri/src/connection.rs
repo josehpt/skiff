@@ -15,6 +15,9 @@ pub(crate) struct App {
     /// Counts the data-plane connections made: a new one may bring other
     /// data than the page shows (`data_plane_status`).
     pub(crate) data_gen: std::sync::atomic::AtomicU64,
+    /// The Host id and the `[[project]]` revision of the last project read or
+    /// change: what the next project change is made from.
+    pub(crate) revision: std::sync::Mutex<Option<(skiff_host_api::HostId, String)>>,
     /// The one endpoint this window reaches: this Mac, or the remote Host
     /// `hosts.toml` selects. Only `select_host` changes it, never a reconnect.
     /// Legacy paths only borrow its accepted Client.
@@ -411,6 +414,63 @@ where
     result.map_err(data_err)
 }
 
+/// Why a change was not sent: no project read of this Host to make it from.
+pub(crate) const DATA_UNREAD: &str = "Skiff has not read this Host's projects yet. It reads them again: try again.";
+/// Why a change's outcome is unknown: its reply was lost or late.
+pub(crate) const DATA_UNCERTAIN: &str =
+    "The Host did not answer in time, so the change may or may not have been made. Skiff reads the projects again: check them before you try again.";
+
+/// Keeps the revision of a project read or change from the Host `c` names.
+pub(crate) fn keep_revision(app: &App, c: &HostConnection, revision: Option<String>) {
+    *app.revision.lock().unwrap() = revision.map(|r| (c.hello().host.host_id.clone(), r));
+}
+
+/// One data-plane change, sent once and never again: not after a lost
+/// connection or a late reply, whose outcome is then unknown.
+pub(crate) async fn data_write<T, F, Fut>(app: &App, write: F) -> Result<T, String>
+where
+    F: FnOnce(Arc<HostConnection>) -> Fut,
+    Fut: std::future::Future<Output = Result<T, skiff_host_api::Error>>,
+{
+    use skiff_host_api::Error as E;
+    let c = data_now(app).await?;
+    match write(c).await {
+        Ok(out) => Ok(out),
+        Err(E::TransportLost | E::TimedOut | E::Cancelled) => Err(DATA_UNCERTAIN.into()),
+        Err(e) => Err(data_err(e)),
+    }
+}
+
+/// A project change, made from this Host's last project read or change:
+/// without one nothing is sent. Its answer's revision is kept for the next
+/// change. A conflict forgets it, so the next change waits for the page to
+/// read the projects again; the change is not sent again.
+pub(crate) async fn project_write<T, F, Fut>(app: &App, write: F) -> Result<T, String>
+where
+    F: FnOnce(Arc<HostConnection>, String) -> Fut,
+    Fut: std::future::Future<Output = Result<(T, String), skiff_host_api::Error>>,
+{
+    data_write(app, |c| async move {
+        let host = c.hello().host.host_id.clone();
+        let revision = app.revision.lock().unwrap().clone().filter(|(h, _)| *h == host).map(|(_, r)| r);
+        let Some(revision) = revision else {
+            return Err(skiff_host_api::Error::Invalid { message: DATA_UNREAD.into() });
+        };
+        match write(c.clone(), revision).await {
+            Ok((out, revision)) => {
+                keep_revision(app, &c, Some(revision));
+                Ok(out)
+            }
+            Err(skiff_host_api::Error::Conflict { message }) => {
+                keep_revision(app, &c, None);
+                Err(skiff_host_api::Error::Conflict { message: format!("{message} Skiff reads them again: try again if it is still needed.") })
+            }
+            Err(e) => Err(e),
+        }
+    })
+    .await
+}
+
 /// The data plane as the page shows it: reachable or why not, and which
 /// connection, so the page reads projects and Git again after a new one.
 #[derive(Serialize, Debug, PartialEq)]
@@ -486,7 +546,7 @@ pub(crate) fn data_failure(e: &anyhow::Error, selection: &HostSelection) -> Stri
 pub(crate) fn data_err(e: skiff_host_api::Error) -> String {
     use skiff_host_api::Error as E;
     match e {
-        E::OperationFailed { message } | E::NotFound { message } | E::Conflict { message } | E::Permission { message } | E::MalformedContract { message } => message,
+        E::OperationFailed { message } | E::NotFound { message } | E::Invalid { message } | E::Conflict { message } | E::Permission { message } | E::MalformedContract { message } => message,
         E::UnsupportedCapability { capability } => format!("This Host does not offer {}.", capability.name),
         E::HostBusy => "skiff-host is busy. Try again.".into(),
         E::TransportLost => "The connection to skiff-host was lost.".into(),

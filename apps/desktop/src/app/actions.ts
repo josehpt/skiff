@@ -8,6 +8,7 @@ import { currentRow, cycleRegion, fromProject, listItems, stepList, toMainWorktr
 import { endEntry, killGroup, newWorktree, projectMenu, projectRun, splitMenu, ungroup } from "../workspace/menus";
 import { ctxMenu } from "../ui/contextMenu";
 import { isRemote } from "./hosts";
+import { hostCan } from "./hostCaps";
 import { openRemoteNewSession } from "../workspace/remoteLaunch";
 import { addProject, launchMenu, settings } from "./panels";
 
@@ -78,8 +79,8 @@ export function runAction(a: Action) {
     case "palette": return switcher.toggle();
     case "new-session": return openNewSession();
     case "new-worktree": {
-      // A remote Host's projects are read-only (M4).
-      if (isRemote()) return;
+      // The Host makes it, when it offers worktrees.
+      if (!hostCan("worktrees")) return;
       const p = currentProject();
       return p ? newWorktree(p) : undefined;
     }
@@ -108,7 +109,8 @@ export function runAction(a: Action) {
     case "project-color":
     case "project-changes":
     case "project-files": {
-      if (isRemote()) return;
+      // The Host keeps these settings. The Files tree reads this Mac's folders (M5).
+      if (!hostCan("project_config") || (a === "project-files" && isRemote())) return;
       const p = currentProject();
       return p ? projectRun(p)[a]() : undefined;
     }
@@ -187,8 +189,8 @@ function closeKey(shown: boolean) {
 function openTheme() {
   const project = () => {
     const p = currentProject();
-    // A remote Host's project themes are its projects.toml's (read-only, M4).
-    if (p && !isRemote()) void projectThemeMenu(p);
+    // A project theme is its Host's setting: it changes when that Host takes project changes.
+    if (p && hostCan("project_config")) void projectThemeMenu(p);
   };
   const row = currentRow();
   const sid = row ? row.dataset.session : S.focused;

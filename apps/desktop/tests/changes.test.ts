@@ -19,7 +19,14 @@ function section(o: { remote: boolean; caps: string[] }) {
         },
       },
       "../app/hosts": { isRemote: () => o.remote },
-      "../app/hostCaps": { hostCan: (c: string) => o.caps.includes(c) },
+      "../app/hostCaps": {
+        hostCan: (c: string) => o.caps.includes(c),
+        hostInvoke: async (cap: string, cmd: string, args: any) => {
+          if (!o.caps.includes(cap)) throw new Error(`no ${cap}`);
+          calls.push(`${cap} ${cmd} ${args.project} ${args.on}`);
+        },
+      },
+      "../ui/alerts": { showError: (e: unknown) => calls.push(`error ${e}`) },
       "../app/dataPlane": { dataEpoch: () => epoch },
       "./model": { branchName: (w: any) => w.branch },
       "../app/stored": { storedSet: () => new Set() },
@@ -45,11 +52,24 @@ test("a remote Host's change row shows its git's text in the viewer, never a com
   assert.equal(section({ remote: false, caps: [] }).mod.diffPreview(W, "a.txt").kind, "diff");
 });
 
-test("a remote Host's projects.toml decides its Changes section", () => {
+test("the Host's projects.toml decides the Changes section, on This Mac as on a remote Host", async () => {
+  for (const remote of [true, false]) {
+    const p = section({ remote, caps: ["project_config"] });
+    assert.equal(p.mod.showsChanges({ name: "web", changes: false }), false);
+    assert.equal(p.mod.showsChanges({ name: "web", changes: null }), true);
+    assert.equal(p.mod.showsChanges({ name: "web" }), true);
+    // The change goes to the Host (`project_config`), and the row follows it.
+    const web: any = { name: "web" };
+    await p.mod.setShowChanges(web, false);
+    assert.deepEqual(p.calls, ["project_config set_project_changes web false"]);
+    assert.equal(p.mod.showsChanges(web), false);
+  }
+  // A Host that takes no project change: refused before any call, row unchanged.
   const p = section({ remote: true, caps: [] });
-  assert.equal(p.mod.showsChanges({ name: "web", changes: false }), false);
-  assert.equal(p.mod.showsChanges({ name: "web", changes: null }), true);
-  assert.equal(p.mod.showsChanges({ name: "web" }), true);
+  const web: any = { name: "web" };
+  await p.mod.setShowChanges(web, false);
+  assert.deepEqual(p.calls, ["error Error: no project_config"]);
+  assert.equal(p.mod.showsChanges(web), true);
 });
 
 test("a Git read answered after the data connection changed is dropped and asked again", async () => {

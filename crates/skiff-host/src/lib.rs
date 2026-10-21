@@ -1,7 +1,8 @@
-//! `skiff-host`: the Host's data-plane service (M4, first slice). It speaks
-//! the Host envelope on its own socket beside skiffd's and answers read-only
-//! projects, Git status and diff text from the Host's own config and git, through the
-//! same `skiff-core` code the app ran before. It holds no PTY and no session:
+//! `skiff-host`: the Host's data-plane service (M4). It speaks the Host
+//! envelope on its own socket beside skiffd's and answers projects, Git
+//! status and diff text from the Host's own config and git, and is the
+//! writer of the Host's `[[project]]` tables and project worktrees, through
+//! the same `skiff-core` code the app ran before. It holds no PTY and no session:
 //! restarting it never touches skiffd or a terminal (#62, M1f topology).
 //!
 //! Identity: the same durable `host_id` store skiffd reads, beside the
@@ -17,10 +18,10 @@ use std::{
     },
 };
 
-use skiff_core::{config::ProjectConfig, git, project};
+use skiff_core::{config::{self, ProjectConfig}, git, project, session::SessionInfo};
 use skiff_host_api::{
-    Capability, ChangeStatus, Envelope, Error, Hello, Host, HostChange, HostDiff, HostId, HostProject,
-    HostWorktree, InstanceId, Limits, Message, Request, Response, API_MAJOR,
+    Capability, ChangeStatus, Envelope, Error, Hello, Host, HostChange, HostDiff, HostFolder, HostId,
+    HostProject, HostWorktree, InstanceId, Limits, Message, ProjectEdit, Request, Response, API_MAJOR,
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
@@ -35,9 +36,15 @@ pub const MAX_FRAME: usize = 8 * 1024 * 1024;
 /// written. A client that sends more waits: the service reads no further.
 pub const MAX_IN_FLIGHT: usize = 16;
 
-/// What this service offers. Nothing here writes.
+/// What this service offers.
 pub fn capabilities() -> Vec<Capability> {
-    vec![Capability::projects(), Capability::git_status(), Capability::git_diff()]
+    vec![
+        Capability::projects(),
+        Capability::git_status(),
+        Capability::git_diff(),
+        Capability::project_config(),
+        Capability::worktrees(),
+    ]
 }
 
 /// This run's Hello: the Host's durable id from the store beside the
@@ -236,10 +243,16 @@ pub async fn answer(request: Request, hello: &Hello) -> Result<Response, Error> 
         return Ok(Response::Hello { hello: hello.clone() });
     };
     hello.require(&capability)?;
+    // The Host's own sessions, read before a worktree goes: never the client's word.
+    let sessions = match &request {
+        Request::WorktreeRemove { .. } => live_sessions().await?,
+        _ => Vec::new(),
+    };
     blocking(move || match request {
-        Request::ProjectList => Ok(Response::Projects {
-            projects: project::list().map_err(failed)?.into_iter().map(host_project).collect(),
-        }),
+        Request::ProjectList => {
+            let (rows, revision) = project::list_with_revision().map_err(failed)?;
+            Ok(Response::Projects { projects: rows.into_iter().map(host_project).collect(), revision: Some(revision) })
+        }
         Request::ProjectGet { name } => {
             let config = config()?;
             let p = config.into_iter().find(|p| p.name == name).ok_or_else(|| Error::NotFound {
@@ -271,6 +284,48 @@ pub async fn answer(request: Request, hello: &Hello) -> Result<Response, Error> 
             let diff = git::diff_in(&root.map_err(failed)?, &worktree, file.as_deref()).map_err(failed)?;
             Ok(Response::Diff { diff: host_diff(diff) })
         }
+        Request::ProjectInspect { path } => Ok(Response::Folder { folder: host_folder(config::inspect_folder(&host_folder_path(&path)?)) }),
+        Request::ProjectAdd { path, revision, name, short, color } => {
+            let path = host_folder_path(&path)?;
+            let (added, revision) =
+                config::edit_projects(&revision, || config::add_project(&path, name, short, color, None, Vec::new())).map_err(refused)?;
+            Ok(Response::ProjectAdded {
+                project: Box::new(host_project(project::Project::from_config(&added))),
+                revision,
+            })
+        }
+        Request::ProjectEdit { project, revision, edit } => {
+            let p = project.as_str();
+            let ((), revision) = config::edit_projects(&revision, || match &edit {
+                ProjectEdit::Short { short } => config::set_project_short(p, short),
+                ProjectEdit::Fleet { fleet } => config::set_project_fleet(p, fleet),
+                ProjectEdit::Color { color } => config::set_project_color(p, color),
+                ProjectEdit::Theme { theme } => config::set_project_theme(p, theme.as_deref()),
+                ProjectEdit::Changes { on } => config::set_project_changes(p, *on),
+                ProjectEdit::Files { on } => config::set_project_files(p, *on),
+                ProjectEdit::BackgroundOpacity { percent } => config::set_project_background_opacity(p, *percent),
+                ProjectEdit::Closed { closed } => config::set_project_closed(p, *closed),
+            })
+            .map_err(refused)?;
+            Ok(Response::Revision { revision })
+        }
+        Request::ProjectArrange { revision, order, fleets } => {
+            let fleets: Vec<(String, String)> = fleets.into_iter().map(|f| (f.project, f.fleet)).collect();
+            let ((), revision) = config::edit_projects(&revision, || config::arrange_projects(&order, &fleets)).map_err(refused)?;
+            Ok(Response::Revision { revision })
+        }
+        Request::ProjectRemove { project, revision } => {
+            let ((), revision) = config::edit_projects(&revision, || config::remove_project(&project)).map_err(refused)?;
+            Ok(Response::Revision { revision })
+        }
+        Request::WorktreeAdd { project, branch, base } => {
+            let w = project::add_worktree(&project, &branch, base.as_deref()).map_err(refused)?;
+            Ok(Response::Worktree { worktree: host_worktree(w) })
+        }
+        Request::WorktreeRemove { project, path, force } => {
+            project::remove_worktree(&project, Path::new(&path), force, &sessions).map_err(refused)?;
+            Ok(Response::Ok)
+        }
         _ => Err(Error::UnsupportedCapability { capability }),
     })
     .await
@@ -282,6 +337,53 @@ async fn blocking(f: impl FnOnce() -> Result<Response, Error> + Send + 'static) 
 
 fn failed(e: impl std::fmt::Display) -> Error {
     Error::OperationFailed { message: format!("{e:#}") }
+}
+
+/// A refused edit as its typed error: a stale revision or a name or folder
+/// already taken is `conflict`, a bad value `invalid`, an unknown project
+/// `not_found`. Anything else failed while it ran.
+fn refused(e: anyhow::Error) -> Error {
+    let message = format!("{e:#}");
+    if e.downcast_ref::<config::Stale>().is_some() {
+        return Error::Conflict { message };
+    }
+    match (e.downcast_ref::<config::Refused>(), e.downcast_ref::<project::Keep>()) {
+        (Some(config::Refused::Invalid(_)), _) | (_, Some(project::Keep::Main)) => Error::Invalid { message },
+        (Some(config::Refused::NoProject(_)), _) | (_, Some(project::Keep::NotFound(_))) => Error::NotFound { message },
+        (Some(config::Refused::Taken(_)), _) | (_, Some(project::Keep::Live(_) | project::Keep::Dirty)) => {
+            Error::Conflict { message }
+        }
+        _ => failed(e),
+    }
+}
+
+/// A folder the client names on this Host: absolute, or under its home as
+/// `~/`. Never resolved against this service's working folder.
+fn host_folder_path(path: &str) -> Result<std::path::PathBuf, Error> {
+    let p = Path::new(path.trim());
+    if !(p.is_absolute() || path.trim().starts_with("~/")) || path.chars().any(char::is_control) {
+        return Err(Error::Invalid { message: format!("{path} is not a full folder path on this Host") });
+    }
+    Ok(p.to_path_buf())
+}
+
+/// How long the paired skiffd has to list its sessions.
+const SESSIONS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The sessions of the skiffd this service is paired with, on this Host.
+/// Without them nothing is removed: a worktree a session runs in must stay.
+pub async fn live_sessions() -> Result<Vec<SessionInfo>, Error> {
+    let socket = skiff_core::state::socket();
+    let read = async {
+        let client = skiff_client::Client::connect(&socket).await?;
+        client.list_sessions().await
+    };
+    match tokio::time::timeout(SESSIONS_TIMEOUT, read).await {
+        Ok(Ok(sessions)) => Ok(sessions),
+        _ => Err(Error::OperationFailed {
+            message: "Skiff cannot read this Host's sessions, so the worktree stays.".into(),
+        }),
+    }
 }
 
 fn config() -> Result<Vec<ProjectConfig>, Error> {
@@ -312,23 +414,40 @@ pub fn host_project(p: project::Project) -> HostProject {
         icon: p.icon,
         background: p.background,
         background_opacity: p.background_opacity,
-        worktrees: p
-            .worktrees
-            .into_iter()
-            .map(|w| HostWorktree {
-                path: w.path.to_string_lossy().into_owned(),
-                branch: w.branch,
-                head: w.head,
-                is_main: w.is_main,
-                locked: w.locked,
-                prunable: w.prunable,
-            })
-            .collect(),
+        worktrees: p.worktrees.into_iter().map(host_worktree).collect(),
         default_branch: p.default_branch,
         error: p.error,
         closed: p.closed,
         fleet: p.fleet,
         changes: p.changes,
+        theme: p.theme,
+        files: p.files,
+    }
+}
+
+pub fn host_worktree(w: project::Worktree) -> HostWorktree {
+    HostWorktree {
+        path: w.path.to_string_lossy().into_owned(),
+        branch: w.branch,
+        head: w.head,
+        is_main: w.is_main,
+        locked: w.locked,
+        prunable: w.prunable,
+    }
+}
+
+/// The folder as the Host would add it. Its icon is bytes; the path of the
+/// file it came from stays on the Host.
+pub fn host_folder(f: config::FolderInfo) -> HostFolder {
+    HostFolder {
+        root: f.root.map(|r| r.to_string_lossy().into_owned()),
+        name: f.name,
+        short: f.short,
+        color: f.color,
+        branch: f.branch,
+        worktrees: f.worktrees,
+        icon: f.icon,
+        error: f.error,
     }
 }
 

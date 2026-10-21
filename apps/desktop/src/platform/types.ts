@@ -118,6 +118,10 @@ export interface Project {
   fleet?: string | null;
   /** `changes = false` in the Host's projects.toml: no Changes section. Absent: shown. */
   changes?: boolean | null;
+  /** The project's own theme id. Absent: the app theme. */
+  theme?: string | null;
+  /** Shows a Files tree under each worktree. */
+  files?: boolean;
 }
 
 /** A diff as plain text from the selected Host's git (`git_diff@1`). */
@@ -210,9 +214,8 @@ export interface FolderInfo {
   color: string;
   branch: string | null;
   worktrees: number;
-  /** The icon found in the repo, as a data URL, and its path in the repo. */
+  /** The icon the Host found in the repo, as a data URL. */
   icon: string | null;
-  icon_path: string | null;
   /** Why the folder cannot be added. */
   error: string | null;
 }

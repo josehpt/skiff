@@ -417,7 +417,7 @@ fn m4_projects_and_git_status_are_read_only_data_plane_families() {
     assert_eq!(serde_json::to_value(&projects).unwrap(), fixture["capabilities"]["projects"]);
     assert_eq!(serde_json::to_value(&git).unwrap(), fixture["capabilities"]["git_status"]);
     assert_eq!(serde_json::to_value(&diff_cap).unwrap(), fixture["capabilities"]["git_diff"]);
-    let list = Response::Projects { projects: vec![] };
+    let list = Response::Projects { projects: vec![], revision: None };
     let changes = Response::Changes { changes: vec![] };
     let diff = Response::Diff {
         diff: skiff_host_api::HostDiff { text: String::new(), truncated: false, binary: false, untracked: false },
@@ -460,5 +460,47 @@ fn m4_projects_and_git_status_are_read_only_data_plane_families() {
         let ok = serde_json::from_value::<Response>(bad.clone()).is_ok();
         // A project with only the required fields decodes: the rest default.
         assert_eq!(ok, bad["kind"] == "projects", "{bad}");
+    }
+}
+
+#[test]
+fn m4_project_and_worktree_changes_have_their_own_capabilities_and_golden_shapes() {
+    let fixture: Value = serde_json::from_str(include_str!("fixtures/m4b.json")).unwrap();
+    let config = Capability::project_config();
+    let worktrees = Capability::worktrees();
+    assert_eq!(serde_json::to_value(&config).unwrap(), fixture["capabilities"]["project_config"]);
+    assert_eq!(serde_json::to_value(&worktrees).unwrap(), fixture["capabilities"]["worktrees"]);
+    let revision = Response::Revision { revision: "r".into() };
+    for (key, cap) in [("project_requests", &config), ("worktree_requests", &worktrees)] {
+        for value in fixture[key].as_array().unwrap() {
+            let request: Request = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(&request).unwrap(), *value);
+            assert_eq!(request.capability().as_ref(), Some(cap));
+            // Reading never grants a change, and neither change family the other.
+            assert!(cap != &Capability::projects() && cap != &Capability::git_status());
+            let edits = matches!(request, Request::ProjectEdit { .. } | Request::ProjectArrange { .. } | Request::ProjectRemove { .. });
+            assert_eq!(request.accepts(&revision), edits, "{value}");
+            // Only a worktree removal answers `ok`.
+            assert_eq!(request.accepts(&Response::Ok), matches!(request, Request::WorktreeRemove { .. }), "{value}");
+        }
+    }
+    assert_ne!(config, worktrees);
+    for value in fixture["replies"].as_array().unwrap() {
+        let message: Message = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&message).unwrap(), *value);
+    }
+    // A Host that predates the revision still answers a list an older client reads.
+    let old: Response = serde_json::from_value(json!({"kind":"projects","projects":[]})).unwrap();
+    assert_eq!(old, Response::Projects { projects: vec![], revision: None });
+    assert_eq!(serde_json::to_value(&old).unwrap(), json!({"kind":"projects","projects":[]}));
+    // Every change names its revision: one without it is malformed.
+    for bad in [
+        json!({"cmd":"project_edit","project":"web","edit":{"key":"files","on":true}}),
+        json!({"cmd":"project_remove","project":"web"}),
+        json!({"cmd":"project_arrange","order":[]}),
+        json!({"cmd":"project_add","path":"/srv/new"}),
+        json!({"cmd":"project_edit","project":"web","revision":"r","edit":{"key":"icon","icon":"/etc/passwd"}}),
+    ] {
+        assert!(serde_json::from_value::<Request>(bad.clone()).is_err(), "{bad}");
     }
 }

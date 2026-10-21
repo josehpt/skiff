@@ -21,6 +21,8 @@ jobs:
       - run: cargo test -p skiffd --test ssh_remote
       - run: cargo test -p skiff-host
       - run: cargo test -p skiff-core --lib -- data_socket untracked_links a_root_whose_path diff_text a_diff_process a_helper_holding a_stalled_status git_runs_in_the_held_root the_diff_limit_holds
+      - run: cargo test -p skiff-core --lib -- config::client
+      - run: cargo test -p skiff-core --test appearance
   desktop-ts:
     runs-on: ubuntu-latest
     steps:

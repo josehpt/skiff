@@ -55,7 +55,7 @@ function pickProjectColor(p: Project) {
     title: `Color for ${p.name}`,
     start: p.color ?? DEFAULT_COLOR,
     action: "Set color",
-    submit: (hex) => invoke("set_project_color", { project: p.name, color: hex }),
+    submit: (hex) => hostInvoke("project_config", "set_project_color", { project: p.name, color: hex }),
     onClose: refocusTerminal,
   });
 }
@@ -121,7 +121,7 @@ function setInitials(p: Project) {
     allowEmpty: true,
     maxLength: 3,
     action: "Set initials",
-    submit: (short) => invoke("set_project_short", { project: p.name, short }),
+    submit: (short) => hostInvoke("project_config", "set_project_short", { project: p.name, short }),
     onClose: refocusTerminal,
   });
 }
@@ -141,20 +141,20 @@ function setFleet(p: Project) {
     value: p.fleet ?? "",
     allowEmpty: true,
     action: "Set fleet",
-    submit: (fleet) => invoke("set_project_fleet", { project: p.name, fleet }),
+    submit: (fleet) => hostInvoke("project_config", "set_project_fleet", { project: p.name, fleet }),
     onClose: refocusTerminal,
   });
 }
 
 /** Give every project of the fleet the new name. An empty name puts each under Projects. */
 function renameFleet(f: Fleet, name: string) {
-  return invoke<void>("reorder_projects", { order: S.projects.map((x) => x.name), fleets: f.projects.map((p) => [p.name, name]) });
+  return hostInvoke<void>("project_config", "reorder_projects", { order: S.projects.map((x) => x.name), fleets: f.projects.map((p) => [p.name, name]) });
 }
 
 /** A right-click on a fleet tile. */
 export function fleetMenu(f: Fleet, x: number, y: number) {
-  // A remote Host's fleets are read-only (M4): its projects.toml is its own.
-  if (isRemote()) return;
+  // The Host keeps its fleets: one that takes no project changes keeps them as they are.
+  if (!hostCan("project_config")) return;
   ctxMenu.open(x, y, `Fleet ${f.name}`, [
     {
       icon: "tools-pencil",
@@ -184,7 +184,7 @@ export function newWorktree(p: Project) {
     placeholder: "a branch name",
     action: "Create",
     submit: async (branch) => {
-      const w = await invoke<Worktree>("add_worktree", { project: p.name, branch, base: null });
+      const w = await hostInvoke<Worktree>("worktrees", "add_worktree", { project: p.name, branch, base: null });
       selectedWorktree.set(p.name, w.path);
       await loadProjects();
     },
@@ -211,46 +211,44 @@ export function projectMenu(p: Project, x: number, y: number) {
   const w = p.worktrees.find((x) => x.path === sel) ?? p.worktrees.find((x) => x.is_main) ?? p.worktrees[0];
   const plus = w && [...document.querySelectorAll<HTMLElement>("#sidebar-scroll .wt-plus")].find((b) => b.dataset.wt === w.path);
   const start: MenuEntry = { icon: "indicators-plus", label: "New session…", hint: keyLabel("new-session"), disabled: !w || !hostCan("session_lifecycle"), run: () => w && launchMenu.open(plus ?? { x, y }, p, w) };
-  // A remote Host's project is read-only (M4), and its path is that Host's:
-  // nothing here opens it on this Mac.
-  if (isRemote()) {
-    return ctxMenu.open(x, y, p.path, [start, { icon: "code-copy", label: "Copy path", hint: keyLabel("project-copy-path"), run: run["project-copy-path"] }]);
-  }
-  ctxMenu.open(x, y, p.path, [
+  // A remote Host's path is that Host's: nothing here opens it on this Mac,
+  // and its images are paths there, which no capability sends yet. Its
+  // settings and worktrees change on that Host, when it takes the change.
+  const local = !isRemote();
+  const edits = hostCan("project_config");
+  const entries: (MenuEntry | false)[] = [
     start,
-    { icon: "code-git-branch", label: "New worktree…", hint: keyLabel("new-worktree"), disabled: !!p.error, run: () => newWorktree(p) },
-    { icon: "indicators-square-arrow-out-up-right", label: "Show in file manager", hint: keyLabel("project-folder"), run: run["project-folder"] },
+    hostCan("worktrees") && { icon: "code-git-branch", label: "New worktree…", hint: keyLabel("new-worktree"), disabled: !!p.error, run: () => newWorktree(p) },
+    local && { icon: "indicators-square-arrow-out-up-right", label: "Show in file manager", hint: keyLabel("project-folder"), run: run["project-folder"] },
     { icon: "code-copy", label: "Copy path", hint: keyLabel("project-copy-path"), run: run["project-copy-path"] },
-    { icon: "documents-file-image", label: "Icon…", sub: iconEntries(p) },
-    { icon: "tools-pencil", label: "Initials…", run: () => setInitials(p) },
-    { icon: "code-group", label: "Fleet…", run: () => setFleet(p) },
-    { icon: "tools-sparkles", label: "Color…", hint: keyLabel("project-color"), run: run["project-color"] },
-    { icon: "tools-sparkles", label: "Project theme…", hint: keyLabel("theme"), run: () => void projectThemeMenu(p) },
-    { icon: "playback-image", label: "Background…", sub: backgroundEntries(p) },
-    { icon: "code-git-branch", label: showsChanges(p) ? "Hide changes" : "Show changes", hint: keyLabel("project-changes"), run: run["project-changes"] },
-    { icon: "documents-folder-open", label: showsFiles(p) ? "Hide files" : "Show files", hint: keyLabel("project-files"), run: run["project-files"] },
-    ...projectWorkspaceEntries(p),
-    ...closeEntries(p),
-  ]);
+    local && { icon: "documents-file-image", label: "Icon…", sub: iconEntries(p) },
+    edits && { icon: "tools-pencil", label: "Initials…", run: () => setInitials(p) },
+    edits && { icon: "code-group", label: "Fleet…", run: () => setFleet(p) },
+    edits && { icon: "tools-sparkles", label: "Color…", hint: keyLabel("project-color"), run: run["project-color"] },
+    edits && { icon: "tools-sparkles", label: "Project theme…", hint: keyLabel("theme"), run: () => void projectThemeMenu(p) },
+    local && { icon: "playback-image", label: "Background…", sub: backgroundEntries(p) },
+    edits && { icon: "code-git-branch", label: showsChanges(p) ? "Hide changes" : "Show changes", hint: keyLabel("project-changes"), run: run["project-changes"] },
+    local && edits && { icon: "documents-folder-open", label: showsFiles(p) ? "Hide files" : "Show files", hint: keyLabel("project-files"), run: run["project-files"] },
+    ...(local ? projectWorkspaceEntries(p) : []),
+    ...(edits ? closeEntries(p) : []),
+  ];
+  ctxMenu.open(x, y, p.path, entries.filter((e): e is MenuEntry => !!e));
 }
 
 /** A right-click on a worktree's branch row. */
 export function worktreeMenu(p: Project, w: Worktree, x: number, y: number) {
   const plus = [...document.querySelectorAll<HTMLElement>("#sidebar-scroll .wt-plus")].find((b) => b.dataset.wt === w.path);
-  const entries: MenuEntry[] = [
+  // A remote Host's path: start a session there or copy it, never open it on this Mac.
+  const local = !isRemote();
+  const entries: (MenuEntry | false)[] = [
     { icon: "indicators-plus", label: "New session…", hint: keyLabel("new-session"), disabled: !!p.error || !hostCan("session_lifecycle"), run: () => launchMenu.open(plus ?? { x, y }, p, w) },
-    ...(showsChanges(p) && hasChanges(w) ? [{ icon: "code-git-branch", label: "Review all changes", run: () => reviewChanges(w) }] : []),
-    { icon: "indicators-square-arrow-out-up-right", label: "Show in file manager", run: () => void openPath(w.path).catch(showError) },
+    showsChanges(p) && hasChanges(w) && { icon: "code-git-branch", label: "Review all changes", run: () => reviewChanges(w) },
+    local && { icon: "indicators-square-arrow-out-up-right", label: "Show in file manager", run: () => void openPath(w.path).catch(showError) },
     { icon: "code-copy", label: "Copy path", run: () => void navigator.clipboard.writeText(w.path).catch(showError) },
+    // The Host removes it, and refuses while one of its sessions runs there.
+    !w.is_main && hostCan("worktrees") && { icon: "tools-trash-2", label: "Remove worktree…", danger: true, disabled: removing.has(w.path), run: () => void removeWorktree(p, w) },
   ];
-  if (isRemote()) {
-    // Read-only, as the project menu: start a session there, or copy the Host path.
-    return ctxMenu.open(x, y, branchName(w), [entries[0], entries.at(-1)!]);
-  }
-  if (!w.is_main) {
-    entries.push({ icon: "tools-trash-2", label: "Remove worktree…", danger: true, disabled: removing.has(w.path), run: () => void removeWorktree(p, w) });
-  }
-  ctxMenu.open(x, y, branchName(w), entries);
+  ctxMenu.open(x, y, branchName(w), entries.filter((e): e is MenuEntry => !!e));
 }
 
 function sessionLabel(s: SessionInfo) {
@@ -593,9 +591,10 @@ export async function removeWorktree(p: Project, w: Worktree) {
   render();
   try {
     try {
-      await invoke("remove_worktree", { project: p.name, path: w.path, force: false });
+      await hostInvoke("worktrees", "remove_worktree", { project: p.name, path: w.path, force: false });
     } catch (e) {
-      // skiffd refuses uncommitted changes. Ask again, and force only on a yes.
+      // The Host refuses uncommitted changes. Ask again, and force only on a yes:
+      // a new request the person chose, never a retry of the first.
       if (!String(e).includes("uncommitted changes")) throw e;
       const force = await confirmAction({
         title: `Worktree ${branchName(w)} has uncommitted changes`,
@@ -603,7 +602,7 @@ export async function removeWorktree(p: Project, w: Worktree) {
         action: "Remove anyway",
       });
       if (!force) return refocusTerminal();
-      await invoke("remove_worktree", { project: p.name, path: w.path, force: true });
+      await hostInvoke("worktrees", "remove_worktree", { project: p.name, path: w.path, force: true });
     }
     if (selectedWorktree.get(p.name) === w.path) selectedWorktree.delete(p.name);
     await loadProjects();

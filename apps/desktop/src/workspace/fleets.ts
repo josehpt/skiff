@@ -1,6 +1,5 @@
 /** Fleets: the order of projects, a drop that moves them, and naming a new fleet. */
-import { invoke } from "@tauri-apps/api/core";
-import { isRemote } from "../app/hosts";
+import { hostCan, hostInvoke } from "../app/hostCaps";
 
 import type { Project } from "../platform/types";
 
@@ -68,8 +67,8 @@ function freeFleetName(): string {
 
 /** The fleets and the project order after the drop, saved in one write. A fleet left with one project goes away. */
 export function applyDrop(moving: Project[], d: Drop): string | null {
-  // A remote Host's order and fleets are its own projects.toml's (read-only, M4).
-  if (isRemote()) return null;
+  // The Host keeps the order and the fleets: one that takes no project changes keeps them as they are.
+  if (!hostCan("project_config")) return null;
   const order = projectOrder().filter((p) => !moving.includes(p));
   order.splice(order.indexOf(d.anchor) + (d.side === "after" ? 1 : 0), 0, ...moving);
   const made = d.make ? freeFleetName() : null;
@@ -83,7 +82,7 @@ export function applyDrop(moving: Project[], d: Drop): string | null {
   for (const [p, f] of next) p.fleet = f;
   S.projects = order;
   render();
-  invoke("reorder_projects", { order: order.map((x) => x.name), fleets }).catch(showError);
+  hostInvoke("project_config", "reorder_projects", { order: order.map((x) => x.name), fleets }).catch(showError);
   return made;
 }
 
@@ -125,7 +124,7 @@ export function nameFleet(name: string) {
     const members = S.projects.filter((p) => p.fleet === name);
     for (const p of members) p.fleet = next;
     render();
-    invoke("reorder_projects", { order: S.projects.map((x) => x.name), fleets: members.map((p) => [p.name, next]) }).catch(showError);
+    hostInvoke("project_config", "reorder_projects", { order: S.projects.map((x) => x.name), fleets: members.map((p) => [p.name, next]) }).catch(showError);
   };
   input.addEventListener("keydown", (e) => {
     e.stopPropagation();

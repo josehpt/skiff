@@ -214,7 +214,7 @@ async fn run_plan(plan: skiff_core::open::Plan, cwd: PathBuf, file: PathBuf) -> 
 /// Shows a changed file's diff, or the whole worktree's, with `[open] diff`.
 #[tauri::command]
 pub(crate) async fn open_diff(path: PathBuf, file: Option<String>) -> Result<Opened, String> {
-    let open = skiff_core::config::load().map(|c| c.open).unwrap_or_default();
+    let open = skiff_core::config::client::load().map(|c| c.open).unwrap_or_default();
     let dir = path.clone();
     let plan = tokio::task::spawn_blocking(move || skiff_core::open::plan_diff(&dir, file.as_deref(), &open))
         .await
@@ -234,7 +234,7 @@ pub(crate) struct OpenSettings {
 }
 
 fn open_settings_now() -> Result<OpenSettings, String> {
-    let o = skiff_core::config::load().map_err(err)?.open;
+    let o = skiff_core::config::client::load().map_err(err)?.open;
     Ok(OpenSettings {
         peek: o.peek,
         diff: o.diff.unwrap_or_default(),
@@ -276,7 +276,7 @@ pub(crate) struct FilePreview {
 #[tauri::command]
 pub(crate) async fn preview_file(path: PathBuf) -> Result<FilePreview, String> {
     tokio::task::spawn_blocking(move || {
-        let open = skiff_core::config::load().map_err(err)?.open;
+        let open = skiff_core::config::client::load().map_err(err)?.open;
         let command = skiff_core::open::command_for(&path, &open);
         let app = command.as_deref().and_then(|c| c.split_whitespace().next())
             .and_then(|c| std::path::Path::new(c).file_name()).and_then(|c| c.to_str())
@@ -294,50 +294,13 @@ pub(crate) async fn preview_file(path: PathBuf) -> Result<FilePreview, String> {
 /// Opens a file with its `[open]` command, else in its default app.
 #[tauri::command]
 pub(crate) async fn open_file(path: PathBuf) -> Result<Opened, String> {
-    let open = skiff_core::config::load().map(|c| c.open).unwrap_or_default();
+    let open = skiff_core::config::client::load().map(|c| c.open).unwrap_or_default();
     let file = path.clone();
     let plan = tokio::task::spawn_blocking(move || skiff_core::open::plan_file(&file, &open))
         .await
         .map_err(|e| e.to_string())?;
     let cwd = path.parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"));
     run_plan(plan, cwd, path).await
-}
-
-/// Projects with `files = true`. Read from projects.toml here, so an older
-/// daemon that does not send the key still works.
-#[tauri::command]
-pub(crate) fn files_projects() -> Result<Vec<String>, String> {
-    let cfg = skiff_core::config::load().map_err(err)?;
-    Ok(cfg.projects.into_iter().filter(|p| p.files).map(|p| p.name).collect())
-}
-
-/// Projects with `changes = false`.
-#[tauri::command]
-pub(crate) fn hidden_changes_projects() -> Result<Vec<String>, String> {
-    let cfg = skiff_core::config::load().map_err(err)?;
-    Ok(cfg.projects.into_iter().filter(|p| p.changes == Some(false)).map(|p| p.name).collect())
-}
-
-#[tauri::command]
-pub(crate) fn set_project_changes(project: String, on: bool) -> Result<(), String> {
-    skiff_core::config::set_project_changes(&project, on).map_err(err)
-}
-
-/// Each project's own theme id, as `[name, id]`.
-#[tauri::command]
-pub(crate) fn project_themes() -> Result<Vec<(String, String)>, String> {
-    let cfg = skiff_core::config::load().map_err(err)?;
-    Ok(cfg.projects.into_iter().filter_map(|p| p.theme.map(|t| (p.name, t))).collect())
-}
-
-#[tauri::command]
-pub(crate) fn set_project_theme(project: String, theme: Option<String>) -> Result<(), String> {
-    skiff_core::config::set_project_theme(&project, theme.as_deref()).map_err(err)
-}
-
-#[tauri::command]
-pub(crate) fn set_project_files(project: String, on: bool) -> Result<(), String> {
-    skiff_core::config::set_project_files(&project, on).map_err(err)
 }
 
 #[tauri::command]

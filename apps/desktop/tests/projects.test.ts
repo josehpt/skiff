@@ -9,7 +9,7 @@ function page(o: { remote: boolean; caps: string[]; fail?: string; capsFail?: st
   const S: any = { agents: [{ id: "a" }], projects: [], closedProjects: [], projectsError: null, selectedProject: null, dataState: "loading", dataNote: null };
   const calls: string[] = [];
   const projects = [
-    { name: "web", path: "/srv/web", closed: false, worktrees: [{ path: "/srv/web", branch: "main" }] },
+    { name: "web", path: "/srv/web", closed: false, files: true, theme: "lagoon", worktrees: [{ path: "/srv/web", branch: "main" }] },
     { name: "old", path: "/srv/old", closed: true, worktrees: [] },
   ];
   const mod = moduleFromSource(
@@ -40,9 +40,9 @@ function page(o: { remote: boolean; caps: string[]; fail?: string; capsFail?: st
       "./dataPlane": o.dataPlane ?? {},
       "../terminal/peek": { refreshHostDiff() {} },
       "../diagnostics/stalls": { work() {} },
-      "../workspace/files": { loadFilesSetting: async () => void calls.push("files_projects") },
-      "../workspace/changes": { loadChangesSetting: async () => void calls.push("hidden_changes_projects"), reloadChanges() {} },
-      "../appearance/themes": { loadProjectThemes: async () => void calls.push("project_themes") },
+      "../workspace/files": { filesFrom: (l: any[]) => void calls.push(`files ${l.filter((p) => p.files).map((p) => p.name)}`) },
+      "../workspace/changes": { reloadChanges() {} },
+      "../appearance/themes": { projectThemesFrom: (l: any[]) => void calls.push(`themes ${l.filter((p) => p.theme).map((p) => `${p.name}=${p.theme}`)}`) },
       "./skiffAgent": { loadSkiffAgent: async () => void calls.push("get_skiff_agent") },
       "./stateQueries": { place: () => null },
     },
@@ -52,10 +52,10 @@ function page(o: { remote: boolean; caps: string[]; fail?: string; capsFail?: st
   return { mod, S, calls };
 }
 
-test("a remote Host with a data plane shows its own projects and reads no setting of this Mac", async () => {
+test("a remote Host with a data plane shows its own projects, with their settings from its rows", async () => {
   const p = page({ remote: true, caps: ["projects"] });
   await p.mod.loadProjects();
-  assert.deepEqual(p.calls, ["list_projects"]);
+  assert.deepEqual(p.calls, ["list_projects", "files web", "themes web=lagoon"]);
   assert.deepEqual(p.S.projects.map((x: any) => x.path), ["/srv/web"]);
   assert.deepEqual(p.S.closedProjects.map((x: any) => x.name), ["old"]);
   assert.equal(p.S.projectsError, null);
@@ -74,11 +74,13 @@ test("a remote Host without a data plane shows its sessions only: no project rea
   assert.equal(p.S.dataState, "unavailable");
 });
 
-test("this Mac reads its projects through the data plane, with its own settings", async () => {
+test("this Mac reads its projects and their settings through the data plane, as a remote Host does", async () => {
   const p = page({ remote: false, caps: ["projects"] });
   await p.mod.loadProjects();
   assert.ok(p.calls.includes("list_projects"));
-  for (const c of ["files_projects", "hidden_changes_projects", "project_themes", "get_skiff_agent"]) assert.ok(p.calls.includes(c), c);
+  // Project settings come with the Host's rows; only Skipper is still this Mac's.
+  for (const c of ["files web", "themes web=lagoon", "get_skiff_agent"]) assert.ok(p.calls.includes(c), c);
+  for (const c of ["files_projects", "hidden_changes_projects", "project_themes"]) assert.ok(!p.calls.includes(c), c);
 });
 
 test("this Mac without its service still asks, and the cause shows; nothing else stands in", async () => {

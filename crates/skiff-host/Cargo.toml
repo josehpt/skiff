@@ -13,6 +13,8 @@ path = "src/main.rs"
 [dependencies]
 skiff-core.workspace = true
 skiff-host-api.workspace = true
+# Reads the paired skiffd's sessions before a worktree is removed.
+skiff-client.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 anyhow.workspace = true
@@ -20,5 +22,4 @@ uuid.workspace = true
 libc = "0.2"
 
 [dev-dependencies]
-skiff-client.workspace = true
 libc = "0.2"

@@ -15,7 +15,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use skiff_host_api::{Error, Hello, HostChange, HostDiff, HostId, HostProject, Request, Response};
+use skiff_host_api::{
+    Error, Hello, HostChange, HostDiff, HostFolder, HostId, HostProject, HostWorktree, ProjectEdit, ProjectFleet, Request,
+    Response,
+};
 use tokio::net::UnixStream;
 
 use super::{
@@ -133,8 +136,14 @@ impl HostSelection {
 
 /// Every project of the Host, open and closed, in its config order.
 pub async fn project_list(c: &HostConnection) -> Result<Vec<HostProject>, Error> {
+    Ok(project_rows(c).await?.0)
+}
+
+/// [`project_list`], and the revision a `project_config` change names.
+/// `None` from a Host that predates it.
+pub async fn project_rows(c: &HostConnection) -> Result<(Vec<HostProject>, Option<String>), Error> {
     match c.request(Request::ProjectList).await? {
-        Response::Projects { projects } => Ok(projects),
+        Response::Projects { projects, revision } => Ok((projects, revision)),
         _ => unreachable!("checked by Request::accepts"),
     }
 }
@@ -162,4 +171,73 @@ pub async fn git_diff(c: &HostConnection, worktree: &str, file: Option<&str>) ->
         Response::Diff { diff } => Ok(diff),
         _ => unreachable!("checked by Request::accepts"),
     }
+}
+
+// Changes. Each is sent once: a lost or late reply is reported, never
+// retried, since the Host may have made the change. A project change names
+// the revision it was made from, so a stale or repeated one is refused.
+
+/// What the Host would add for `path`, a folder on the Host.
+pub async fn project_inspect(c: &HostConnection, path: &str) -> Result<HostFolder, Error> {
+    match c.request(Request::ProjectInspect { path: path.into() }).await? {
+        Response::Folder { folder } => Ok(folder),
+        _ => unreachable!("checked by Request::accepts"),
+    }
+}
+
+/// Adds the repository at `path` on the Host. Answers the row and the new revision.
+pub async fn project_add(
+    c: &HostConnection,
+    revision: &str,
+    path: &str,
+    name: Option<String>,
+    short: Option<String>,
+    color: Option<String>,
+) -> Result<(HostProject, String), Error> {
+    let request = Request::ProjectAdd { path: path.into(), revision: revision.into(), name, short, color };
+    match c.request(request).await? {
+        Response::ProjectAdded { project, revision } => Ok((*project, revision)),
+        _ => unreachable!("checked by Request::accepts"),
+    }
+}
+
+/// One key of one project. Answers the new revision.
+pub async fn project_edit(c: &HostConnection, revision: &str, project: &str, edit: ProjectEdit) -> Result<String, Error> {
+    revised(c.request(Request::ProjectEdit { project: project.into(), revision: revision.into(), edit }).await?)
+}
+
+/// The order and the fleets given, in one write. Answers the new revision.
+pub async fn project_arrange(
+    c: &HostConnection,
+    revision: &str,
+    order: Vec<String>,
+    fleets: Vec<ProjectFleet>,
+) -> Result<String, Error> {
+    revised(c.request(Request::ProjectArrange { revision: revision.into(), order, fleets }).await?)
+}
+
+/// Drops one project's table. Answers the new revision.
+pub async fn project_remove(c: &HostConnection, revision: &str, project: &str) -> Result<String, Error> {
+    revised(c.request(Request::ProjectRemove { project: project.into(), revision: revision.into() }).await?)
+}
+
+fn revised(reply: Response) -> Result<String, Error> {
+    match reply {
+        Response::Revision { revision } => Ok(revision),
+        _ => unreachable!("checked by Request::accepts"),
+    }
+}
+
+/// A worktree on the new `branch` of a Host project.
+pub async fn worktree_add(c: &HostConnection, project: &str, branch: &str, base: Option<&str>) -> Result<HostWorktree, Error> {
+    let request = Request::WorktreeAdd { project: project.into(), branch: branch.into(), base: base.map(Into::into) };
+    match c.request(request).await? {
+        Response::Worktree { worktree } => Ok(worktree),
+        _ => unreachable!("checked by Request::accepts"),
+    }
+}
+
+/// Removes a linked worktree, `path` on the Host, as its Host allows.
+pub async fn worktree_remove(c: &HostConnection, project: &str, path: &str, force: bool) -> Result<(), Error> {
+    c.request(Request::WorktreeRemove { project: project.into(), path: path.into(), force }).await.map(drop)
 }

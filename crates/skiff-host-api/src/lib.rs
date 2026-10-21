@@ -15,7 +15,7 @@ pub use agents::HostAgent;
 pub use groups::Group;
 pub use inventory::InventorySession;
 pub use lifecycle::SessionSpec;
-pub use projects::{ChangeStatus, HostChange, HostDiff, HostProject, HostWorktree};
+pub use projects::{ChangeStatus, HostChange, HostDiff, HostFolder, HostProject, HostWorktree, ProjectEdit, ProjectFleet};
 pub use terminal::{EchoTimes, TerminalFrame};
 pub use updates::SessionUpdate;
 
@@ -32,6 +32,8 @@ pub const SESSION_AGENTS: &str = "session_agents";
 pub const PROJECTS: &str = "projects";
 pub const GIT_STATUS: &str = "git_status";
 pub const GIT_DIFF: &str = "git_diff";
+pub const PROJECT_CONFIG: &str = "project_config";
+pub const WORKTREES: &str = "worktrees";
 
 macro_rules! identity {
     ($name:ident) => {
@@ -148,6 +150,25 @@ impl Capability {
     pub fn git_diff() -> Self {
         Self {
             name: GIT_DIFF.into(),
+            version: 1,
+        }
+    }
+    /// Change the Host's `[[project]]` tables: add, settings, order and
+    /// fleets, close, open and remove. Each change names the revision it was
+    /// made from, and a changed revision refuses it (`conflict`). Data plane;
+    /// grants no image, file, worktree or Git write.
+    pub fn project_config() -> Self {
+        Self {
+            name: PROJECT_CONFIG.into(),
+            version: 1,
+        }
+    }
+    /// Add a worktree on a new branch to one of the Host's open projects, or
+    /// remove a linked one that no live session uses. Data plane; grants no
+    /// other Git write.
+    pub fn worktrees() -> Self {
+        Self {
+            name: WORKTREES.into(),
             version: 1,
         }
     }
@@ -269,6 +290,10 @@ pub enum Error {
         message: String,
     },
     NotFound {
+        message: String,
+    },
+    /// A value the request carries is not one the Host takes.
+    Invalid {
         message: String,
     },
     Conflict {
@@ -413,6 +438,65 @@ pub enum Request {
         #[serde(default)]
         file: Option<String>,
     },
+    /// Answers `folder`: what `project_add` would do for `path`, a folder on
+    /// the Host. Writes nothing.
+    ProjectInspect {
+        path: String,
+    },
+    /// Adds the repository that holds `path` (a Host folder) as a project, or
+    /// opens it again when it is a closed one. Answers `project_added`.
+    /// `revision` as for `project_edit`.
+    ProjectAdd {
+        path: String,
+        revision: String,
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        short: Option<String>,
+        #[serde(default)]
+        color: Option<String>,
+    },
+    /// Changes one key of one project. Answers `revision`, the new one.
+    /// Refused (`conflict`) when the Host's `[[project]]` tables are no
+    /// longer at `revision`, from `projects` or an earlier write: then the
+    /// client reads again. A change is never retried by the client.
+    ProjectEdit {
+        project: String,
+        revision: String,
+        edit: ProjectEdit,
+    },
+    /// Puts the projects in `order` (the rest after them) and sets the
+    /// fleets given, in one write. Every name must be a project. Answers
+    /// `revision`.
+    ProjectArrange {
+        revision: String,
+        order: Vec<String>,
+        #[serde(default)]
+        fleets: Vec<ProjectFleet>,
+    },
+    /// Drops the project's table and settings; its folder stays. Answers `revision`.
+    ProjectRemove {
+        project: String,
+        revision: String,
+    },
+    /// Adds a worktree on the new `branch`, beside the project's folder.
+    /// Answers `worktree`. Not retried: git may have made it.
+    WorktreeAdd {
+        project: String,
+        branch: String,
+        #[serde(default)]
+        base: Option<String>,
+    },
+    /// Removes a linked worktree of the project. Refused (`conflict`) while
+    /// a session of the Host's skiffd runs in it, or with uncommitted changes
+    /// unless `force`, which deletes them; the main worktree is `invalid`.
+    /// Answers `ok`.
+    WorktreeRemove {
+        project: String,
+        path: String,
+        #[serde(default)]
+        force: bool,
+    },
 }
 impl Request {
     pub fn capability(&self) -> Option<Capability> {
@@ -437,6 +521,14 @@ impl Request {
             Self::ProjectList | Self::ProjectGet { .. } => Some(Capability::projects()),
             Self::GitChanges { .. } => Some(Capability::git_status()),
             Self::GitDiff { .. } => Some(Capability::git_diff()),
+            Self::ProjectInspect { .. }
+            | Self::ProjectAdd { .. }
+            | Self::ProjectEdit { .. }
+            | Self::ProjectArrange { .. }
+            | Self::ProjectRemove { .. } => Some(Capability::project_config()),
+            Self::WorktreeAdd { .. } | Self::WorktreeRemove { .. } => {
+                Some(Capability::worktrees())
+            }
             Self::ListSessions
             | Self::Write { .. }
             | Self::Resize { .. }
@@ -465,6 +557,15 @@ impl Request {
                 | (Self::ProjectGet { .. }, Response::Project { .. })
                 | (Self::GitChanges { .. }, Response::Changes { .. })
                 | (Self::GitDiff { .. }, Response::Diff { .. })
+                | (Self::ProjectInspect { .. }, Response::Folder { .. })
+                | (Self::ProjectAdd { .. }, Response::ProjectAdded { .. })
+                | (
+                    Self::ProjectEdit { .. }
+                        | Self::ProjectArrange { .. }
+                        | Self::ProjectRemove { .. },
+                    Response::Revision { .. }
+                )
+                | (Self::WorktreeAdd { .. }, Response::Worktree { .. })
         ) || (!matches!(
             self,
             Self::Hello
@@ -482,6 +583,12 @@ impl Request {
                 | Self::ProjectGet { .. }
                 | Self::GitChanges { .. }
                 | Self::GitDiff { .. }
+                | Self::ProjectInspect { .. }
+                | Self::ProjectAdd { .. }
+                | Self::ProjectEdit { .. }
+                | Self::ProjectArrange { .. }
+                | Self::ProjectRemove { .. }
+                | Self::WorktreeAdd { .. }
         ) && matches!(reply, Response::Ok))
     }
 }
@@ -499,11 +606,23 @@ pub enum Response {
     Groups { groups: Vec<Group> },
     Group { group: Group },
     Agents { agents: Vec<HostAgent> },
-    Projects { projects: Vec<HostProject> },
+    Projects {
+        projects: Vec<HostProject>,
+        /// The `[[project]]` tables these rows were read from, for a
+        /// `project_config` change. Absent from a Host without it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        revision: Option<String>,
+    },
     /// Boxed, as `Session`. Same JSON.
     Project { project: Box<HostProject> },
     Changes { changes: Vec<HostChange> },
     Diff { diff: HostDiff },
+    Folder { folder: HostFolder },
+    /// The `[[project]]` tables' revision after a change.
+    Revision { revision: String },
+    /// Boxed, as `Project`. Same JSON.
+    ProjectAdded { project: Box<HostProject>, revision: String },
+    Worktree { worktree: HostWorktree },
     SessionInventory { sessions: Vec<InventorySession> },
     SessionScreen { lines: Vec<String> },
     ConnectionStatus { version: String, protocol: u32 },

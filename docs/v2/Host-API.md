@@ -1,4 +1,4 @@
-# Host API — M0 contract, local M1a–M1g seams, M2 remote terminals, M3 remote lifecycle and the M4 data plane (read slices)
+# Host API — M0 contract, local M1a–M1g seams, M2 remote terminals, M3 remote lifecycle and the M4 data plane (reads, then project and worktree writes)
 
 Tracking: [M0 #156](https://github.com/solutionscay/skiff/issues/156),
 [epic #155](https://github.com/solutionscay/skiff/issues/155).
@@ -1342,14 +1342,8 @@ Tracking: [M4 #160](https://github.com/solutionscay/skiff/issues/160), [epic #15
 
 ### Not yet: requirements before M4 is complete
 
-- **Writes.** Add, remove, close and reorder projects, fleets, colors,
-  icons, themes, backgrounds, the per-project Changes/Files settings, and add
-  and remove worktrees. These still run in the app against this Mac's
-  `projects.toml` and git, and only for This Mac. Each needs a Host write
-  API with conflict and no-replay rules, and the app must stop calling
-  `skiff_core::config` for them.
-- **Config migration** (§5 of #155). Not started: `schema = 2`, client keys
-  copied out, and `skiff-host` as the only writer.
+- **Writes.** Done in the third slice (below), except image paths.
+- **Config migration** (§5 of #155). Done in the third slice, as a copy.
 - **Diff text.** Done in the second slice (below).
 - **Per-project display settings.** `changes` comes from the Host since the
   second slice. `files_projects` and `project_themes` still come from this
@@ -1492,6 +1486,134 @@ like the first slice. Writes and config migration are the next M4 increment.
 - Data-plane events: changes are read again on session events and on the
   check, not pushed.
 - Manual two-machine and CI acceptance.
+
+## M4 (third slice): project and worktree writes, client settings split
+
+`skiff-host` is now the only writer of the Host's `[[project]]` tables and
+project worktrees. The app sends each change to the selected Host, This Mac
+and an SSH Host alike, and runs no `skiff_core::config` project edit and no
+worktree git of its own.
+
+### Contract (additive, API major 1)
+
+- **`project_config@1`**: `project_inspect` (answers `folder`, a
+  `HostFolder` whose icon is bytes), `project_add` (answers `project_added`
+  with the row and the new revision), `project_edit` (one key: `short`,
+  `fleet`, `color`, `theme`, `changes`, `files`, `background_opacity`,
+  `closed`), `project_arrange` (order and fleets in one write) and
+  `project_remove`. Each of the last four answers `revision`.
+- **`worktrees@1`**: `worktree_add` (answers `worktree`) and
+  `worktree_remove` (answers `ok`).
+- `projects` (the `project_list` reply) gains an optional `revision`. Rows
+  gain `theme` and `files`, which are left out when unset, so the M4 golden
+  rows are unchanged.
+- A new error code, **`invalid`**: a value the Host does not take.
+- Neither family is granted by `projects@1`, `git_status@1` or each other.
+  Golden shapes: `tests/fixtures/m4b.json`.
+
+### Validation, conflict and no replay
+
+- **Revision.** A token over the parsed `[[project]]` tables only (FNV-1a
+  over their JSON). Keys, appearance and agents do not count. Every project
+  change names the revision it was made from. The Host checks it under the
+  config edit lock, before any write. A changed revision is `conflict`, and
+  nothing is written. The same lock covers the edit itself, so of several
+  writers that start from one read, exactly one is written.
+- **No replay.** The client sends a change once. A lost connection or a late
+  reply is reported as "may or may not have been made", the page reads
+  again, and nothing is sent again. A stale or repeated project change is
+  refused by its revision. A second `worktree_add` is refused by git, and a
+  second `worktree_remove` is `not_found`. The app keeps the last revision
+  per Host id. A conflict forgets it, so the next change is not sent until
+  the page reads the projects again.
+- **Validation** (typed): unknown project or worktree is `not_found`; a bad
+  color, initials longer than 3, a label over 64 characters or with control
+  characters, a relative or multi-line folder path, a branch name git would
+  not take or that would leave `<dir>-worktrees`, and the main worktree are
+  `invalid`; a name or folder already added, a live session in the worktree
+  and uncommitted changes without `force` are `conflict`.
+- **Worktree removal safeguards stay on the Host.** `skiff-host` reads its
+  own skiffd's sessions (`list_sessions` on the paired socket) before it
+  removes anything. If it cannot read them, the worktree stays. The client's
+  word is never used. `force` is a second request the person confirms, never
+  a retry.
+- **Images.** `icon` and `background` are paths on the Host, and no
+  capability carries image bytes yet. Their menu entries stay on This Mac
+  only, as local commands. A remote Host's project shows no such entry.
+  `init_repository` (a git write outside worktrees) stays on This Mac too.
+
+### The app
+
+- The page gates each project and worktree action on `project_config` or
+  `worktrees` instead of "not remote". A remote Host's project menu offers
+  initials, fleet, color, theme, Changes, close and remove, and new and
+  remove worktree. It does not offer Show in file manager, icon, background
+  or Files (the tree reads this Mac's folders until M5).
+- Add project on a remote Host asks for a folder path on that Host. On This
+  Mac a folder is picked, and the Host checks and adds it.
+- `files_projects`, `hidden_changes_projects` and `project_themes` are
+  gone. The settings come with the Host's rows, on This Mac too.
+
+### Client settings: `client.toml`, `schema = 2` (§5 migration)
+
+- Keys, appearance and Open with are this computer's settings, kept in
+  `client.toml` beside the `projects.toml` the process uses. A private state
+  keeps its own copy beside its private config.
+- **Copy, never move.** The first client setting written copies the
+  `[keys]`, `[appearance]` and `[open]` tables of `projects.toml` into a new
+  `client.toml` with `schema = 2`, and then writes there. `projects.toml` is
+  only read: never written, moved or deleted. v1 reads it as before and
+  keeps the values it had at the copy.
+- **Idempotent and dry-run testable.** `config::client::plan` says what
+  would be written and writes nothing. `migrate` creates the file once (by
+  link, never over an existing one). A `client.toml` at schema 2 is current.
+  One with another or a newer schema is refused and left as it is. An
+  unreadable `projects.toml` is not copied from.
+- Until the copy, the app reads the client tables from `projects.toml`.
+- **Not migrated here:** agents, `[skiff_agent]` and task types stay in
+  `projects.toml` (M6). No real config was migrated: the tests use private
+  fixtures (`skiff-core/tests/fixtures/v1/projects-1.{4,5,6}.toml`) and
+  private state only.
+
+### Tests
+
+- **Service** (`config_writes.rs`): the same Host over this Mac's socket
+  and a fake SSH forward gives the same rows and revision. Covered: a change
+  and a replay of it (`conflict`), a stale writer (`conflict`, file
+  unchanged), eight concurrent writers from one read (exactly one written),
+  typed validation with the file unchanged, and add, inspect, arrange,
+  close and remove. Worktrees: bad branches, add and duplicate, and removal
+  refused for a live session, an unreachable skiffd, uncommitted changes and
+  the main worktree, then forced. A Hello without the capabilities is
+  refused by client and service. A stub that drops the link after a change
+  sees it once, on one connection.
+- **Desktop** (`config_tests.rs`): no change without a read, changes made
+  from each answer's revision, and after a conflict nothing is sent until
+  a read.
+- **Contract** (`m4b.json`): golden requests and replies, capability per
+  request, one reply kind each, a revision-less list still reads, and a
+  change without a revision (or an `icon` edit) is malformed.
+- **Migration** (`config::client` tests, `tests/appearance.rs`): v1.4–v1.6
+  fixtures. A dry run writes nothing. Each migration matches its plan and
+  leaves `projects.toml` byte for byte, so v1 reads the same config. The
+  copy holds no Host key. A second run changes nothing. An edited, newer or
+  unknown client file is never replaced. A bad source and a missing source
+  are both handled.
+- **Page:** `changes.test.ts` (This Mac and a remote Host decide Changes
+  from the Host's row, and the toggle goes through `project_config`),
+  `projects.test.ts` (settings come with the rows).
+
+### Not yet
+
+- **Image bytes:** icon and background on a remote Host. This needs an
+  asset capability that carries validated bytes.
+- **CLI writers:** `skiff` on a Host still edits `projects.toml` directly
+  (it is the Host's own tool, under the same lock). Its `theme app` and
+  `open-with` commands now write `client.toml`.
+- Agent and Skipper settings (M6); the Files tree (M5); data-plane events.
+- The M4 diff/recovery fixes (`c1f8f8b`) have no completed independent
+  review.
+- Manual two-machine and CI acceptance for M2, M3 and M4.
 
 ## M0 demo and handoff
 

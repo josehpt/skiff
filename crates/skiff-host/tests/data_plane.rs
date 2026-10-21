@@ -98,7 +98,10 @@ async fn the_data_plane_serves_this_hosts_projects_and_git_only() {
     let hello = skiff_host::hello().unwrap();
     let stored = skiff_core::host_identity::load(&skiff_core::host_identity::path()).unwrap();
     assert_eq!(hello.host.host_id.as_str(), stored);
-    assert_eq!(hello.capabilities, vec![Capability::projects(), Capability::git_status(), Capability::git_diff()]);
+    assert_eq!(hello.capabilities, skiff_host::capabilities());
+    for c in [Capability::projects(), Capability::git_status(), Capability::git_diff()] {
+        assert!(hello.capabilities.contains(&c), "{c:?}");
+    }
     let host = hello.host.host_id.clone();
     let mut service = start(&skiff_core::socket::data_socket(&session), hello.clone());
 
@@ -310,7 +313,7 @@ while True:
 /// The wire stays the envelope: one reply kind per request.
 #[test]
 fn every_data_request_has_one_reply_kind() {
-    let list = Response::Projects { projects: vec![] };
+    let list = Response::Projects { projects: vec![], revision: None };
     let changes = Response::Changes { changes: vec![] };
     assert!(Request::ProjectList.accepts(&list));
     assert!(!Request::ProjectList.accepts(&Response::Ok));

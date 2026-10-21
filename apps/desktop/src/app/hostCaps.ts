@@ -14,7 +14,9 @@ export type HostCap =
   | "session_agents"
   | "projects"
   | "git_status"
-  | "git_diff";
+  | "git_diff"
+  | "project_config"
+  | "worktrees";
 
 /** The major of each capability that this page speaks. */
 const MAJOR: Record<HostCap, number> = {
@@ -28,6 +30,8 @@ const MAJOR: Record<HostCap, number> = {
   projects: 1,
   git_status: 1,
   git_diff: 1,
+  project_config: 1,
+  worktrees: 1,
 };
 
 /** What each capability offers, for the refusal. */
@@ -42,6 +46,8 @@ const OFFERS: Record<HostCap, string> = {
   projects: "projects",
   git_status: "Git changes",
   git_diff: "diffs",
+  project_config: "changes to its projects",
+  worktrees: "new or removed worktrees",
 };
 
 /** `name@major` of the selected Host. `null` until the first answer. */

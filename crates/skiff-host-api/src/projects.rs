@@ -1,6 +1,7 @@
-//! M4 (first slice) data plane, read-only: the Host's projects, fleets and
-//! worktrees (`projects@1`), a worktree's changed files (`git_status@1`) and
-//! their diff text (`git_diff@1`).
+//! M4 data plane: the Host's projects, fleets and worktrees (`projects@1`),
+//! a worktree's changed files (`git_status@1`) and their diff text
+//! (`git_diff@1`); changes to the Host's `[[project]]` tables
+//! (`project_config@1`) and to its project worktrees (`worktrees@1`).
 //! Served by `skiff-host`, the Host's restartable data-plane service, never
 //! by skiffd. Every path is a path on the Host: opaque to the client, never
 //! opened, resolved or checked on the client's machine.
@@ -50,6 +51,58 @@ pub struct HostProject {
     /// Absent: shown.
     #[serde(default)]
     pub changes: Option<bool>,
+    /// The project's own theme id. Absent: the app theme. Left out when
+    /// absent, so a row without it reads as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
+    /// Shows a Files tree under each worktree. Left out when off.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub files: bool,
+}
+
+/// What the Host would add for a folder of its own, before anything is written.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostFolder {
+    /// The repository's main worktree on the Host. `None`: not in a repository.
+    pub root: Option<String>,
+    pub name: String,
+    pub short: String,
+    pub color: String,
+    pub branch: Option<String>,
+    pub worktrees: usize,
+    /// The icon the Host found in the repository, as a data URL: bytes, never a path.
+    #[serde(default)]
+    pub icon: Option<String>,
+    /// Why the folder cannot be added.
+    pub error: Option<String>,
+}
+
+/// One change to one project's settings. Images (icon, background) are not
+/// here: they need their bytes sent, which no capability offers yet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "key", rename_all = "snake_case")]
+pub enum ProjectEdit {
+    /// Rail initials, at most 3 characters. Empty: from the name.
+    Short { short: String },
+    /// Empty: on the rail by itself.
+    Fleet { fleet: String },
+    /// `#rrggbb`.
+    Color { color: String },
+    /// `None`: the app theme.
+    Theme { theme: Option<String> },
+    Changes { on: bool },
+    Files { on: bool },
+    /// Percent, 40 to 100. `None`: the default.
+    BackgroundOpacity { percent: Option<u8> },
+    /// Out of the rail, settings kept; or back on it.
+    Closed { closed: bool },
+}
+
+/// A project's fleet in an arrangement. Empty: on the rail by itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectFleet {
+    pub project: String,
+    pub fleet: String,
 }
 
 /// One changed file in a worktree against HEAD, staged and unstaged together.

@@ -13,9 +13,9 @@ import { rune } from "../ui/runes";
 import { showError } from "../ui/alerts";
 import { daemonBadge, restartIfIdle } from "./daemonRestart";
 import { reloadNote } from "./daemonNotice";
-import { loadChangesSetting, reloadChanges } from "../workspace/changes";
-import { loadProjectThemes } from "../appearance/themes";
-import { loadFilesSetting } from "../workspace/files";
+import { reloadChanges } from "../workspace/changes";
+import { projectThemesFrom } from "../appearance/themes";
+import { filesFrom } from "../workspace/files";
 import { deleteGroup, loadGroups, syncTemplateName } from "./groups";
 import { render, scheduleRender } from "./render";
 import { born, gone, OTHER, removeErrors, S, sessions, upsert } from "./state";
@@ -254,14 +254,17 @@ export async function loadProjects() {
   const started = performance.now();
   try {
     const read = invoke<Project[]>("list_projects").finally(() => work("projects refresh (worktrees, branches)", performance.now() - started));
-    // Files, Changes and theme settings and Skipper are still this Mac's (M5–M6): a remote Host gets none.
-    [list] = await Promise.all(remote ? [read] : [read, loadFilesSetting(), loadChangesSetting(), loadProjectThemes(), loadAppTheme(), loadSkiffAgent()]);
+    // The app theme is this computer's; Skipper is still this Mac's (M6): a remote Host gets neither.
+    [list] = await Promise.all(remote ? [read] : [read, loadAppTheme(), loadSkiffAgent()]);
   } catch (e) {
     err = String(e);
   }
   // A later call started while this one waited: its answer is newer.
   if (seq !== projectsSeq) return;
   if (list) {
+    // Files, Changes and theme are the Host's project settings, read with its rows.
+    filesFrom(list);
+    projectThemesFrom(list);
     const open = list.filter((p) => !p.closed);
     // The same list keeps its objects: the tree and place() compare worktrees by identity.
     if (JSON.stringify(open) !== JSON.stringify(S.projects)) S.projects = open;

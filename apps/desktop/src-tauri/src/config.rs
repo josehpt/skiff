@@ -1,22 +1,22 @@
-//! Config and git requests the app answers itself. They read and write
-//! `projects.toml` or run git, and need no session, so a change here never
-//! asks the user to restart skiffd.
+//! Project and worktree requests go to the selected Host's data plane
+//! (`skiff-host`): this Mac's for This Mac, a remote Host's own for it. The
+//! app writes no `[[project]]` table and runs no worktree change itself. Its
+//! own settings (keys, appearance) are this computer's `client.toml`; the
+//! agent settings below are still this Mac's `projects.toml` (M6).
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use anyhow::{anyhow, bail};
 use skiff_core::{
-    config::{self, Appearance, FolderInfo},
+    config::{self, client, Appearance},
     git,
-    project::{self, AgentInfo, Project, Worktree},
-    session::{SessionInfo, SessionState},
+    project::AgentInfo,
 };
 use tauri::{AppHandle, Emitter, State};
 
 use skiff_client::host::data;
-use skiff_host_api::HostProject;
+use skiff_host_api::{HostFolder, HostProject, HostWorktree, ProjectEdit, ProjectFleet};
 
-use crate::connection::{App, ensure_client, err};
+use crate::connection::{data_read, data_write, keep_revision, project_write, App, ensure_client, err};
 
 /// The page reloads projects on this event.
 pub(crate) const PROJECTS_CHANGED: &str = "skiff:projects-changed";
@@ -25,174 +25,201 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> anyhow::Result<T> + Sen
     tokio::task::spawn_blocking(f).await.map_err(|e| e.to_string())?.map_err(err)
 }
 
-/// Runs a projects.toml or worktree edit, then tells the page.
-async fn project_edit<T: Send + 'static>(
-    handle: &AppHandle,
-    f: impl FnOnce() -> anyhow::Result<T> + Send + 'static,
-) -> Result<T, String> {
-    let out = blocking(f).await?;
+/// Tells the page after a change was tried: done, refused or unknown, it
+/// reads the projects again.
+fn changed<T>(handle: &AppHandle, out: Result<T, String>) -> Result<T, String> {
     let _ = handle.emit(PROJECTS_CHANGED, ());
-    Ok(out)
+    out
+}
+
+/// Runs a local projects.toml edit (images only), then tells the page.
+async fn local_edit(handle: &AppHandle, f: impl FnOnce() -> anyhow::Result<()> + Send + 'static) -> Result<(), String> {
+    changed(handle, blocking(f).await)
+}
+
+/// One key of one Host project (`project_config@1`).
+async fn edit(handle: &AppHandle, app: &App, project: String, edit: ProjectEdit) -> Result<(), String> {
+    let out = project_write(app, |c, revision| async move {
+        data::project_edit(&c, &revision, &project, edit).await.map(|r| ((), r))
+    })
+    .await;
+    changed(handle, out)
 }
 
 /// The selected Host's projects, from its data-plane service (`projects@1`):
 /// this Mac's `skiff-host` here, a remote Host's own there. Never read here.
+/// Their revision is kept for the next change.
 #[tauri::command]
 pub(crate) async fn list_projects(app: State<'_, App>) -> Result<Vec<HostProject>, String> {
-    crate::connection::data_read(&app, |c| async move { data::project_list(&c).await }).await
+    read_projects(&app).await
+}
+
+async fn read_projects(app: &App) -> Result<Vec<HostProject>, String> {
+    data_read(app, |c| async move {
+        let (rows, revision) = data::project_rows(&c).await?;
+        keep_revision(app, &c, revision);
+        Ok(rows)
+    })
+    .await
 }
 
 /// One project read again: git runs in it only, not in every project.
 #[tauri::command]
 pub(crate) async fn get_project(app: State<'_, App>, name: String) -> Result<HostProject, String> {
-    crate::connection::data_read(&app, |c| async move { data::project_get(&c, &name).await }).await
+    data_read(&app, |c| async move { data::project_get(&c, &name).await }).await
 }
 
+/// A worktree on a new branch, made by the Host's git (`worktrees@1`).
 #[tauri::command]
 pub(crate) async fn add_worktree(
     handle: AppHandle,
+    app: State<'_, App>,
     project: String,
     branch: String,
     base: Option<String>,
-) -> Result<Worktree, String> {
-    project_edit(&handle, move || project::add_worktree(&project, &branch, base.as_deref())).await
+) -> Result<HostWorktree, String> {
+    let out = data_write(&app, |c| async move { data::worktree_add(&c, &project, &branch, base.as_deref()).await }).await;
+    changed(&handle, out)
 }
 
-/// Refuses the main worktree and live sessions inside. Refuses uncommitted
-/// changes unless `force`, which deletes them.
+/// The Host refuses the main worktree and one its own live sessions run
+/// in. It refuses uncommitted changes unless `force`, which deletes them.
 #[tauri::command]
 pub(crate) async fn remove_worktree(
     handle: AppHandle,
     app: State<'_, App>,
     project: String,
-    path: PathBuf,
+    path: String,
     force: bool,
 ) -> Result<(), String> {
-    let sessions = crate::connection::inventory_now(&app).await?;
-    project_edit(&handle, move || remove_worktree_now(&project, &path, force, &sessions)).await
+    let out = data_write(&app, |c| async move { data::worktree_remove(&c, &project, &path, force).await }).await;
+    changed(&handle, out)
 }
 
-fn remove_worktree_now(name: &str, path: &Path, force: bool, sessions: &[SessionInfo]) -> anyhow::Result<()> {
-    let p = project::find(name)?;
-    let wt = git::list_worktrees(&p.path)?
-        .into_iter()
-        .find(|w| project::same_path(&w.path, path))
-        .ok_or_else(|| anyhow!("{} is not a worktree of {name}", path.display()))?;
-    if wt.is_main {
-        bail!("refusing to remove the main worktree");
-    }
-    // git reports realpaths; session cwds may go through symlinks.
-    let real = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
-    let root = real(&wt.path);
-    let live = sessions
-        .iter()
-        .filter(|s| s.state != SessionState::Done)
-        .find(|s| real(&s.cwd).starts_with(&root) || s.cwd.starts_with(path));
-    if let Some(s) = live {
-        bail!("session \"{}\" is still running in this worktree", s.label);
-    }
-    if !force && wt.path.is_dir() && git::is_dirty(&wt.path)? {
-        bail!("worktree has uncommitted changes");
-    }
-    git::remove_worktree(&p.path, &wt.path, force)
-}
-
-/// Appends the git repository that contains `path` to projects.toml.
+/// Adds the git repository that contains `path`, a folder on the Host.
 #[tauri::command]
 pub(crate) async fn add_project(
     handle: AppHandle,
-    path: PathBuf,
+    app: State<'_, App>,
+    path: String,
     name: Option<String>,
     short: Option<String>,
     color: Option<String>,
-    icon: Option<String>,
-    agents: Option<Vec<String>>,
-) -> Result<Project, String> {
-    project_edit(&handle, move || {
-        let p = config::add_project(&path, name, short, color, icon, agents.unwrap_or_default())?;
-        Ok(Project::from_config(&p))
+) -> Result<HostProject, String> {
+    let out = project_write(&app, |c, revision| async move {
+        data::project_add(&c, &revision, &path, name, short, color).await
     })
-    .await
+    .await;
+    changed(&handle, out)
 }
 
-/// Initializes the selected folder without staging files or creating a commit.
+/// Initializes the selected folder without staging files or creating a
+/// commit. This Mac only: no Host offers a Git write but worktrees.
 #[tauri::command]
 pub(crate) async fn init_repository(path: PathBuf) -> Result<(), String> {
     blocking(move || git::init_repository(&path)).await
 }
 
-/// What `add_project` would do for `path`. Writes nothing.
+/// What `add_project` would do for `path`, a folder on the Host. Writes nothing.
 #[tauri::command]
-pub(crate) async fn inspect_folder(path: PathBuf) -> Result<FolderInfo, String> {
-    blocking(move || Ok(config::inspect_folder(&path))).await
+pub(crate) async fn inspect_folder(app: State<'_, App>, path: String) -> Result<HostFolder, String> {
+    data_read(&app, |c| async move { data::project_inspect(&c, &path).await }).await
 }
 
+/// This Mac only: an image is a path here, and no Host takes image bytes yet.
 #[tauri::command]
 pub(crate) async fn set_project_icon(handle: AppHandle, project: String, icon: Option<String>) -> Result<(), String> {
-    project_edit(&handle, move || config::set_project_icon(&project, icon.as_deref())).await
+    local_edit(&handle, move || config::set_project_icon(&project, icon.as_deref())).await
 }
 
-#[tauri::command]
-pub(crate) async fn set_project_fleet(handle: AppHandle, project: String, fleet: String) -> Result<(), String> {
-    project_edit(&handle, move || config::set_project_fleet(&project, &fleet)).await
-}
-
-#[tauri::command]
-pub(crate) async fn set_project_short(handle: AppHandle, project: String, short: String) -> Result<(), String> {
-    project_edit(&handle, move || config::set_project_short(&project, &short)).await
-}
-
+/// This Mac only, as the icon.
 #[tauri::command]
 pub(crate) async fn set_project_background(
     handle: AppHandle,
     project: String,
     background: Option<String>,
 ) -> Result<(), String> {
-    project_edit(&handle, move || config::set_project_background(&project, background.as_deref())).await
+    local_edit(&handle, move || config::set_project_background(&project, background.as_deref())).await
+}
+
+#[tauri::command]
+pub(crate) async fn set_project_fleet(handle: AppHandle, app: State<'_, App>, project: String, fleet: String) -> Result<(), String> {
+    edit(&handle, &app, project, ProjectEdit::Fleet { fleet }).await
+}
+
+#[tauri::command]
+pub(crate) async fn set_project_short(handle: AppHandle, app: State<'_, App>, project: String, short: String) -> Result<(), String> {
+    edit(&handle, &app, project, ProjectEdit::Short { short }).await
 }
 
 #[tauri::command]
 pub(crate) async fn set_project_background_opacity(
     handle: AppHandle,
+    app: State<'_, App>,
     project: String,
     percent: Option<u8>,
 ) -> Result<(), String> {
-    project_edit(&handle, move || config::set_project_background_opacity(&project, percent)).await
+    edit(&handle, &app, project, ProjectEdit::BackgroundOpacity { percent }).await
 }
 
 #[tauri::command]
-pub(crate) async fn set_project_color(handle: AppHandle, project: String, color: String) -> Result<(), String> {
-    project_edit(&handle, move || config::set_project_color(&project, &color)).await
+pub(crate) async fn set_project_color(handle: AppHandle, app: State<'_, App>, project: String, color: String) -> Result<(), String> {
+    edit(&handle, &app, project, ProjectEdit::Color { color }).await
+}
+
+#[tauri::command]
+pub(crate) async fn set_project_changes(handle: AppHandle, app: State<'_, App>, project: String, on: bool) -> Result<(), String> {
+    edit(&handle, &app, project, ProjectEdit::Changes { on }).await
+}
+
+#[tauri::command]
+pub(crate) async fn set_project_files(handle: AppHandle, app: State<'_, App>, project: String, on: bool) -> Result<(), String> {
+    edit(&handle, &app, project, ProjectEdit::Files { on }).await
+}
+
+#[tauri::command]
+pub(crate) async fn set_project_theme(handle: AppHandle, app: State<'_, App>, project: String, theme: Option<String>) -> Result<(), String> {
+    edit(&handle, &app, project, ProjectEdit::Theme { theme }).await
 }
 
 #[tauri::command]
 pub(crate) async fn reorder_projects(
     handle: AppHandle,
+    app: State<'_, App>,
     order: Vec<String>,
     fleets: Option<Vec<(String, String)>>,
 ) -> Result<(), String> {
-    project_edit(&handle, move || config::arrange_projects(&order, &fleets.unwrap_or_default())).await
+    let fleets = fleets.unwrap_or_default().into_iter().map(|(project, fleet)| ProjectFleet { project, fleet }).collect();
+    let out = project_write(&app, |c, revision| async move {
+        data::project_arrange(&c, &revision, order, fleets).await.map(|r| ((), r))
+    })
+    .await;
+    changed(&handle, out)
 }
 
 #[tauri::command]
-pub(crate) async fn set_project_closed(handle: AppHandle, project: String, closed: bool) -> Result<(), String> {
-    project_edit(&handle, move || config::set_project_closed(&project, closed)).await
+pub(crate) async fn set_project_closed(handle: AppHandle, app: State<'_, App>, project: String, closed: bool) -> Result<(), String> {
+    edit(&handle, &app, project, ProjectEdit::Closed { closed }).await
 }
 
-/// Drops the project and its settings from projects.toml. The folder stays.
+/// Drops the project and its settings from the Host's config. The folder stays.
 #[tauri::command]
-pub(crate) async fn remove_project(handle: AppHandle, project: String) -> Result<(), String> {
-    project_edit(&handle, move || config::remove_project(&project)).await
+pub(crate) async fn remove_project(handle: AppHandle, app: State<'_, App>, project: String) -> Result<(), String> {
+    let out = project_write(&app, |c, revision| async move {
+        data::project_remove(&c, &revision, &project).await.map(|r| ((), r))
+    })
+    .await;
+    changed(&handle, out)
 }
 
 #[tauri::command]
 pub(crate) async fn get_keys() -> Result<std::collections::BTreeMap<String, String>, String> {
-    blocking(|| Ok(config::load()?.keys)).await
+    blocking(|| Ok(client::load()?.keys)).await
 }
 
 #[tauri::command]
 pub(crate) async fn get_appearance() -> Result<Appearance, String> {
-    blocking(|| Ok(config::load()?.appearance)).await
+    blocking(|| Ok(client::load()?.appearance)).await
 }
 
 /// Sets the app theme: a theme id, or `null` for Harbor.
@@ -200,7 +227,7 @@ pub(crate) async fn get_appearance() -> Result<Appearance, String> {
 pub(crate) async fn set_appearance(theme: Option<String>) -> Result<Appearance, String> {
     blocking(move || {
         config::set_app_theme(theme.as_deref())?;
-        Ok(config::load()?.appearance)
+        Ok(client::load()?.appearance)
     })
     .await
 }
@@ -210,7 +237,7 @@ pub(crate) async fn set_appearance(theme: Option<String>) -> Result<Appearance, 
 pub(crate) async fn set_font_size(size: Option<u8>) -> Result<Appearance, String> {
     blocking(move || {
         config::set_font_size(size)?;
-        Ok(config::load()?.appearance)
+        Ok(client::load()?.appearance)
     })
     .await
 }
@@ -260,3 +287,7 @@ pub(crate) async fn remove_agent(app: State<'_, App>, agent: String) -> Result<V
 pub(crate) async fn restore_agents(app: State<'_, App>) -> Result<Vec<AgentInfo>, String> {
     agents_after(&app, config::restore_agents).await
 }
+
+#[cfg(test)]
+#[path = "config_tests.rs"]
+mod tests;

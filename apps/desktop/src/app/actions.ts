@@ -142,7 +142,8 @@ export function runAction(a: Action) {
     case "region-prev": return cycleRegion(-1);
     case "session-next": return stepList(1);
     case "session-prev": return stepList(-1);
-    case "list-project": return toProject();
+    // The sidebar is the combined rail: its rows are already the project list.
+    case "list-project": return void (document.activeElement?.closest("#sidebar") || toProject());
     case "list-back": return fromProject();
     case "list-main": return toMainWorktree();
     case "shortcuts": return showShortcuts();

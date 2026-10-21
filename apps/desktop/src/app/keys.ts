@@ -199,7 +199,7 @@ export const DESCRIBE: [string, Action, string][] = [
   ["View", "back", "Back to the last session"],
   ["View", "session-next", "Next row in the list: worktree, group, session, Changes or Files. A change or file shows its preview, which takes the keys. Changes, Files and folders keep the keys: Space opens or closes them. In Settings, the next section. In mission control, the next screen in the lane. In the Ledger, the next row"],
   ["View", "session-prev", "Previous row in the list. In Settings, the previous section. In mission control, the previous screen in the lane. In the Ledger, the previous row"],
-  ["View", "list-project", "To the current project's row in the list. The panes stay. In Settings, to the section tabs. In mission control, the lane to the left. From the Ledger, back to Skipper's pane"],
+  ["View", "list-project", "To the current project's row in the list. The panes stay. In the sidebar, nothing. In Settings, to the section tabs. In mission control, the lane to the left. From the Ledger, back to Skipper's pane"],
   ["View", "list-back", "From a project or fleet row back to the session on screen. From Skipper's pane, into the Ledger. In Settings, into the section. In mission control, the lane to the right"],
   ["View", "list-main", "To the project's main worktree in the list, from any row"],
   ["View", "focus-left", "Focus the pane to the left"],

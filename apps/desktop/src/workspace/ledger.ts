@@ -658,14 +658,16 @@ document.addEventListener("focusin", (e) => {
 });
 
 /**
- * The list keys while the Ledger is on screen. True when the Ledger took the
- * key. From a project or fleet row, Ctrl+Shift+Right keeps its list meaning.
+ * The list keys while the Ledger is on screen, and the maximize key on its lit
+ * row. True when the Ledger took the key. From a project or fleet row, Ctrl+Shift+Right keeps its list meaning.
  */
 export function ledgerKey(a: Action): boolean {
   if (!ledgerShown()) return false;
   if (keys) {
     if (a === "session-next" || a === "session-prev") step(a === "session-next" ? 1 : -1);
     else if (a === "list-project") leave();
+    // Ctrl+Shift+Enter opens the lit row, as Enter does. No pane to maximize from here.
+    else if (a === "maximize") rowEls().find((x) => x.dataset.key === lit)?.click();
     else return a === "list-back";
     return true;
   }

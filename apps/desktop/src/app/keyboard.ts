@@ -13,12 +13,14 @@ import { launchMenu } from "./panels";
 import { closeEntries } from "../workspace/projectClose";
 import { renameListItem } from "../workspace/rename";
 import { clearSelection, extendSelection, keepRow, splitSelection } from "../workspace/selection";
-import { collapsed, S } from "./state";
+import { collapsed, S, selectedWorktree } from "./state";
 
 import { panes } from "../terminal/terminalState";
 import { revealSession, selectProject, showGroup } from "../workspace/view";
 import { closePreview, enterPreview, giveKeys, peekBlocksAction, previewOnScreen, startPreview } from "../terminal/peek";
 import { rowActs } from "../workspace/rowActs";
+import { worktreeLines } from "../workspace/sidebarLines";
+import { ledgerKey } from "../workspace/ledger";
 import { animateFold } from "../ui/fold";
 import { isOpen, projectKey as projectRowKey, toggleRow, visibleProjects } from "../workspace/tree";
 
@@ -57,6 +59,8 @@ window.addEventListener("keydown", (e) => {
   if (peekBlocksAction(key) && !(e.target as Element).closest?.("#sidebar-scroll")) return;
   e.preventDefault();
   e.stopPropagation();
+  // The Ledger's lit row takes Ctrl+Shift+Enter before the tree row can block it.
+  if (key === "maximize" && ledgerKey(key)) return;
   if (typeof key === "string" && modeKeyBlocked(key)) return;
   if (typeof key === "number") {
     pickProject(key);
@@ -226,11 +230,20 @@ function landOn(next: HTMLElement) {
   }
 }
 
-/** Ctrl+Shift+1..9: the project row with that number, counted down the tree. Its sessions show. */
+/**
+ * Ctrl+Shift+1..9: the project row with that number, counted down the tree.
+ * The panes show the first line under it (its first group, else its first
+ * session), not the last one in use there. The keys go to the project row.
+ */
 function pickProject(n: number) {
   const p = visibleProjects()[n - 1];
   if (!p) return;
   selectProject(p.name);
+  const w = p.worktrees.find((x) => x.path === selectedWorktree.get(p.name));
+  const first = w ? worktreeLines(w).find((l) => !l.pointer) : undefined;
+  if (first?.group) showGroup(first.group.id);
+  else if (first?.session) revealSession(first.session.id);
+  toProject();
   listItems().find((el) => el.dataset.key === projectRowKey(p.name))?.scrollIntoView({ block: "nearest" });
 }
 

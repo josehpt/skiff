@@ -165,7 +165,7 @@ impl ScreenSource for LegacyReadOnly {
             // envelope is sent to skiffd and no terminal subscription is taken.
             match self
                 .0
-                .request(skiff_core::protocol::Request::Screen { session, rows })
+                .request_decoded(skiff_core::protocol::Request::Screen { session, rows })
                 .await
             {
                 Ok(skiff_core::protocol::Response::Screen { lines }) => {
@@ -178,6 +178,11 @@ impl ScreenSource for LegacyReadOnly {
                     message: format!("unexpected reply: {other:?}"),
                 }),
                 Err(e) if e.downcast_ref::<crate::ReplyTimeout>().is_some() => Err(Error::TimedOut),
+                Err(e) if e.downcast_ref::<crate::ReplyDecodeError>().is_some() => {
+                    Err(Error::MalformedContract {
+                        message: e.to_string(),
+                    })
+                }
                 Err(_) if self.0.is_closed() => Err(Error::TransportLost),
                 Err(e) => Err(Error::MalformedContract {
                     message: format!("{e:#}"),

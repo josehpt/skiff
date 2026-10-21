@@ -367,3 +367,130 @@ async fn selected_screen_matches_legacy_requests_outputs_and_errors_on_the_same_
     let error = legacy_screen(&connection, "s", 12).await.unwrap_err();
     assert_eq!(error.to_string(), "skiffd connection closed");
 }
+
+fn malformed_screen_message() -> String {
+    let line =
+        serde_json::to_string(&serde_json::json!({"id":1,"type":"screen","lines":[42]})).unwrap();
+    let error = serde_json::from_str::<skiff_core::protocol::ServerMessage>(&line).unwrap_err();
+    format!("unreadable reply from skiffd: {error}")
+}
+
+async fn selected_screen_error_paths(response: serde_json::Value) -> (Error, String, String) {
+    let dir = Dir::new();
+    let socket = dir.0.join("a.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let selection = LocalSelection::new(socket, dir.0.join("local-host-id"));
+    let (pending, peer) = tokio::join!(selection.connect(), listener.accept());
+    let host = pending.unwrap().activate().await.unwrap();
+    let connection = host.connection();
+    let client = host.client();
+    let mut peer = BufReader::new(peer.unwrap().0);
+    let mut typed = None;
+    let mut messages = vec![];
+    for id in 1..=3 {
+        let operation = async {
+            if id == 1 {
+                typed = Some(
+                    connection
+                        .request(Request::SessionScreen {
+                            session: "s".into(),
+                            rows: 12,
+                        })
+                        .await
+                        .unwrap_err(),
+                );
+            } else {
+                let error = if id == 2 {
+                    legacy_screen(&connection, "s", 12).await.unwrap_err()
+                } else {
+                    client.screen("s", 12).await.unwrap_err()
+                };
+                messages.push(format!("{error:#}"));
+            }
+        };
+        tokio::join!(operation, async {
+            let mut line = String::new();
+            peer.read_line(&mut line).await.unwrap();
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&line).unwrap(),
+                serde_json::json!({"id":id,"cmd":"screen","session":"s","rows":12})
+            );
+            let mut response = response.clone();
+            response["id"] = id.into();
+            let mut bytes = serde_json::to_vec(&response).unwrap();
+            bytes.push(b'\n');
+            peer.get_mut().write_all(&bytes).await.unwrap();
+        });
+    }
+    (typed.unwrap(), messages.remove(0), messages.remove(0))
+}
+
+#[tokio::test]
+async fn malformed_correlated_screen_data_retains_decode_provenance_and_legacy_text() {
+    let (typed, projected, legacy) =
+        selected_screen_error_paths(serde_json::json!({"type":"screen","lines":[42]})).await;
+    let message = malformed_screen_message();
+    assert_eq!(
+        typed,
+        Error::MalformedContract {
+            message: message.clone()
+        }
+    );
+    assert_eq!(projected, message);
+    assert_eq!(legacy, message);
+}
+
+#[tokio::test]
+async fn genuine_screen_error_with_identical_decode_diagnostic_text_stays_operation_failed() {
+    // A daemon is allowed to send this exact text. Classification must use the
+    // decoded reply/error provenance, never a string-prefix heuristic.
+    let message = malformed_screen_message();
+    let (typed, projected, legacy) =
+        selected_screen_error_paths(serde_json::json!({"type":"error","message":message})).await;
+    assert_eq!(
+        typed,
+        Error::OperationFailed {
+            message: message.clone()
+        }
+    );
+    assert_eq!(projected, message);
+    assert_eq!(legacy, message);
+}
+
+#[tokio::test]
+async fn correlated_decode_failure_is_not_overwritten_by_a_subsequent_disconnect() {
+    let dir = Dir::new();
+    let socket = dir.0.join("a.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let selection = LocalSelection::new(socket, dir.0.join("local-host-id"));
+    let (pending, peer) = tokio::join!(selection.connect(), listener.accept());
+    let host = pending.unwrap().activate().await.unwrap();
+    let connection = host.connection();
+    let mut request = Box::pin(connection.request(Request::SessionScreen {
+        session: "s".into(),
+        rows: 12,
+    }));
+    let mut peer = BufReader::new(peer.unwrap().0);
+    let mut line = String::new();
+    tokio::select! { biased; result = &mut request => panic!("completed before reply: {result:?}"), _ = peer.read_line(&mut line) => {} }
+    peer.get_mut()
+        .write_all(b"{\"id\":1,\"type\":\"screen\",\"lines\":[42]}\n")
+        .await
+        .unwrap();
+    drop(peer);
+    // Let the reader correlate the decode error and observe EOF before the
+    // Host source resumes: its completed result takes precedence over EOF.
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !host.client().is_closed() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        request.await,
+        Err(Error::MalformedContract {
+            message: malformed_screen_message()
+        })
+    );
+}

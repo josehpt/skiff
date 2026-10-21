@@ -28,7 +28,7 @@ pub mod skipper;
 pub mod transport;
 pub use requests::{Coordinated, Coordinator, DaemonInfo, Refused};
 
-type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Response>>>>;
+type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Response, ReplyDecodeError>>>>>;
 type Outputs = Arc<Mutex<HashMap<SessionId, OutputTx>>>;
 
 /// Removes the reply slot when a caller drops a request before it completes.
@@ -107,6 +107,17 @@ impl std::fmt::Display for ReplyTimeout {
 }
 impl std::error::Error for ReplyTimeout {}
 
+/// A correlated frame rejected by the reader, not a daemon Error response.
+/// Keep one Display message so the legacy Tauri diagnostic remains identical.
+#[derive(Debug)]
+struct ReplyDecodeError(String);
+impl std::fmt::Display for ReplyDecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for ReplyDecodeError {}
+
 pub struct Client {
     /// The daemon's pid, from the socket's peer credentials.
     pub daemon_pid: Option<i32>,
@@ -154,7 +165,7 @@ impl Client {
                     match serde_json::from_str::<ServerMessage>(&line) {
                         Ok(ServerMessage::Reply(r)) => {
                             if let Some(s) = pending.lock().unwrap().remove(&r.id) {
-                                let _ = s.send(r.response);
+                                let _ = s.send(Ok(r.response));
                             }
                         }
                         Ok(ServerMessage::Event(e @ (Event::Output { .. } | Event::Snapshot { .. }))) => {
@@ -171,7 +182,7 @@ impl Client {
                                 .ok()
                                 .and_then(|v| v.get("id").and_then(|i| i.as_u64()));
                             if let Some(s) = id.and_then(|id| pending.lock().unwrap().remove(&id)) {
-                                let _ = s.send(Response::Error { message: format!("unreadable reply from skiffd: {e}") });
+                                let _ = s.send(Err(ReplyDecodeError(format!("unreadable reply from skiffd: {e}"))));
                             }
                         }
                     }
@@ -210,6 +221,21 @@ impl Client {
     /// [`Self::request`] with its own reply timeout. `None` waits until the
     /// daemon answers or closes the connection.
     pub(crate) async fn request_within(&self, request: Request, timeout: Option<std::time::Duration>) -> Result<Response> {
+        // Preserve the existing public legacy result shape for every caller.
+        // Only the Host adapter opts into decode-failure provenance below.
+        match self.request_decoded_within(request, timeout).await {
+            Err(e) if e.downcast_ref::<ReplyDecodeError>().is_some() => {
+                Ok(Response::Error { message: e.to_string() })
+            }
+            result => result,
+        }
+    }
+
+    pub(crate) async fn request_decoded(&self, request: Request) -> Result<Response> {
+        self.request_decoded_within(request, Some(REPLY_TIMEOUT)).await
+    }
+
+    async fn request_decoded_within(&self, request: Request, timeout: Option<std::time::Duration>) -> Result<Response> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (s, r) = oneshot::channel();
         self.pending.lock().unwrap().insert(id, s);
@@ -224,13 +250,14 @@ impl Client {
         if self.tx.send(line).is_err() {
             bail!("skiffd connection closed");
         }
-        let Some(limit) = timeout else {
-            return r.await.map_err(|_| anyhow!("skiffd connection closed"));
+        let decoded = match timeout {
+            None => r.await.map_err(|_| anyhow!("skiffd connection closed"))?,
+            Some(limit) => match tokio::time::timeout(limit, r).await {
+                Ok(reply) => reply.map_err(|_| anyhow!("skiffd connection closed"))?,
+                Err(_) => return Err(ReplyTimeout(limit).into()),
+            },
         };
-        match tokio::time::timeout(limit, r).await {
-            Ok(reply) => reply.map_err(|_| anyhow!("skiffd connection closed")),
-            Err(_) => Err(ReplyTimeout(limit).into()),
-        }
+        decoded.map_err(Into::into)
     }
 
     async fn expect_ok(&self, request: Request) -> Result<()> {
@@ -292,9 +319,36 @@ mod tests {
         };
         let envelope: Envelope = serde_json::from_slice(&line).unwrap();
         assert!(client.pending.lock().unwrap().remove(&(envelope.id - 1)).is_none());
-        client.pending.lock().unwrap().remove(&envelope.id).unwrap().send(Response::Ok).unwrap();
+        client.pending.lock().unwrap().remove(&envelope.id).unwrap().send(Ok(Response::Ok)).unwrap();
         assert!(matches!(request.await.unwrap(), Response::Ok));
         assert!(client.pending.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn correlated_decode_errors_preserve_internal_provenance_and_public_legacy_shape() {
+        let (client, mut sent) = client();
+        for typed in [false, true] {
+            for timeout in [Some(REPLY_TIMEOUT), None] {
+                let mut request = Box::pin(async {
+                    if typed { client.request_decoded_within(Request::Ping, timeout).await }
+                    else { client.request_within(Request::Ping, timeout).await }
+                });
+                let line = tokio::select! {
+                    result = &mut request => panic!("finished before reply: {result:?}"),
+                    line = sent.recv() => line.unwrap(),
+                };
+                let envelope: Envelope = serde_json::from_slice(&line).unwrap();
+                client.pending.lock().unwrap().remove(&envelope.id).unwrap()
+                    .send(Err(ReplyDecodeError("unreadable reply from skiffd: fixture".into()))).unwrap();
+                let result = request.await;
+                if typed {
+                    assert!(result.unwrap_err().downcast_ref::<ReplyDecodeError>().is_some());
+                } else {
+                    assert!(matches!(result.unwrap(), Response::Error { message } if message == "unreadable reply from skiffd: fixture"));
+                }
+                assert!(client.pending.lock().unwrap().is_empty());
+            }
+        }
     }
 
     #[tokio::test]

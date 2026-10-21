@@ -21,9 +21,11 @@ use tokio::{
 };
 
 pub mod agent_folder;
+pub mod host;
 pub mod ledger;
 mod requests;
 pub mod skipper;
+pub mod transport;
 pub use requests::{Coordinated, Coordinator, DaemonInfo, Refused};
 
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Response>>>>;
@@ -116,7 +118,7 @@ impl Client {
             .await
             .with_context(|| format!("connect {}", path.display()))?;
         let daemon_pid = stream.peer_cred().ok().and_then(|c| c.pid());
-        let (rd, mut wr) = stream.into_split();
+        let (rd, mut wr) = transport::Transport::split(stream);
 
         let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
         tokio::spawn(async move {

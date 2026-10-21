@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
   "crates/skiff-core",
+  "crates/skiff-host-api",
   "crates/skiff-client",
   "crates/skiffd",
   "crates/skiff-cli",
@@ -17,6 +18,7 @@ license = "MIT"
 repository = "https://github.com/solutionscay/skiff"
 
 [workspace.dependencies]
+skiff-host-api = { path = "crates/skiff-host-api" }
 skiff-core = { path = "crates/skiff-core" }
 skiff-client = { path = "crates/skiff-client" }
 serde = { version = "1", features = ["derive"] }

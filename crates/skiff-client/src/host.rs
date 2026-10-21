@@ -10,7 +10,9 @@ use std::{
     time::Duration,
 };
 
-use skiff_host_api::{Envelope, Error, Event, Hello, Message, Request, Response};
+use skiff_host_api::{
+    Capability, Envelope, Error, Event, Hello, Message, Request, Response, SessionUpdate,
+};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     sync::{broadcast, mpsc, oneshot, watch},
@@ -21,6 +23,7 @@ use crate::transport::Transport;
 
 mod inventory;
 pub mod local;
+mod updates;
 
 /// The one in-process M1a operation; no concrete socket/process type in the seam.
 /// ScreenSource adds only the M1b text snapshot; other families stay on wire.
@@ -42,12 +45,73 @@ pub trait InventorySource: Send + Sync {
     fn inventory(&self) -> Pin<Box<dyn Future<Output = Result<Response, Error>> + Send + '_>>;
 }
 
+/// Read-only non-output session events. Each call starts a receiver at the
+/// live tail: nothing earlier is replayed.
+pub trait UpdateSource: Send + Sync {
+    fn updates(&self) -> Box<dyn UpdateStream>;
+}
+
+/// One receiver of an UpdateSource, in the source's order.
+pub trait UpdateStream: Send {
+    fn recv(&mut self) -> Pin<Box<dyn Future<Output = Result<SessionUpdate, UpdateGap>> + Send + '_>>;
+}
+
+/// Why a session-update receiver returned no update.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateGap {
+    /// A slow receiver missed this many updates. They are never replayed;
+    /// the receiver continues with later ones.
+    Lagged(u64),
+    /// One event could not be projected. It is skipped; the receiver continues.
+    Malformed(Error),
+    /// The connection ended or was disconnected. Nothing more arrives.
+    Closed,
+}
+
+enum UpdatesInner {
+    Wire(broadcast::Receiver<Event>),
+    Local {
+        stream: Box<dyn UpdateStream>,
+        closed: watch::Receiver<bool>,
+    },
+}
+
+/// Session updates from one HostConnection, from [`HostConnection::session_updates`].
+pub struct SessionUpdates(UpdatesInner);
+impl SessionUpdates {
+    pub async fn recv(&mut self) -> Result<SessionUpdate, UpdateGap> {
+        match &mut self.0 {
+            UpdatesInner::Wire(rx) => loop {
+                match rx.recv().await {
+                    Ok(Event::SessionUpdate { update }) => return Ok(*update),
+                    // Other families have their own receivers.
+                    Ok(Event::Snapshot { .. } | Event::Output { .. } | Event::SessionChanged { .. }) => {}
+                    Err(broadcast::error::RecvError::Lagged(n)) => return Err(UpdateGap::Lagged(n)),
+                    Err(broadcast::error::RecvError::Closed) => return Err(UpdateGap::Closed),
+                }
+            },
+            UpdatesInner::Local { stream, closed } => {
+                if *closed.borrow_and_update() {
+                    return Err(UpdateGap::Closed);
+                }
+                tokio::select! {
+                    biased;
+                    // A dropped connection ends the stream like a disconnect.
+                    _ = closed.changed() => Err(UpdateGap::Closed),
+                    update = stream.recv() => update,
+                }
+            }
+        }
+    }
+}
+
 enum Backend {
     Wire(Engine),
     LocalReadOnly {
         source: Arc<dyn StatusSource>,
         screen: Option<Arc<dyn ScreenSource>>,
         inventory: Option<Arc<dyn InventorySource>>,
+        updates: Option<Arc<dyn UpdateSource>>,
         read_slots: tokio::sync::Semaphore,
         closed: watch::Sender<bool>,
         slots: tokio::sync::Semaphore,
@@ -318,7 +382,7 @@ impl HostConnection {
         hello: Hello,
         previous: Option<&Hello>,
     ) -> Result<Self, Error> {
-        Self::local_readonly(source, None, None, hello, previous)
+        Self::local_readonly(source, None, None, None, hello, previous)
     }
 
     /// M1b adds only session_screen; broad sessions@1 stays unavailable locally.
@@ -328,7 +392,7 @@ impl HostConnection {
         hello: Hello,
         previous: Option<&Hello>,
     ) -> Result<Self, Error> {
-        Self::local_readonly(source, Some(screen), None, hello, previous)
+        Self::local_readonly(source, Some(screen), None, None, hello, previous)
     }
 
     /// M1c adds only the lossless read-only inventory, not sessions@1.
@@ -339,13 +403,34 @@ impl HostConnection {
         hello: Hello,
         previous: Option<&Hello>,
     ) -> Result<Self, Error> {
-        Self::local_readonly(source, Some(screen), Some(inventory), hello, previous)
+        Self::local_readonly(source, Some(screen), Some(inventory), None, hello, previous)
+    }
+
+    /// M1d adds only the read-only session-update stream; no output, input,
+    /// subscription request or lifecycle operation.
+    pub fn local_updates(
+        source: Arc<dyn StatusSource>,
+        screen: Arc<dyn ScreenSource>,
+        inventory: Arc<dyn InventorySource>,
+        updates: Arc<dyn UpdateSource>,
+        hello: Hello,
+        previous: Option<&Hello>,
+    ) -> Result<Self, Error> {
+        Self::local_readonly(
+            source,
+            Some(screen),
+            Some(inventory),
+            Some(updates),
+            hello,
+            previous,
+        )
     }
 
     fn local_readonly(
         source: Arc<dyn StatusSource>,
         screen: Option<Arc<dyn ScreenSource>>,
         inventory: Option<Arc<dyn InventorySource>>,
+        updates: Option<Arc<dyn UpdateSource>>,
         hello: Hello,
         previous: Option<&Hello>,
     ) -> Result<Self, Error> {
@@ -354,6 +439,7 @@ impl HostConnection {
             c.name != skiff_host_api::CONNECTION_STATUS
                 && !(screen.is_some() && c.name == skiff_host_api::SESSION_SCREEN)
                 && !(inventory.is_some() && c.name == skiff_host_api::SESSION_INVENTORY)
+                && !(updates.is_some() && c.name == skiff_host_api::SESSION_UPDATES)
         }) {
             return Err(Error::MalformedContract {
                 message: "local adapter cannot advertise capabilities without a source".into(),
@@ -368,6 +454,7 @@ impl HostConnection {
                 source,
                 screen,
                 inventory,
+                updates,
                 read_slots,
                 closed: watch::channel(false).0,
                 slots,
@@ -409,6 +496,7 @@ impl HostConnection {
                 read_slots,
                 closed,
                 slots,
+                ..
             } => {
                 let mut closing = closed.subscribe();
                 if *closing.borrow() {
@@ -485,6 +573,35 @@ impl HostConnection {
             Backend::LocalReadOnly { .. } => Err(Error::UnsupportedCapability {
                 capability: skiff_host_api::Capability::sessions(),
             }),
+        }
+    }
+
+    /// Session updates after this call, in order; take it before reading the
+    /// inventory it amends. No backlog or uncertain update is replayed.
+    /// Requires `session_updates@1` on both backends; never falls back.
+    pub fn session_updates(&self) -> Result<SessionUpdates, Error> {
+        self.hello.require(&Capability::session_updates())?;
+        match &self.backend {
+            Backend::Wire(engine) => {
+                let s = engine.state.inner.lock().unwrap();
+                s.events
+                    .as_ref()
+                    .map(|events| SessionUpdates(UpdatesInner::Wire(events.subscribe())))
+                    .ok_or_else(|| s.failure.clone().unwrap_or(Error::TransportLost))
+            }
+            Backend::LocalReadOnly { updates, closed, .. } => {
+                let updates = updates.as_ref().ok_or_else(|| Error::UnsupportedCapability {
+                    capability: Capability::session_updates(),
+                })?;
+                let closed = closed.subscribe();
+                if *closed.borrow() {
+                    return Err(Error::TransportLost);
+                }
+                Ok(SessionUpdates(UpdatesInner::Local {
+                    stream: updates.updates(),
+                    closed,
+                }))
+            }
         }
     }
 

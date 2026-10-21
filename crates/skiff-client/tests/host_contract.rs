@@ -476,3 +476,40 @@ async fn m1c_inventory_is_typed_and_gated_on_the_negotiated_transport() {
         Err(Error::UnsupportedCapability { .. })
     ));
 }
+
+#[tokio::test]
+async fn m1d_updates_are_gated_ordered_and_closed_on_the_negotiated_transport() {
+    let (connection, _peer) = connect(hello(), None).await;
+    assert!(matches!(
+        connection.unwrap().session_updates(),
+        Err(Error::UnsupportedCapability { .. })
+    ));
+    let mut h = hello();
+    h.capabilities = vec![Capability::session_updates()];
+    let (connection, mut peer) = connect(h, None).await;
+    let connection = connection.unwrap();
+    let mut updates = connection.session_updates().unwrap();
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../../skiff-host-api/tests/fixtures/m1d.json")).unwrap();
+    let messages: Vec<Message> =
+        serde_json::from_value(fixture["messages"].clone()).unwrap();
+    // Output belongs to another receiver and is not a session update.
+    peer.send(Message::Event {
+        event: Event::Output { session: "a".into(), data: vec![0xff] },
+    })
+    .await;
+    for message in &messages {
+        peer.send(message.clone()).await;
+    }
+    for message in messages {
+        let Message::Event { event: Event::SessionUpdate { update } } = message else { unreachable!() };
+        assert_eq!(updates.recv().await, Ok(*update));
+    }
+    // A malformed frame fails the connection explicitly; the stream ends.
+    peer.wr.write_all(b"{\"type\":\"event\",\"event\":{\"event\":\"session_update\",\"update\":{\"kind\":\"future\"}}}\n").await.unwrap();
+    assert_eq!(updates.recv().await, Err(skiff_client::host::UpdateGap::Closed));
+    assert!(matches!(
+        connection.session_updates(),
+        Err(Error::MalformedContract { .. })
+    ));
+}

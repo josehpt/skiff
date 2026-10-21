@@ -1,4 +1,4 @@
-# Host API — M0 contract and local M1a/M1b/M1c seams
+# Host API — M0 contract and local M1a–M1d seams
 
 Tracking: [M0 #156](https://github.com/solutionscay/skiff/issues/156),
 [epic #155](https://github.com/solutionscay/skiff/issues/155).
@@ -17,7 +17,8 @@ push to the separate wiki repository.
   Selection is not implemented in M0. No cross-Host aggregation is implied.
 - **Capability**: `{ name, version }`, a feature's major contract. `sessions@1`
   is the M0 operation family; M1a adds `connection_status@1` and M1b adds
-  read-only `session_screen@1`; M1c adds `session_inventory@1`. Unknown names/majors are retained as metadata
+  read-only `session_screen@1`; M1c adds `session_inventory@1`; M1d adds read-only
+  `session_updates@1` events. Unknown names/majors are retained as metadata
   and ignored unless an operation requires them.
 
 The ownership rule is: if data would differ on another Host, it must eventually
@@ -365,6 +366,67 @@ stream and need their own scoped contract/continuity work; inventory adoption do
 not authorize mutation/lifecycle actions. Endpoint lifecycle guards, authoritative
 Host Hello, SSH/remote selection/service, data conversion and migrations remain
 outside M1c. Local bootstrap/adapter-generation identity limitations are unchanged.
+
+## M1d: one read-only session-update stream
+
+The chosen path is the existing Tauri `subscribe_events` stream: every non-output
+skiffd event (state, away, title, exit, created, turn ended, updated, removed,
+groups changed) that the page applies to its session list. It now calls
+`updates_now`, which obtains the same selected owner via `ensure_host` and takes
+`legacy_updates` from that owner's HostConnection. Terminal output/snapshots,
+`subscribe_output`, input and every mutation/lifecycle path stay on the legacy
+Client. The Tauri command name, argument, channel JSON, task replacement and the
+page's own resubscribe/refresh policy are unchanged; no UI source changes.
+
+Additive API-major-1 contract, explicit at each layer:
+
+- Capability: `session_updates@1`, independent of `sessions@1`. It grants no
+  request, output, input or lifecycle operation.
+- Envelope: the existing `Message::Event`; new `Event` variant
+  `{ event: "session_update", update }`. `Event::capability()` names the family's
+  capability (`session_updates@1` here, `sessions@1` for the M0 events).
+- Payload `SessionUpdate`, tagged `kind`: `state { session, state }`,
+  `away { session, away[] }`, `title { session, title|null }`,
+  `exit { session, code|null }`, `session_created { session }`,
+  `turn_ended { session }`, `session_updated { session }`,
+  `session_removed { session }`, `groups_changed`. Created/updated rows reuse the
+  lossless M1c `InventorySession`; state/away reuse its enums/paths.
+- No subscribe/unsubscribe request, acknowledgement or sequence number: a Host
+  pushes the family to each connection that negotiated it, as skiffd does today.
+
+`HostConnection::session_updates()` checks the capability first on both backends
+and never falls back; an adapter without an `UpdateSource` cannot advertise it.
+The local source wraps a receiver of the very same `Client::events()` broadcast the
+desktop read directly before, created synchronously when the command runs, so the
+page's "events first, then list" ordering holds. No frame is sent to skiffd. The
+Client still routes output elsewhere and skips unreadable/unknown frames, so they
+neither reach nor end the stream. Core → API → core mapping is exhaustive (no
+wildcards); output/snapshot can never be projected as an update.
+
+Receivers report `UpdateGap::Lagged(n)` (nothing replayed), `Malformed` (one
+unprojectable event skipped, e.g. a non-UTF-8 path, unreachable from the JSON wire)
+and `Closed`. The desktop compatibility receiver skips the first two exactly as the
+old loop ignored Lagged, and ends on Closed. Local streams close on `disconnect()`
+or when the connection is dropped, even with updates queued. Before M1d a dead
+connection's task idled until the page replaced it; now it ends when reconnect,
+restart or reload drops the selected owner. In both cases nothing more could
+arrive and the page subscribes again as before. On the wire backend, malformed
+frames fail the connection (existing rule) and the stream closes; other event
+families are skipped by this receiver.
+
+Tests: golden `m1d.json` (every kind, nulls/empties, rich and minimal rows,
+malformed kinds/states), fake capability/source gating, ordering, gap reporting,
+disconnect/drop closure, negotiated-transport gating/filtering/closure, and a
+selected private socket comparing the legacy receiver and the Host stream on one
+Client with interleaved output and unreadable frames and no outgoing frame. The
+desktop entry-point fixture checks `updates_now` on the same status/screen/inventory
+connection and its closure when the owner is dropped.
+
+Next excluded boundary: terminal output/snapshot streaming (`subscribe_output`,
+lag/resubscribe flow control) and all mutation/lifecycle actions remain on the
+legacy Client and need their own scoped contracts. No SSH/remote transport,
+picker, Host service, authoritative Hello, data migration or projects/files/
+ledger/Git conversion is part of M1d.
 
 ## M0 demo and handoff
 

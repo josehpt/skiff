@@ -141,6 +141,13 @@ pub(crate) async fn inventory_now(app: &App) -> Result<Vec<skiff_core::session::
     skiff_client::host::local::legacy_inventory(&host.connection()).await.map_err(err)
 }
 
+/// The one M1d event path: page events from the same selected owner. The
+/// receiver starts now, before the caller's next inventory read, as before.
+pub(crate) async fn updates_now(app: &App) -> Result<skiff_client::host::local::LegacyUpdates, String> {
+    let (host, _) = ensure_host(app).await?;
+    skiff_client::host::local::legacy_updates(&host.connection()).map_err(err)
+}
+
 async fn ensure_host(app: &App) -> Result<(Arc<SelectedLocalHost>, bool), String> {
     let mut guard = app.host.lock().await;
     if let Some(host) = guard.as_ref() {
@@ -434,6 +441,9 @@ mod tests {
         let inventory_fixture: serde_json::Value = serde_json::from_str(include_str!("../../../../crates/skiff-host-api/tests/fixtures/m1c.json")).unwrap();
         let inventory = inventory_fixture["reply"]["sessions"].clone();
         let expected_inventory: Vec<skiff_core::session::SessionInfo> = serde_json::from_value(inventory.clone()).unwrap();
+        let updates_fixture: serde_json::Value = serde_json::from_str(include_str!("../../../../crates/skiff-host-api/tests/fixtures/m1d.json")).unwrap();
+        let page_events = updates_fixture["legacy"].as_array().unwrap().clone();
+        let wire_events = page_events.clone();
         let peer = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let mut stream = BufReader::new(stream);
@@ -467,6 +477,11 @@ mod tests {
                 let mut bytes = serde_json::to_vec(&response).unwrap(); bytes.push(b'\n');
                 stream.get_mut().write_all(&bytes).await.unwrap();
             }
+            // Pushed events, with no subscribe request from the page stream.
+            for event in wire_events {
+                let mut bytes = serde_json::to_vec(&event).unwrap(); bytes.push(b'\n');
+                stream.get_mut().write_all(&bytes).await.unwrap();
+            }
             // Keep the one connection alive through the reuse assertions.
             let mut line = String::new();
             stream.read_line(&mut line).await.ok();
@@ -478,6 +493,7 @@ mod tests {
         assert_eq!(first.socket, socket.display().to_string());
         assert!(first.warning.is_none() && !first.reload);
         let owner = app.host.lock().await.as_ref().unwrap().clone();
+        let mut updates = updates_now(&app).await.unwrap();
         let (client, spawned) = ensure_client(&app).await.unwrap();
         assert!(!spawned && Arc::ptr_eq(&owner.client(), &client));
         assert!(Arc::ptr_eq(&app.live.lock().unwrap().clone().unwrap(), &client));
@@ -490,6 +506,14 @@ mod tests {
         assert_eq!(serde_json::to_value(&listed).unwrap(), serde_json::to_value(&expected_inventory).unwrap());
         assert_eq!(inventory_now(&app).await.unwrap_err(), "inventory unavailable");
         assert!(Arc::ptr_eq(&owner, app.host.lock().await.as_ref().unwrap()));
+        for want in &page_events {
+            assert_eq!(serde_json::to_value(updates.recv().await.unwrap()).unwrap(), *want);
+        }
+        // Dropping the selected owner, as reconnect/restart/reload do, ends it.
+        drop(owner);
+        drop(client);
+        *app.host.lock().await = None;
+        assert!(updates.recv().await.is_none());
         assert_eq!(std::fs::read_to_string(config).unwrap(), "# existing config\n");
         assert_eq!(std::fs::read(ledger).unwrap(), b"existing ledger fixture");
         peer.abort();

@@ -1,4 +1,5 @@
-//! M1a/M1b local connection ownership and read-only screen snapshots. No Host service and no new skiffd messages.
+//! M1a–M1d local connection ownership and read-only status, screen, inventory and
+//! session updates. No Host service and no new skiffd messages.
 use std::{
     collections::BTreeMap,
     fs::{self, OpenOptions},
@@ -15,7 +16,10 @@ use skiff_host_api::{
 };
 use uuid::Uuid;
 
-use super::{HostConnection, InventorySource, ScreenSource, StatusSource};
+use super::{
+    HostConnection, InventorySource, ScreenSource, SessionUpdates, StatusSource, UpdateGap,
+    UpdateSource, UpdateStream,
+};
 use crate::Client;
 
 struct Selection {
@@ -89,6 +93,7 @@ impl PendingLocalConnection {
                 Capability::connection_status(),
                 Capability::session_screen(),
                 Capability::session_inventory(),
+                Capability::session_updates(),
             ],
             limits: Limits {
                 max_frame_bytes: 8 * 1024 * 1024,
@@ -98,7 +103,8 @@ impl PendingLocalConnection {
         let connection = {
             let mut previous = self.selection.0.previous.lock().unwrap();
             let source = Arc::new(LegacyReadOnly(self.client.clone()));
-            let connection = HostConnection::local_inventory(
+            let connection = HostConnection::local_updates(
+                source.clone(),
                 source.clone(),
                 source.clone(),
                 source,
@@ -235,6 +241,59 @@ impl InventorySource for LegacyReadOnly {
             }
         })
     }
+}
+
+impl UpdateSource for LegacyReadOnly {
+    fn updates(&self) -> Box<dyn UpdateStream> {
+        // The same broadcast the desktop read directly before M1d: the
+        // Client already routes output elsewhere and skips unreadable frames.
+        Box::new(LegacyUpdateStream(self.0.events()))
+    }
+}
+
+struct LegacyUpdateStream(tokio::sync::broadcast::Receiver<skiff_core::protocol::Event>);
+impl UpdateStream for LegacyUpdateStream {
+    fn recv(
+        &mut self,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<skiff_host_api::SessionUpdate, UpdateGap>>
+                + Send
+                + '_,
+        >,
+    > {
+        Box::pin(async {
+            use tokio::sync::broadcast::error::RecvError;
+            match self.0.recv().await {
+                Ok(event) => super::updates::project_update(event).map_err(UpdateGap::Malformed),
+                Err(RecvError::Lagged(n)) => Err(UpdateGap::Lagged(n)),
+                Err(RecvError::Closed) => Err(UpdateGap::Closed),
+            }
+        })
+    }
+}
+
+/// Temporary desktop compatibility projection of [`SessionUpdates`]: the
+/// existing page events, in order. As before M1d, missed updates are skipped
+/// without replay, so the page's own refresh policy is unchanged.
+pub struct LegacyUpdates(SessionUpdates);
+impl LegacyUpdates {
+    /// The next event, or None once the connection is gone.
+    pub async fn recv(&mut self) -> Option<skiff_core::protocol::Event> {
+        loop {
+            match self.0.recv().await {
+                Ok(update) => return Some(super::updates::restore_update(update)),
+                Err(UpdateGap::Lagged(_)) => {}
+                Err(UpdateGap::Malformed(e)) => tracing::warn!("skipped session update: {e}"),
+                Err(UpdateGap::Closed) => return None,
+            }
+        }
+    }
+}
+
+/// Capability/version failures are explicit, never a raw Client fallback.
+pub fn legacy_updates(connection: &HostConnection) -> anyhow::Result<LegacyUpdates> {
+    Ok(LegacyUpdates(connection.session_updates()?))
 }
 
 /// Preserve the existing Tauri list schema until a deliberate GUI type migration.

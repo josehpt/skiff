@@ -5,13 +5,16 @@ use std::{collections::BTreeMap, fmt};
 use serde::{Deserialize, Serialize};
 
 pub mod inventory;
+pub mod updates;
 pub use inventory::InventorySession;
+pub use updates::SessionUpdate;
 
 pub const API_MAJOR: u32 = 1;
 pub const SESSIONS: &str = "sessions";
 pub const CONNECTION_STATUS: &str = "connection_status";
 pub const SESSION_SCREEN: &str = "session_screen";
 pub const SESSION_INVENTORY: &str = "session_inventory";
+pub const SESSION_UPDATES: &str = "session_updates";
 
 macro_rules! identity {
     ($name:ident) => {
@@ -73,6 +76,13 @@ pub struct Capability {
     pub version: u32,
 }
 impl Capability {
+    /// Read-only non-output session events; grants no request or output.
+    pub fn session_updates() -> Self {
+        Self {
+            name: SESSION_UPDATES.into(),
+            version: 1,
+        }
+    }
     pub fn session_inventory() -> Self {
         Self {
             name: SESSION_INVENTORY.into(),
@@ -302,6 +312,21 @@ pub enum Event {
     SessionChanged {
         session: Session,
     },
+    /// Boxed: an inventory row would otherwise size every event. Same JSON.
+    SessionUpdate {
+        update: Box<SessionUpdate>,
+    },
+}
+impl Event {
+    /// The capability whose negotiation makes this event family meaningful.
+    pub fn capability(&self) -> Capability {
+        match self {
+            Self::SessionUpdate { .. } => Capability::session_updates(),
+            Self::Snapshot { .. } | Self::Output { .. } | Self::SessionChanged { .. } => {
+                Capability::sessions()
+            }
+        }
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]

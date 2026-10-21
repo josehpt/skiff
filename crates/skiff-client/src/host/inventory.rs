@@ -85,7 +85,7 @@ fn project_role(value: core::Role) -> api::Role {
     }
 }
 
-fn project_sessionstate(value: core::SessionState) -> api::SessionState {
+pub(super) fn project_sessionstate(value: core::SessionState) -> api::SessionState {
     match value {
         core::SessionState::Working => api::SessionState::Working,
         core::SessionState::Waiting => api::SessionState::Waiting,
@@ -119,7 +119,7 @@ fn project_was(value: core::Was) -> api::Was {
     api::Was { agent, title }
 }
 
-fn project_away(value: core::Away) -> Result<api::Away, Error> {
+pub(super) fn project_away(value: core::Away) -> Result<api::Away, Error> {
     let core::Away { path, command, at } = value;
     Ok(api::Away {
         path: opaque_path(path)?,
@@ -198,7 +198,7 @@ fn restore_role(value: api::Role) -> core::Role {
     }
 }
 
-fn restore_sessionstate(value: api::SessionState) -> core::SessionState {
+pub(super) fn restore_sessionstate(value: api::SessionState) -> core::SessionState {
     match value {
         api::SessionState::Working => core::SessionState::Working,
         api::SessionState::Waiting => core::SessionState::Waiting,
@@ -232,7 +232,7 @@ fn restore_was(value: api::Was) -> core::Was {
     core::Was { agent, title }
 }
 
-fn restore_away(value: api::Away) -> core::Away {
+pub(super) fn restore_away(value: api::Away) -> core::Away {
     let api::Away { path, command, at } = value;
     core::Away {
         path: path.into(),

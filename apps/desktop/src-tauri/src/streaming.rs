@@ -2,7 +2,7 @@ use std::{future::Future, pin::Pin, sync::{Arc, atomic::{AtomicUsize, Ordering}}
 use skiff_core::protocol::Event;
 use tauri::{ipc::{Channel, InvokeResponseBody}, State};
 use tokio::sync::{broadcast, Notify};
-use crate::connection::{App, ensure_client, err};
+use crate::connection::{App, ensure_client, err, updates_now};
 
 /// One write to the page holds at most this much, so xterm can yield to the
 /// page between pieces instead of parsing one long chunk.
@@ -181,18 +181,12 @@ pub(crate) async fn unsubscribe_output(app: State<'_, App>, session: String) -> 
 /// The client routes output elsewhere, so a busy terminal cannot make this lag.
 #[tauri::command]
 pub(crate) async fn subscribe_events(app: State<'_, App>, on_event: Channel<Event>) -> Result<(), String> {
-    let (c, _) = ensure_client(&app).await?;
-    let mut rx = c.events();
+    // Through the selected Host; a lag is skipped there, as it was here.
+    let mut updates = updates_now(&app).await?;
     let task = tauri::async_runtime::spawn(async move {
-        loop {
-            match rx.recv().await {
-                Ok(e) => {
-                    if on_event.send(e).is_err() {
-                        break;
-                    }
-                }
-                Err(broadcast::error::RecvError::Lagged(_)) => {}
-                Err(broadcast::error::RecvError::Closed) => break,
+        while let Some(e) = updates.recv().await {
+            if on_event.send(e).is_err() {
+                break;
             }
         }
     });

@@ -158,7 +158,8 @@ async fn selected_endpoint_is_the_only_status_source_and_keeps_legacy_wire_and_c
         vec![
             Capability::connection_status(),
             Capability::session_screen(),
-            Capability::session_inventory()
+            Capability::session_inventory(),
+            Capability::session_updates()
         ]
     );
     let mut peer = BufReader::new(peer.unwrap().0);

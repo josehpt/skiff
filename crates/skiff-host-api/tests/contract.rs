@@ -168,3 +168,30 @@ fn m1c_inventory_golden_schema_preserves_defaults_nulls_omissions_and_metadata()
     malformed["watch"]["pids"] = json!(["bad"]);
     assert!(serde_json::from_value::<InventorySession>(malformed).is_err());
 }
+
+#[test]
+fn m1d_session_updates_have_an_explicit_capability_envelope_and_golden_shape() {
+    let fixture: Value = serde_json::from_str(include_str!("fixtures/m1d.json")).unwrap();
+    assert_eq!(
+        serde_json::to_value(Capability::session_updates()).unwrap(),
+        fixture["capability"]
+    );
+    for value in fixture["messages"].as_array().unwrap() {
+        let message: Message = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&message).unwrap(), *value);
+        let Message::Event { event } = message else { panic!("not an event") };
+        assert_eq!(event.capability(), Capability::session_updates());
+    }
+    // M0 event families keep their capability; unknown kinds and states fail.
+    let m0: Event = serde_json::from_value(json!({"event":"output","session":"s","data":""})).unwrap();
+    assert_eq!(m0.capability(), Capability::sessions());
+    for update in [
+        json!({"kind":"future_update","session":"a"}),
+        json!({"kind":"state","session":"a","state":"future"}),
+        json!({"kind":"exit","session":"a","code":"x"}),
+        json!({"session":"a"}),
+    ] {
+        let event = json!({"event":"session_update","update":update});
+        assert!(serde_json::from_value::<Event>(event).is_err());
+    }
+}

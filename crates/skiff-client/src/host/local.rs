@@ -1,15 +1,12 @@
 //! M1a–M1e local connection ownership: status, screen, inventory, session
-//! updates and the session terminal. No Host service and no new skiffd messages.
+//! updates and the session terminal, and the Host identity skiffd reports
+//! in `pong`. No Host service and no new skiffd requests.
 use std::{
     collections::BTreeMap,
-    fs::{self, OpenOptions},
-    io::{Read, Write},
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
-use anyhow::{bail, Context};
 use skiff_host_api::{
     Capability, Endpoint, Error, Hello, Host, HostId, InstanceId, Limits, Request, Response,
     API_MAJOR,
@@ -21,7 +18,7 @@ use super::{
     SessionUpdates, StatusSource, TerminalOutput, TerminalSource, UpdateGap, UpdateSource,
     UpdateStream,
 };
-use crate::Client;
+use crate::{Client, DaemonInfo};
 
 struct Selection {
     socket: PathBuf,
@@ -63,6 +60,7 @@ impl LocalSelection {
         Ok(PendingLocalConnection {
             selection: self.clone(),
             client: Arc::new(Client::connect(self.socket()).await?),
+            info: None,
         })
     }
 }
@@ -72,29 +70,73 @@ impl LocalSelection {
 pub struct PendingLocalConnection {
     selection: LocalSelection,
     client: Arc<Client>,
+    info: Option<DaemonInfo>,
 }
 impl PendingLocalConnection {
     pub fn client(&self) -> &Arc<Client> {
         &self.client
     }
 
+    /// The daemon's `pong` on this connection. Activation uses the last one,
+    /// so checking the daemon first costs no second Ping.
+    pub async fn daemon_info(&mut self) -> anyhow::Result<DaemonInfo> {
+        let info = self.client.daemon_info().await?;
+        self.info = Some(info.clone());
+        Ok(info)
+    }
+
+    /// Takes the Host's identity from the `pong` that [`Self::daemon_info`]
+    /// recorded; activation itself sends nothing. With no identity there (an
+    /// older skiffd, or no recorded pong) it uses the app's bootstrap id and
+    /// an adapter generation for the instance, so every reconnect is
+    /// NewInstance. Never a pid or peer credentials.
     pub async fn activate(self) -> anyhow::Result<SelectedLocalHost> {
-        let path = self.selection.0.identity_file.clone();
-        let host_id = tokio::task::spawn_blocking(move || load_identity(&path)).await??;
+        let (version, identity) = match self.info {
+            Some(info) => (Some(info.version), info.identity),
+            None => (None, None),
+        };
+        let malformed = |message: &str| Error::MalformedContract {
+            message: message.into(),
+        };
+        let mut service_versions = BTreeMap::from([(
+            "local-status-adapter".to_string(),
+            env!("CARGO_PKG_VERSION").to_string(),
+        )]);
+        service_versions.extend(version.map(|v| ("skiffd".to_string(), v)));
+        let (host, instance_id, source) = match identity {
+            Some(identity) => (
+                Host {
+                    host_id: HostId::try_from(identity.host_id)
+                        .map_err(|_| malformed("blank host id from skiffd"))?,
+                    os: identity.os,
+                    account: identity.account,
+                },
+                InstanceId::try_from(identity.instance_id)
+                    .map_err(|_| malformed("blank instance id from skiffd"))?,
+                IdentitySource::Host,
+            ),
+            None => {
+                let path = self.selection.0.identity_file.clone();
+                let host_id =
+                    tokio::task::spawn_blocking(move || skiff_core::host_identity::load(&path))
+                        .await??;
+                (
+                    Host {
+                        host_id: HostId::try_from(host_id).map_err(anyhow::Error::msg)?,
+                        os: std::env::consts::OS.into(),
+                        account: skiff_core::host_identity::account(),
+                    },
+                    // The in-process adapter generation, NOT skiffd's PID or
+                    // an assertion that a legacy daemon supplies identity.
+                    InstanceId::try_from(Uuid::new_v4().to_string()).unwrap(),
+                    IdentitySource::LocalBootstrap,
+                )
+            }
+        };
         let hello = Hello {
-            host: Host {
-                host_id,
-                os: std::env::consts::OS.into(),
-                // Numeric local account identity, not a user-controlled label.
-                account: format!("uid:{}", unsafe { libc::geteuid() }),
-            },
-            // This is the in-process adapter generation, NOT skiffd's PID or
-            // an assertion that a legacy daemon supplies durable identity.
-            instance_id: InstanceId::try_from(Uuid::new_v4().to_string()).unwrap(),
-            service_versions: BTreeMap::from([(
-                "local-status-adapter".into(),
-                env!("CARGO_PKG_VERSION").into(),
-            )]),
+            host,
+            instance_id,
+            service_versions,
             api_major: API_MAJOR,
             capabilities: vec![
                 Capability::connection_status(),
@@ -129,6 +171,7 @@ impl PendingLocalConnection {
             selection: self.selection,
             client: self.client,
             connection,
+            source,
         })
     }
 }
@@ -139,6 +182,7 @@ pub struct SelectedLocalHost {
     selection: LocalSelection,
     client: Arc<Client>,
     connection: Arc<HostConnection>,
+    source: IdentitySource,
 }
 impl SelectedLocalHost {
     pub fn client(&self) -> Arc<Client> {
@@ -153,6 +197,21 @@ impl SelectedLocalHost {
     pub fn process_control(&self) -> Option<ProcessControl> {
         self.selection.process_control()
     }
+    pub fn identity_source(&self) -> IdentitySource {
+        self.source
+    }
+}
+
+/// Where the Hello's identity came from. A remote Host must be [`Self::Host`]:
+/// only the serving Host can say who it is and which run answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdentitySource {
+    /// skiffd's `pong`: its Host id, and an instance id new on every start
+    /// and reload, so a reconnect can be SameInstance.
+    Host,
+    /// An older skiffd: the app's bootstrap id and an adapter generation.
+    /// Every reconnect is NewInstance.
+    LocalBootstrap,
 }
 impl Drop for SelectedLocalHost {
     fn drop(&mut self) {
@@ -550,70 +609,6 @@ pub fn legacy_input(
 /// The session's terminal receiver; take it before [`legacy_attach`].
 pub fn legacy_output(connection: &HostConnection, session: &str) -> anyhow::Result<TerminalOutput> {
     Ok(connection.terminal_output(session)?)
-}
-
-/// Additive bootstrap metadata beside config, never edits config/daemon state.
-/// Publish complete bytes with a no-clobber hard link: concurrent app launches
-/// agree on one UUID, and a crash cannot leave a partially written identity.
-fn load_identity(path: &Path) -> anyhow::Result<HostId> {
-    match read_identity(path) {
-        Ok(id) => return Ok(id),
-        Err(e)
-            if e.downcast_ref::<std::io::Error>()
-                .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) => {}
-        Err(e) => return Err(e),
-    }
-    let parent = path.parent().context("local Host identity has no parent")?;
-    // A bare SKIFF_CONFIG filename yields an empty parent, which is valid
-    // for path joins but not for opening the directory to sync publication.
-    let parent = if parent.as_os_str().is_empty() {
-        Path::new(".")
-    } else {
-        parent
-    };
-    fs::create_dir_all(parent)?;
-    let uuid = Uuid::new_v4();
-    let temp = parent.join(format!(".local-host-id-{uuid}.tmp"));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&temp)?;
-    let result = (|| {
-        writeln!(file, "{uuid}")?;
-        file.sync_all()?;
-        match fs::hard_link(&temp, path) {
-            Ok(()) => {
-                std::fs::File::open(parent)?.sync_all()?;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(e) => return Err(e.into()),
-        }
-        read_identity(path)
-    })();
-    let _ = fs::remove_file(temp);
-    result
-}
-
-fn read_identity(path: &Path) -> anyhow::Result<HostId> {
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)
-        .with_context(|| format!("read local Host identity {}", path.display()))?;
-    let meta = file.metadata()?;
-    if !meta.is_file()
-        || meta.len() > 128
-        || meta.uid() != unsafe { libc::geteuid() }
-        || meta.mode() & 0o077 != 0
-    {
-        bail!("local Host identity must be a private regular file owned by this account");
-    }
-    let mut text = String::new();
-    file.take(128).read_to_string(&mut text)?;
-    let id = Uuid::parse_str(text.trim())
-        .context("invalid local Host identity; refusing to replace it")?;
-    HostId::try_from(id.to_string()).map_err(anyhow::Error::msg)
 }
 
 /// Match the legacy desktop status tuple without exposing core types in the

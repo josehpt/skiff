@@ -333,7 +333,8 @@ async fn reconnect(app: &App, pid: u32) -> Result<(skiff_client::host::local::Pe
     let start = Instant::now();
     loop {
         let last = match app.local().connect().await {
-            Ok(c) => match tokio::time::timeout(HELLO_TIMEOUT, c.client().daemon_info()).await {
+            // Activation takes the Host's identity from this pong.
+            Ok(mut c) => match tokio::time::timeout(HELLO_TIMEOUT, c.daemon_info()).await {
                 Ok(Ok(info)) => return Ok((c, info)),
                 Ok(Err(e)) => format!("{e:#}"),
                 Err(_) => "no answer".into(),
@@ -379,7 +380,7 @@ mod tests {
         std::fs::write(&bin, "#!/bin/sh\necho '{\"version\":\"0.6.19\",\"handover\":[]}'\n").unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let info = |version: &str| DaemonInfo { version: version.into(), protocol: skiff_core::PROTOCOL, reload_state: Some(2), pid: Some(1), debug: Some(true) };
+        let info = |version: &str| DaemonInfo { version: version.into(), protocol: skiff_core::PROTOCOL, reload_state: Some(2), pid: Some(1), debug: Some(true), identity: None };
         let rt = tokio::runtime::Runtime::new().unwrap();
         for running in ["0.6.19", "0.6.20"] {
             match rt.block_on(plan_with(&info(running), &bin, false)) {
@@ -430,6 +431,11 @@ mod tests {
             let app = App::default();
             let (c, _) = ensure_client(&app).await.unwrap();
             let pid = c.daemon_info().await.unwrap().pid.unwrap();
+            // The Hello is skiffd's own, from the Ping the connect already sent.
+            let first = app.host.lock().await.as_ref().unwrap().clone();
+            assert_eq!(first.identity_source(), skiff_client::host::local::IdentitySource::Host);
+            let hello = first.connection().hello().clone();
+            drop(first);
             let s = c
                 .create_session(SessionSpec {
                     label: "t".into(),
@@ -472,8 +478,15 @@ mod tests {
             assert!(out.reconnected);
             assert!(out.lost.is_empty(), "lost {:?}", out.lost);
             // Input typed after the reload goes straight on.
-            let c = app.host.lock().await.as_ref().unwrap().client();
+            let host = app.host.lock().await.as_ref().unwrap().clone();
+            let c = host.client();
             assert_eq!(c.daemon_info().await.unwrap().pid, Some(pid));
+            // Same pid and Host, a new run: the page attaches again for snapshots.
+            let after = host.connection().hello().clone();
+            assert_eq!(after.host.host_id, hello.host.host_id);
+            assert_ne!(after.instance_id, hello.instance_id);
+            assert_eq!(host.connection().continuity(), skiff_client::host::Continuity::NewInstance);
+            drop(host);
             let live = app.live.lock().unwrap().clone().unwrap();
             let _ = app.input.write(Some(&live), &s.id, b"echo DONE >> out\n".to_vec());
             let file = dir.join("out");
@@ -698,9 +711,11 @@ os.execv("/bin/cat", ["skiff", "watch"])
             assert_eq!(ids(&before), ids(&after));
 
             // The watcher, from a start and a restore at once.
+            // Watcher reconciliation is endpoint-local: the local endpoint grants it.
+            let local = app.local().process_control().unwrap();
             let (a, b) = tokio::join!(
-                crate::skiff_agent::ensure_watch(&app, skiff.clone(), agent.id.clone()),
-                crate::skiff_agent::ensure_watch(&app, skiff.clone(), agent.id.clone()),
+                crate::skiff_agent::ensure_watch(&app, &local, skiff.clone(), agent.id.clone()),
+                crate::skiff_agent::ensure_watch(&app, &local, skiff.clone(), agent.id.clone()),
             );
             assert!(a.clone().unwrap() || b.clone().unwrap(), "no watcher started: {a:?} {b:?}");
             // The stand-in got SIGTERM and ended, not SIGKILL.
@@ -733,7 +748,7 @@ os.execv("/bin/cat", ["skiff", "watch"])
             assert_eq!((&status["reload"], &status["replaced"]), (&false.into(), &serde_json::Value::Null), "{status}");
             assert!(status["warning"].is_null(), "{status}");
             assert!(matches!(crate::cli_path::reconcile(&[bin.as_path()], &skiff, false).unwrap(), crate::cli_path::Linked::Current(_)));
-            assert_eq!(crate::skiff_agent::ensure_watch(&next, skiff.clone(), agent.id.clone()).await, Ok(false));
+            assert_eq!(crate::skiff_agent::ensure_watch(&next, &next.local().process_control().unwrap(), skiff.clone(), agent.id.clone()).await, Ok(false));
             assert_eq!(skipper::watch_status(&socket).unwrap().holder.map(|h| h.pid), Some(holder.pid));
             let same = next.host.lock().await.as_ref().unwrap().client();
             assert_eq!(same.daemon_info().await.unwrap().pid, Some(pid));

@@ -171,6 +171,19 @@ pub enum Request {
     },
 }
 
+/// Who answers a `ping`, from the daemon itself: never from a socket's peer
+/// credentials or pid, which name `ssh` on a forwarded socket.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct Identity {
+    /// The Host's durable id. See [`crate::host_identity`].
+    pub host_id: String,
+    /// New on every start and every reload, so a client knows that its
+    /// subscriptions and snapshots are from another run.
+    pub instance_id: String,
+    pub os: String,
+    pub account: String,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Envelope {
     pub id: u64,
@@ -197,6 +210,11 @@ pub enum Response {
         /// The daemon is a debug build. `None` from daemons that predate the field.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         debug: Option<bool>,
+        /// The Host this daemon serves, and which run of it answers. `None`
+        /// from daemons that predate the field, or that cannot read the
+        /// Host's id.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        identity: Option<Identity>,
     },
     Sessions { sessions: Vec<SessionInfo> },
     Session { session: SessionInfo },
@@ -337,6 +355,7 @@ mod tests {
                 reload_state: None,
                 pid: None,
                 debug: None,
+                identity: None,
             },
         });
         let json = serde_json::to_string(&reply).unwrap();
@@ -360,6 +379,19 @@ mod tests {
             }
             other => panic!("expected output event, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn pong_identity_is_optional() {
+        let old = r#"{"id":1,"type":"pong","version":"0.6.24","protocol":27,"pid":7}"#;
+        let ServerMessage::Reply(Reply { response: Response::Pong { identity, .. }, .. }) = serde_json::from_str(old).unwrap() else { panic!() };
+        assert_eq!(identity, None);
+        let id = Identity { host_id: "h".into(), instance_id: "i".into(), os: "macos".into(), account: "uid:501".into() };
+        let pong = Response::Pong { version: "v".into(), protocol: 27, reload_state: None, pid: None, debug: None, identity: Some(id.clone()) };
+        let json = serde_json::to_value(&pong).unwrap();
+        assert_eq!(json["identity"], serde_json::json!({"host_id":"h","instance_id":"i","os":"macos","account":"uid:501"}));
+        let Response::Pong { identity, .. } = serde_json::from_value(json).unwrap() else { panic!() };
+        assert_eq!(identity, Some(id));
     }
 
     #[test]

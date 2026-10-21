@@ -25,7 +25,7 @@
       "read_dir",
       "read_to_string"
     ],
-    "sha256": "76a8d9dda58bf2bec89e8d36202c6de875e901fbee40ca511769c3106a3a0b2a"
+    "sha256": "aab5b51260b55c660d0904871b724395a6d73d1b5b50a07e7eea61ac9c88f5c4"
   },
   "apps/desktop/src-tauri/src/commands.rs": {
     "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
@@ -63,7 +63,7 @@
       "skiff_client",
       "skiff_core"
     ],
-    "sha256": "3c5b460278be8d19520de53810b6be00b371f120664cb9accff4d1b0b7f927ae"
+    "sha256": "139d5bdfc642994c025ce2fffebff7dcb5be5324ab662c43ccf2d62c957fd02e"
   },
   "apps/desktop/src-tauri/src/diagnostics.rs": {
     "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
@@ -108,7 +108,7 @@
       "ledger",
       "skiff_agent"
     ],
-    "sha256": "cce578bd0fefc4d04d2c0d1e8d564c61b1edccb17d602b0c3e2939da71422043"
+    "sha256": "bc1d2659c7048f7782a59b37b04bb6dbc13cb5c27dedfda87a7ba2e38fe6422f"
   },
   "apps/desktop/src-tauri/src/native_menu.rs": {
     "ownership": "client policy: exact existing adapter only",
@@ -142,7 +142,7 @@
       "skiff_core",
       "skipper"
     ],
-    "sha256": "11b78103194958f4a8d1ee0eb6829486280c79697c884bf7f531231c277ea554"
+    "sha256": "dfb1291d45d6417edeb0d46d14baa66887c572b41b7ee11dd0a3f601924f45f3"
   },
   "apps/desktop/src-tauri/src/skiff_agent.rs": {
     "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
@@ -156,7 +156,7 @@
       "skiff_core",
       "skipper"
     ],
-    "sha256": "17d83b1edaeacd60dc9ad09219a0dbbd255e106291c27aed678305778c858bf3"
+    "sha256": "503b17985bb80ac885db41517d8778a0a0d760073d9f81f4633ef4499e3d758c"
   },
   "apps/desktop/src-tauri/src/streaming.rs": {
     "ownership": "M1e terminal output via selected Host session_terminal@1; M1d page session events via selected Host; core Event only for the page channel type",

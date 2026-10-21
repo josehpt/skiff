@@ -172,7 +172,7 @@ async fn ensure_host(app: &App) -> Result<(Arc<SelectedLocalHost>, bool), String
     let mut replaced = false;
     let mut last = String::new();
     for _ in 0..40 {
-        let c = match app.local().connect().await {
+        let mut c = match app.local().connect().await {
             Ok(c) => c,
             Err(e) => {
                 last = format!("{e:#}");
@@ -190,7 +190,9 @@ async fn ensure_host(app: &App) -> Result<(Arc<SelectedLocalHost>, bool), String
                 continue;
             }
         };
-        match check_daemon(app, c.client(), !replaced).await {
+        // Recorded for activation: the Host's identity comes from this pong.
+        let info = tokio::time::timeout(HELLO_TIMEOUT, c.daemon_info()).await.ok().and_then(|r| r.ok());
+        match check_info(app, c.client(), info, !replaced).await {
             Check::Use => {
                 *app.failed.lock().unwrap() = None;
                 let host = Arc::new(c.activate().await.map_err(err)?);
@@ -224,7 +226,13 @@ pub(crate) enum Check {
 /// One that does not stop, or has live sessions, keeps running: this records
 /// a warning that says the update is not finished.
 pub(crate) async fn check_daemon(app: &App, c: &Client, may_replace: bool) -> Check {
-    let Ok(Ok(info)) = tokio::time::timeout(HELLO_TIMEOUT, c.daemon_info()).await else {
+    let info = tokio::time::timeout(HELLO_TIMEOUT, c.daemon_info()).await.ok().and_then(|r| r.ok());
+    check_info(app, c, info, may_replace).await
+}
+
+/// [`check_daemon`] with the daemon's `pong` already read; `None`: no answer.
+async fn check_info(app: &App, c: &Client, info: Option<skiff_client::DaemonInfo>, may_replace: bool) -> Check {
+    let Some(info) = info else {
         *app.warning.lock().await = Some(Warning {
             kind: "hung",
             message: format!(

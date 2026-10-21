@@ -1,4 +1,4 @@
-# Host API — M0 contract and local M1a–M1e seams
+# Host API — M0 contract and local M1a–M1f seams
 
 Tracking: [M0 #156](https://github.com/solutionscay/skiff/issues/156),
 [epic #155](https://github.com/solutionscay/skiff/issues/155).
@@ -213,7 +213,8 @@ accepts a connection. An identity change within this selection rejects activatio
 
 The UUID is durable for this local bootstrap store. `instance_id` is a fresh
 **adapter connection generation**, not an authenticated daemon identity or PID;
-reconnect conservatively yields NewInstance. Metadata advertises
+reconnect conservatively yields NewInstance. (M1f: skiffd now serves this
+identity itself; the bootstrap path remains only for older daemons.) Metadata advertises
 `local-status-adapter` as its service, never a nonexistent `skiff-host`. Authoritative
 daemon/service Hello rollout remains a later step; the future Host service must
 adopt this identity deliberately. Copying identity metadata to another machine
@@ -495,8 +496,8 @@ Endpoint-local lifecycle guards: `ProcessControl` can only be made from a local
 Daemon spawn in connect, SIGTERM/SIGKILL in compatibility replacement and in
 restart, and the reload path now require it; an SSH descriptor never yields one.
 CLI link reconciliation (`cli_path::sync`) and Skipper watcher reconciliation
-(`skiff_agent::ensure_watch`) are not reached by the terminal boundary and are
-not guarded yet; M2 must guard them before any remote endpoint exists.
+(`skiff_agent::ensure_watch`) are not reached by the terminal boundary; M1f
+below guards them.
 
 Authoritative identity prerequisite: the local Hello is still synthesized by the
 adapter (bootstrap host id file, adapter-generation instance id). skiffd has no
@@ -504,7 +505,7 @@ authoritative instance/generation in its Ping reply, so SameInstance can never b
 proven locally, and a forwarded socket's peer credentials must never stand in for
 it. Before any remote terminal (M2), a Host service or skiffd must send a real
 Hello with a durable host id and a start/reload generation; this slice does not
-fabricate one.
+fabricate one. M1f below supplies it from skiffd.
 
 Tests: golden `m1e.json` (requests, events, echo extrema, legacy frame map),
 fake capability/source gating, ordering, lag/clear, disconnect/drop/lost-source
@@ -517,6 +518,132 @@ the same status/screen/inventory/updates connection; and the existing real
 skiffd reload fixture (`held_input_survives_a_reload`) now typing through the
 Host input path.
 
+## M1f: service-provided Host identity and the remaining lifecycle guards
+
+### Topology decision
+
+The epic leaves open how the app reaches the session plane (skiffd) and the
+future data plane (`skiff-host`): one socket where `skiff-host` proxies to
+skiffd, or one SSH session carrying a forward to each. M1 decides for the
+session plane now. **skiffd serves its own Host identity, and the app reaches
+it directly; there is no proxy, Host process, listener or wrapper.** When a
+data-plane service exists, it is a second endpoint of the same Host. It must
+report the same `host_id` from the same store, and the app's one
+HostConnection checks that both agree. It has its own `instance_id`, because it
+restarts on its own schedule.
+
+Tradeoff:
+- A proxy would put a second process on every keystroke and output byte, the
+  latency-critical path that #10/#12/#15 measure.
+- With a proxy, a restart of the data plane would drop every terminal
+  connection, which is the #62 failure the two-process split exists to avoid.
+- The cost is two forwards and two handshakes per remote Host in M2, and a
+  rule that their host ids must match.
+- This was decided structurally, not measured. No data-plane service exists to
+  put behind a proxy, and the direct path is the one already measured in
+  production. M2 should still take RTT numbers over a real forward before the
+  data plane lands.
+
+### Authoritative identity
+
+- `pong` gains one optional field, `identity { host_id, instance_id, os, account }`:
+  - an older client ignores it
+  - an older daemon omits it
+  - `PROTOCOL` stays 27, under its documented rule for optional fields
+  - the `pong` JSON of a daemon without it is unchanged
+- **Durable id.** skiffd reads `host_id` from `local-host-id` beside its
+  selected `projects.toml` (`skiff_core::host_identity`):
+  - This is the same file, with the same private `0600`, no-clobber, no-symlink
+    and refuse-to-replace rules, that the M1a desktop bootstrap wrote. The rules
+    moved from `skiff-client` into `skiff-core`.
+  - The Host now owns the id an existing install already has. Nothing is
+    regenerated or migrated.
+  - Private test/debug state keeps its own id, because the path follows the
+    socket's private state and `SKIFF_CONFIG`.
+- **Instance id.** `instance_id` is a random UUID made once per process image,
+  after the socket is known. A reload execs a new image, so every start and
+  every reload is a new instance, while the pid and sessions stay. It is never
+  a pid, socket path or peer credential.
+- **`os` and `account`** are skiffd's own (`uid:<euid>` of the daemon). A remote
+  Host reports its own account, not the app's.
+- **If skiffd cannot read its id** (corrupt or foreign file), it logs, omits
+  `identity` and keeps serving sessions.
+
+### Adapter and reconnect
+
+- `PendingLocalConnection::daemon_info()` records the `pong` it reads.
+  `activate()` sends nothing itself and adopts that pong's identity:
+  `IdentitySource::Host`, with `service_versions` naming `skiffd`. It does not
+  read the app's bootstrap file.
+- The desktop's existing pre-activation Ping is that recorded `pong`, both on
+  connect (`ensure_host`, then `check_info`) and on reload reconnect, so
+  activation costs no extra round trip.
+- **Older skiffd.** When there is no identity, or no recorded `pong`, activation
+  uses the M1a bootstrap (`IdentitySource::LocalBootstrap`). Its adapter
+  generation makes every reconnect NewInstance. After a reload onto an M1f
+  skiffd, the same store yields the same `host_id` and continuity is
+  NewInstance.
+- **Validation on each activation:**
+  - a changed `host_id` is `identity_changed` and the activation is rejected
+  - a blank id is `malformed_contract`
+  - the same `instance_id` is SameInstance
+  - a new one is NewInstance
+- **Subscriptions and snapshots are renewed on every reconnect, whatever the
+  continuity.** A subscription belongs to a connection: dropping the selected
+  owner closes its receivers (M1e), and the page attaches again on the new
+  connection with a fresh `subscribe` and snapshot. SameInstance only says that
+  the sessions are the same run. It never replays input or reuses a stream.
+- **M2 requirement.** M2 must require `IdentitySource::Host` for any non-local
+  endpoint, because a bootstrap file on this Mac says nothing about a remote
+  Host.
+
+### Endpoint-local lifecycle guards, completed
+
+- `cli_path::sync(&ProcessControl)` runs at launch only when the selected
+  endpoint grants one.
+- `skiff_agent::ensure_watch(app, &ProcessControl, …)` starts or replaces
+  `skiff watch` only with a token. `start_skiff_watch` and `open_skiff_agent`
+  skip it without one. The watcher's socket is now the selected endpoint's,
+  not a recomputed path.
+- Together with M1e (spawn, stop/replace, restart, reload), every lifecycle
+  action that M1 reaches now requires a token that only a local `Endpoint`
+  yields.
+- Left unguarded, deliberately: the explicit `install_cli` palette command (a
+  user action on this Mac), the Skipper skill copy (`skiff_agent::sync`) and the
+  rest of the Skipper folder, which move with the M6 Skipper APIs.
+
+### Tests
+
+- `skiff-core`: `pong` with and without `identity` (old JSON decodes, new
+  serializes exactly); concurrent first publication, `0600`, public and corrupt
+  files refused and kept.
+- `skiff-client/tests/host_identity.rs`, fake peer:
+  - adopted identity with the peer's own os/account, no extra frame after the
+    recorded Ping, no bootstrap file, nothing from the pid
+  - SameInstance, then NewInstance, then IdentityChanged, then blank refused,
+    then the original Host accepted again
+  - an older daemon gets the bootstrap identity and NewInstance; a reload onto a
+    reporting daemon with the same store carries on
+  - SameInstance still closes the old receiver and sends a new `subscribe` with
+    a fresh snapshot
+- `skiffd/tests/identity.rs`, real private daemon:
+  - the id comes from its private store, `0600`
+  - stable within a run; the adapter adopts it, and a reconnect is SameInstance
+  - a reload keeps the pid and Host and gives a new instance
+  - a restart keeps the Host and gives a new instance
+  - a replaced store is refused on reconnect
+- Desktop `held_input_survives_a_reload` (real skiffd): the connect Hello is
+  `Host`; after the reload the `host_id` is the same, the instance is new and
+  continuity is NewInstance. The watcher fixture runs with the local token.
+- No live daemon, config or user socket is used.
+
+### Not in M1f
+
+- SSH transport, host picker, a `skiff-host` service, projects/files/ledger/Git
+  movement, migrations, capability-driven UI, and lifecycle/mutation routing.
+- The local adapter remains a Host contract in front of skiffd's legacy wire. It
+  is not a Host envelope on the socket.
+
 ## M0 demo and handoff
 
 M0 has zero visible behavior changes: desktop source, daemon source, protocol,
@@ -526,9 +653,9 @@ performs the identical call. Test-only paired streams/private sockets prove the
 old Ping JSON, protocol 27, ordered raw input and snapshot/output bytes still work.
 Existing config/ledger fixture tests cover their unchanged on-disk contracts.
 
-Remaining M1 work after M1e: session lifecycle/mutation routing, capability-driven
-UI surfaces, CLI-link and watcher guards, authoritative Hello/persistence rollout
-and the measured session/data-plane topology decision.
+Remaining M1 work after M1f: session lifecycle/mutation routing and
+capability-driven UI surfaces. The topology is decided structurally (M1f); M2
+measures RTT over a real forward.
 M2–M6 own transport, services and data APIs. This document intentionally does not
 implement SSH, a host process, host selection, migrations or data-location changes.
 

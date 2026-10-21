@@ -32,3 +32,4 @@ polling = "3"
 
 [dev-dependencies]
 skiff-client.workspace = true
+skiff-host-api.workspace = true

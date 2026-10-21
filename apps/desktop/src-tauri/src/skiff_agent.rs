@@ -21,6 +21,7 @@ use crate::{
     config::PROJECTS_CHANGED,
     connection::{ensure_client, err, App},
 };
+use skiff_client::host::local::ProcessControl;
 
 /// Runs at app start, off the main thread. Never prompts. Copies the
 /// built-in `skiff-cli` skill out when it changed.
@@ -49,15 +50,18 @@ fn cli() -> PathBuf {
 /// started one.
 #[tauri::command]
 pub async fn start_skiff_watch(app: State<'_, App>, session: String) -> Result<bool, String> {
-    ensure_watch(&app, cli(), session).await
+    // A remote Host's watcher runs there; this app only reaches it.
+    let Some(local) = app.local().process_control() else { return Ok(false) };
+    ensure_watch(&app, &local, cli(), session).await
 }
 
 /// One current watcher for the agent's session. A watcher of an older CLI,
 /// as after an update, gets one replacement attempt per app run when it is
 /// proven to be this daemon's `skiff watch`. One that is not, or that does
 /// not stop, keeps running, and only the log says so: the update is not
-/// finished, and nothing asks the user. One check runs at a time.
-pub(crate) async fn ensure_watch(app: &App, cli: PathBuf, session: String) -> Result<bool, String> {
+/// finished, and nothing asks the user. One check runs at a time. It starts
+/// and signals processes, so only a local endpoint may: `_local` proves it.
+pub(crate) async fn ensure_watch(app: &App, _local: &ProcessControl, cli: PathBuf, session: String) -> Result<bool, String> {
     let _one = app.watch_gate.lock().await;
     let mut known = app.watch_pids.lock().unwrap().clone();
     if let Ok((c, _)) = ensure_client(app).await {
@@ -68,7 +72,7 @@ pub(crate) async fn ensure_watch(app: &App, cli: PathBuf, session: String) -> Re
     // Only the bundled CLI replaces a watcher: a bare `skiff` from PATH is
     // not known to be this app's build.
     let tried = cli.is_absolute().then(|| app.watch_tried.clone());
-    let socket = skiff_core::socket::socket_path();
+    let socket = app.local().socket().to_path_buf();
     let out = blocking(move || skipper::ensure_watch(&socket, &cli, skipper::CLI_VERSION, &session, &known, tried.as_deref())).await?;
     match out {
         skipper::WatchOutcome::Started => Ok(true),
@@ -112,7 +116,10 @@ pub async fn open_skiff_agent(app: State<'_, App>, restore: Option<u64>) -> Resu
         None => skipper::Open::Start,
     };
     let Some(found) = skipper::open(&c, how).await.map_err(err)? else { return Ok(None) };
-    let watch_error = ensure_watch(&app, cli(), found.session.id.clone()).await.err();
+    let watch_error = match app.local().process_control() {
+        Some(local) => ensure_watch(&app, &local, cli(), found.session.id.clone()).await.err(),
+        None => None,
+    };
     if let Some(e) = &watch_error {
         eprintln!("skiff watch: {e}");
     }

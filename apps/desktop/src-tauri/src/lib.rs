@@ -54,7 +54,10 @@ pub fn run() {
         .manage(quit::Guard::default())
         // The window starts hidden: GTK takes a header bar only before it shows.
         .setup(|app| {
-            std::thread::spawn(cli_path::sync);
+            // Endpoint-local lifecycle: a remote Host's CLI is its own.
+            if let Some(local) = app.state::<App>().local().process_control() {
+                std::thread::spawn(move || cli_path::sync(&local));
+            }
             std::thread::spawn(skiff_agent::sync);
             let handle = app.handle().clone();
             std::thread::spawn(move || ledger::watch(handle));

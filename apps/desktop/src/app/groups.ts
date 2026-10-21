@@ -16,6 +16,10 @@ import { hostCan, hostInvoke } from "./hostCaps";
 let groupQueue = Promise.resolve();
 let groupWrites = 0;
 let reloadGroups = false;
+/** New groups whose create failed: the Host may have made one anyway, with
+ *  the reply lost. Their later saves are dropped, never sent as a second
+ *  create; the reload after the queue shows what the Host holds. */
+const unsure = new WeakSet<Group>();
 
 /** Agent names joined with " + ", three at most. */
 export function autoName(ids: string[]): string {
@@ -48,10 +52,20 @@ export function syncTemplateName(g: Group) {
 export function saveGroup(g: Group) {
   syncTemplateName(g);
   persist(async () => {
-    if (!S.groups.includes(g)) return;
-    const saved = await hostInvoke<Group>("session_groups", "save_group", {
-      group: { id: g.id.startsWith("tmp-") ? "" : g.id, name: g.name, layout: g.layout, focus: g.focus, cwd: g.cwd ?? null },
-    });
+    if (!S.groups.includes(g) || unsure.has(g)) return;
+    const creating = g.id.startsWith("tmp-");
+    let saved: Group;
+    try {
+      saved = await hostInvoke<Group>("session_groups", "save_group", {
+        group: { id: creating ? "" : g.id, name: g.name, layout: g.layout, focus: g.focus, cwd: g.cwd ?? null },
+      });
+    } catch (e) {
+      if (creating) {
+        unsure.add(g);
+        reloadGroups = true;
+      }
+      throw e;
+    }
     if (saved.id !== g.id) {
       if (S.activeGroup === g.id) S.activeGroup = saved.id;
       if (S.groupPicked === g.id) S.groupPicked = saved.id;

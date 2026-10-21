@@ -116,8 +116,10 @@ export async function untilConnected(): Promise<DaemonStatus> {
 /**
  * The link to a remote Host dropped. Input is off until it is back; nothing
  * typed meanwhile is kept or sent later. Then the same steps as after a
- * reload: the Host's capabilities, events first, the list, groups, and each
- * shown pane from a fresh snapshot. A step that fails throws, so the caller
+ * reload: the Host's capabilities, events first, the list, groups, its
+ * agents, and each shown pane from a fresh snapshot. The agents kept from
+ * before go first: the Host may run other commands now, and a launch menu
+ * opened meanwhile offers a shell only. A step that fails throws, so the caller
  * runs the whole recovery again; it never turns input back on itself (see
  * `watchHostLink`). A different Host at the same address never connects
  * (Rust refuses it), so this keeps waiting and the status says why.
@@ -125,12 +127,14 @@ export async function untilConnected(): Promise<DaemonStatus> {
 export async function reconnectRemote(): Promise<void> {
   muteInput(true);
   quietSeen(true);
+  S.agents = [];
   try {
     const status = await untilConnected();
     await loadHostCaps();
     await subscribeEvents();
     await refreshSessions();
     if (hostCan("session_groups")) await loadGroups();
+    if (hostCan("session_agents")) S.agents = await hostInvoke<AgentInfo[]>("session_agents", "list_agents");
     reattachPanes();
     setDaemon(status);
     render();

@@ -3564,6 +3564,7 @@ dependencies = [
  "serde_json",
  "skiff-client",
  "skiff-core",
+ "skiff-host",
  "skiff-host-api",
  "tauri",
  "tauri-build",
@@ -3571,6 +3572,20 @@ dependencies = [
  "tauri-plugin-dialog",
  "tokio",
  "toml 1.1.6+spec-1.1.0",
+]
+
+[[package]]
+name = "skiff-host"
+version = "1.6.6"
+dependencies = [
+ "anyhow",
+ "libc",
+ "serde_json",
+ "skiff-client",
+ "skiff-core",
+ "skiff-host-api",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

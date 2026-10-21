@@ -38,6 +38,8 @@ struct Selection {
     /// once the first identity is stored where every later selection reads it.
     pin: Mutex<Option<HostId>>,
     remote: Option<Remote>,
+    /// M4: this Host's data-plane service, a second endpoint of it.
+    data: tokio::sync::Mutex<super::data::DataState>,
 }
 
 /// An SSH endpoint: the target, and the forward this selection reuses.
@@ -70,6 +72,7 @@ impl HostSelection {
             previous: Mutex::new(None),
             pin: Mutex::new(None),
             remote: None,
+            data: Default::default(),
         }))
     }
 
@@ -95,6 +98,7 @@ impl HostSelection {
                 forward: tokio::sync::Mutex::new(None),
                 retry: Mutex::new((0, None)),
             }),
+            data: Default::default(),
         })))
     }
 
@@ -192,6 +196,28 @@ impl HostSelection {
             client: Arc::new(client),
             info: None,
         })
+    }
+
+    /// M4: where this Host's data-plane service listens, beside its skiffd
+    /// socket. For SSH, the remote path, named by path arithmetic only.
+    pub(super) fn data_route(&self) -> super::data::DataRoute {
+        use super::data::DataRoute;
+        match &self.0.remote {
+            None => DataRoute::Local(skiff_core::socket::data_socket(self.socket())),
+            Some(r) => DataRoute::Ssh {
+                target: SshTarget {
+                    destination: r.target.destination.clone(),
+                    socket: skiff_core::socket::data_socket(Path::new(&r.target.socket))
+                        .to_string_lossy()
+                        .into_owned(),
+                },
+                options: r.options.clone(),
+                dir: r.dir.clone(),
+            },
+        }
+    }
+    pub(super) fn data_state(&self) -> &tokio::sync::Mutex<super::data::DataState> {
+        &self.0.data
     }
 
     /// The SSH cause of a failure on this endpoint, if ssh reported one.

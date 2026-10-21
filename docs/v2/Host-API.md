@@ -1,4 +1,4 @@
-# Host API — M0 contract, local M1a–M1g seams, M2 remote terminals and M3 remote lifecycle
+# Host API — M0 contract, local M1a–M1g seams, M2 remote terminals, M3 remote lifecycle and the M4 data plane (first slice)
 
 Tracking: [M0 #156](https://github.com/solutionscay/skiff/issues/156),
 [epic #155](https://github.com/solutionscay/skiff/issues/155).
@@ -1159,6 +1159,173 @@ forward:
   typed. Browsing needs the M5 files API.
 - A remote skiffd on another protocol gets no lifecycle. That Host's own
   `skiff` CLI is the way to start work there.
+
+## M4 (first slice): the data-plane service, read-only projects and Git status
+
+Tracking: [M4 #160](https://github.com/solutionscay/skiff/issues/160), [epic #155](https://github.com/solutionscay/skiff/issues/155).
+
+### What runs where
+
+- **`skiff-host`** (`crates/skiff-host`) is the Host's data-plane service. It
+  is a separate process from skiffd, as #62 and the M1f topology require:
+  - It listens on its own socket beside skiffd's: `x.sock` gives
+    `x-host.sock` (`skiff_core::socket::data_socket`), with the same `0700`
+    directory and `0600` socket rules as skiffd.
+  - `--session-socket <skiffd socket>` names the skiffd it pairs with. Its
+    state follows that socket exactly as skiffd's does: a private test or
+    debug socket gets its own `projects.toml` and Host id.
+  - It holds no PTY, no session and no client of skiffd. Stopping or
+    restarting it never touches a terminal.
+- **Direct topology.** The app reaches it directly, never through skiffd and
+  never as a proxy in front of skiffd:
+  - This Mac: the socket beside skiffd's.
+  - SSH Host: a second forward, to the socket beside the remote skiffd's
+    socket. The path is computed by path arithmetic only, never resolved on
+    this Mac.
+- **Source ownership.** The service runs the code the app ran before:
+  `skiff_core::project::list`, `Project::from_config`, `git::list_worktrees`
+  and `git::changes`. Nothing is copied. The desktop commands
+  `list_projects`, `get_project` and `git_changes` no longer call `skiff_core`.
+  They ask the selected Host's data plane.
+
+### Contract (additive, API major 1)
+
+- `projects@1`:
+  - `project_list` answers `projects { projects: [HostProject] }`, open and
+    closed, in config order.
+  - `project_get { name }` answers `project { project }`, or `not_found`.
+  - `HostProject` and `HostWorktree` have the same JSON as the app's
+    `Project` and `Worktree`. Every path is a Host path. `icon` is a data URL
+    (bytes). `background` is a Host path that only that Host reads; M5 serves
+    its bytes.
+- `git_status@1`:
+  - `git_changes { worktree }` answers `changes { changes: [HostChange] }`.
+    `status` is one of `M`, `A`, `D` or `U`.
+  - `worktree` must be a worktree of one of the Host's open projects. Any
+    other path is `not_found`, and git does not run there.
+- Golden fixture: `tests/fixtures/m4.json`. Neither family grants a session
+  operation, and neither grants the other.
+- **Hello:** the service's own `instance_id`, a new one per start.
+  `service_versions` names `skiff-host`. `limits` are 8 MiB frames and 16
+  requests in flight per connection; more get `host_busy`. An unreadable or
+  oversize frame ends that connection only.
+
+### Identity and continuity
+
+- `host_id` comes from the same store skiffd reads (`local-host-id` beside the
+  selected `projects.toml`). A service that cannot read it does not start.
+- `HostSelection::connect_data(host_id)` connects only to a service whose
+  `host_id` is the one the session plane accepted:
+  - for a remote Host, that is the pinned one
+  - any other is `identity_changed`, and nothing is sent to it
+- **Continuity** is tracked per selection, apart from skiffd's. A restart is
+  `NewInstance` on the data plane and changes nothing on the session plane.
+- **Nothing is replayed.** A lost data connection fails its requests with
+  `transport_lost`. The next read connects again.
+- **Remote waits.** Remote tries wait 1 → 30 s after a failure. A remote
+  Host with no service is `NotRunning`.
+
+### The app
+
+- **Capabilities.** `host_capabilities` returns the session plane's list,
+  plus the data plane's when it answers. This is still one list for one Host.
+  The page gates on `projects` and `git_status`.
+- **This Mac.** `data_now` starts `skiff-host --session-socket <selected
+  socket>` when none answers:
+  - It needs the `ProcessControl` token, as the skiffd spawn does.
+  - The binary is `SKIFF_HOST_BIN`, else the one beside the app.
+  - The dev build builds it (`beforeDevCommand`), and the bundle ships it
+    (`sidecar.sh`, `externalBin`).
+  - If it does not start, the projects list shows why. No local read stands
+    in.
+- **A remote Host.** The app never starts, installs or upgrades anything
+  there. Without a service, the page shows that Host's sessions only, as in
+  M2/M3. With a service, the sidebar shows that Host's projects, fleets,
+  worktrees and change counts. They are read-only:
+  - Project, worktree and fleet menus offer New session and Copy path only.
+  - Drag-to-reorder, project keys, project themes and backgrounds do nothing.
+  - Change rows show no diff preview and no Open, and copy the Host path only.
+  - Rust still refuses every write and every opener while a remote Host is
+    shown (`LOCAL_ONLY`).
+- `list_projects`, `get_project` and `git_changes` left `LOCAL_ONLY`. The
+  command classification test keeps them on the Host side.
+
+### Demo
+
+1. **This Mac.** Run the dev app. The projects list loads as before. In the
+   process list, `skiff-host --session-socket …skiffd-dev.sock` runs beside
+   skiffd.
+   - Stop that `skiff-host`. Terminals keep working. The next project read
+     starts it again.
+2. **An SSH Host.** On that Host, start `skiff-host` next to its skiffd. Use
+   the same `SKIFF_*` environment as that skiffd, or none for the default.
+   - Pick the Host in the app. Its projects, fleets, worktrees and changed
+     files show in the sidebar, under that Host's paths.
+   - Stop it there. Terminals keep working.
+   - Without it, the page shows sessions only.
+
+### Tests
+
+- **Contract** (`contract.rs`): the `m4.json` round trip, one reply kind per
+  request, and refused malformed rows.
+- **Service** (`skiff-host/tests/data_plane.rs`, in process, private state):
+  - Parity: the JSON of `project_list` and `git_changes` equals
+    `skiff_core::project::list` and `git::changes`. The fixture has a fleet,
+    a second worktree, a closed project and a missing one.
+  - Git is refused outside known worktrees: a closed project's repo, `/`,
+    a missing path and a relative path.
+  - Session families are unsupported. Another Host's id is refused.
+  - A restart: `transport_lost`, then `NotRunning`, then `NewInstance` with
+    the same Host. A bad frame ends one connection only.
+  - SSH (a fake `ssh` that pipes to a socket on this machine): the forward
+    names the socket beside the remote skiffd's. No service gives
+    `NotRunning`, then a wait, and nothing is started.
+- **Two real processes** (`skiff-host/tests/planes.rs`): a private skiffd and
+  `skiff-host`.
+  - One Host on both planes: id, os and account, with two instances.
+  - A PTY echoes before, during and after a SIGTERM and restart of
+    `skiff-host`, with the same pid and an open session connection.
+  - The restart is `NewInstance`. skiffd's instance does not change.
+- **Real SSH** (`ssh_remote.rs`, loopback sshd): a real `skiff-host` on the
+  Host side serves that Host's project and changes over a second forward,
+  with the same Host on both planes. When it stops, its requests are lost,
+  the next is `NotRunning`, and the remote terminal still echoes.
+- **Desktop:** `data_now` starts this Mac's service once with
+  `--session-socket <selected socket>`, reuses it, and refuses one with
+  another Host id. A remote selection runs no `skiff-host`. The command
+  classification is updated.
+- **Page** (`projects.test.ts`):
+  - A remote Host with `projects` reads only its own list.
+  - A remote Host without it reads nothing.
+  - This Mac reads through the data plane with its settings. Its failure
+    shows the cause, and no local data stands in.
+
+### Not yet: requirements before M4 is complete
+
+- **Writes.** Add, remove, close and reorder projects, fleets, colors,
+  icons, themes, backgrounds, the per-project Changes/Files settings, and add
+  and remove worktrees. These still run in the app against this Mac's
+  `projects.toml` and git, and only for This Mac. Each needs a Host write
+  API with conflict and no-replay rules, and the app must stop calling
+  `skiff_core::config` for them.
+- **Config migration** (§5 of #155). Not started: `schema = 2`, client keys
+  copied out, and `skiff-host` as the only writer.
+- **Diff text.** A diff read API is needed, plus a client view or peek for
+  remote text. Local diffs still run the person's `[open] diff` command in
+  the peek, on this Mac's path.
+- **Per-project display settings** (`files_projects`,
+  `hidden_changes_projects`, `project_themes`) still come from this Mac's
+  config, and are not loaded for a remote Host.
+- **Supervision.** On a remote Host, the person starts `skiff-host`.
+  Nothing restarts it. `skiff info` does not show it. A release-skill and
+  upgrade story for two-process Hosts belongs to M7.
+- **Change watching.** The page still reads again on session events. The
+  Host has no data-plane event stream yet.
+- **Stale capabilities.** If the data plane was down when capabilities were
+  read, a remote Host shows sessions only until the next reload or
+  reconnect.
+- **Acceptance.** No manual run on two machines yet, and CI has not run
+  (nothing is pushed). M2 and M3 manual and CI acceptance also stay open.
 
 ## M0 demo and handoff
 

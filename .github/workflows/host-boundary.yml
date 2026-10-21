@@ -17,7 +17,10 @@ jobs:
       - run: cargo test -p skiff-host-api -p skiff-client --test contract --test host_contract --test local_contract --test local_host --test session_screen --test session_inventory --test session_updates --test session_terminal --test host_identity --test session_lifecycle --test ssh_forward
       - run: cargo test -p skiff-core --lib -- host_identity pong_identity
       - run: cargo test -p skiffd --test identity
+      - run: cargo build -p skiffd -p skiff-host
       - run: cargo test -p skiffd --test ssh_remote
+      - run: cargo test -p skiff-host
+      - run: cargo test -p skiff-core --lib -- data_socket
   desktop-ts:
     runs-on: ubuntu-latest
     steps:

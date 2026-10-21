@@ -1,0 +1,34 @@
+{
+ "capabilities": {
+  "projects": {"name": "projects", "version": 1},
+  "git_status": {"name": "git_status", "version": 1}
+ },
+ "project_requests": [
+  {"cmd": "project_list"},
+  {"cmd": "project_get", "name": "web λ"}
+ ],
+ "git_requests": [
+  {"cmd": "git_changes", "worktree": "/srv/web-feat"}
+ ],
+ "replies": [
+  {"type": "reply", "id": 1, "result": {"Ok": {"kind": "projects", "projects": [
+   {"name": "web λ", "short": "web", "path": "/srv/web", "color": "#123456", "agents": ["claude"], "icon": "data:image/svg+xml;base64,PHN2Zy8+", "background": "/srv/web/bg.png", "background_opacity": 70,
+    "worktrees": [
+     {"path": "/srv/web", "branch": "main", "head": "eaaf9fc9", "is_main": true, "locked": false, "prunable": false},
+     {"path": "/srv/web-feat", "branch": null, "head": "0123abcd", "is_main": false, "locked": true, "prunable": false}
+    ], "default_branch": "main", "error": null, "closed": false, "fleet": "F"},
+   {"name": "gone", "short": "gon", "path": "/srv/gone", "color": null, "agents": [], "icon": null, "background": null, "background_opacity": null,
+    "worktrees": [], "default_branch": null, "error": "/srv/gone does not exist", "closed": false, "fleet": null}
+  ]}}},
+  {"type": "reply", "id": 2, "result": {"Ok": {"kind": "project", "project":
+   {"name": "shut", "short": "shu", "path": "/srv/shut", "color": null, "agents": [], "icon": null, "background": null, "background_opacity": null,
+    "worktrees": [], "default_branch": null, "error": null, "closed": true, "fleet": null}}}},
+  {"type": "reply", "id": 3, "result": {"Ok": {"kind": "changes", "changes": [
+   {"path": "a.txt", "status": "M", "added": 1, "removed": 0},
+   {"path": "img.png", "status": "A", "added": null, "removed": null},
+   {"path": "old.txt", "status": "D", "added": 0, "removed": 3},
+   {"path": "x", "status": "U", "added": null, "removed": null}
+  ]}}},
+  {"type": "reply", "id": 4, "result": {"Err": {"code": "not_found", "message": "/etc is not a worktree of a project on this Host"}}}
+ ]
+}

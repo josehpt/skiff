@@ -13,7 +13,10 @@ use skiff_core::{
 };
 use tauri::{AppHandle, Emitter, State};
 
-use crate::connection::{App, ensure_client, err};
+use skiff_client::host::data;
+use skiff_host_api::HostProject;
+
+use crate::connection::{App, data_err, ensure_client, err};
 
 /// The page reloads projects on this event.
 pub(crate) const PROJECTS_CHANGED: &str = "skiff:projects-changed";
@@ -32,15 +35,19 @@ async fn project_edit<T: Send + 'static>(
     Ok(out)
 }
 
+/// The selected Host's projects, from its data-plane service (`projects@1`):
+/// this Mac's `skiff-host` here, a remote Host's own there. Never read here.
 #[tauri::command]
-pub(crate) async fn list_projects() -> Result<Vec<Project>, String> {
-    blocking(project::list).await
+pub(crate) async fn list_projects(app: State<'_, App>) -> Result<Vec<HostProject>, String> {
+    let c = crate::connection::data_now(&app).await?;
+    data::project_list(&c).await.map_err(data_err)
 }
 
 /// One project read again: git runs in it only, not in every project.
 #[tauri::command]
-pub(crate) async fn get_project(name: String) -> Result<Project, String> {
-    blocking(move || Ok(Project::from_config(&project::find(&name)?))).await
+pub(crate) async fn get_project(app: State<'_, App>, name: String) -> Result<HostProject, String> {
+    let c = crate::connection::data_now(&app).await?;
+    data::project_get(&c, &name).await.map_err(data_err)
 }
 
 #[tauri::command]

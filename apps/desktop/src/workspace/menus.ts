@@ -8,6 +8,7 @@ import { pickBackgroundOpacity } from "../appearance/backdropOpacity";
 import { keyLabel } from "../app/keys";
 import { toggleFocusMode, toggleMaximize } from "../app/modes";
 import { type MenuEntry } from "../ui/menu";
+import { isRemote } from "../app/hosts";
 import { agentName, basename, branchName, byStart, locate, taskTitle } from "./model";
 import { cwdOf } from "./canvas";
 import { filledOf, slotsOf } from "./layoutSlots";
@@ -152,6 +153,8 @@ function renameFleet(f: Fleet, name: string) {
 
 /** A right-click on a fleet tile. */
 export function fleetMenu(f: Fleet, x: number, y: number) {
+  // A remote Host's fleets are read-only (M4): its projects.toml is its own.
+  if (isRemote()) return;
   ctxMenu.open(x, y, `Fleet ${f.name}`, [
     {
       icon: "tools-pencil",
@@ -207,8 +210,14 @@ export function projectMenu(p: Project, x: number, y: number) {
   const sel = selectedWorktree.get(p.name);
   const w = p.worktrees.find((x) => x.path === sel) ?? p.worktrees.find((x) => x.is_main) ?? p.worktrees[0];
   const plus = w && [...document.querySelectorAll<HTMLElement>("#sidebar-scroll .wt-plus")].find((b) => b.dataset.wt === w.path);
+  const start: MenuEntry = { icon: "indicators-plus", label: "New session…", hint: keyLabel("new-session"), disabled: !w || !hostCan("session_lifecycle"), run: () => w && launchMenu.open(plus ?? { x, y }, p, w) };
+  // A remote Host's project is read-only (M4), and its path is that Host's:
+  // nothing here opens it on this Mac.
+  if (isRemote()) {
+    return ctxMenu.open(x, y, p.path, [start, { icon: "code-copy", label: "Copy path", hint: keyLabel("project-copy-path"), run: run["project-copy-path"] }]);
+  }
   ctxMenu.open(x, y, p.path, [
-    { icon: "indicators-plus", label: "New session…", hint: keyLabel("new-session"), disabled: !w || !hostCan("session_lifecycle"), run: () => w && launchMenu.open(plus ?? { x, y }, p, w) },
+    start,
     { icon: "code-git-branch", label: "New worktree…", hint: keyLabel("new-worktree"), disabled: !!p.error, run: () => newWorktree(p) },
     { icon: "indicators-square-arrow-out-up-right", label: "Show in file manager", hint: keyLabel("project-folder"), run: run["project-folder"] },
     { icon: "code-copy", label: "Copy path", hint: keyLabel("project-copy-path"), run: run["project-copy-path"] },
@@ -234,6 +243,10 @@ export function worktreeMenu(p: Project, w: Worktree, x: number, y: number) {
     { icon: "indicators-square-arrow-out-up-right", label: "Show in file manager", run: () => void openPath(w.path).catch(showError) },
     { icon: "code-copy", label: "Copy path", run: () => void navigator.clipboard.writeText(w.path).catch(showError) },
   ];
+  if (isRemote()) {
+    // Read-only, as the project menu: start a session there, or copy the Host path.
+    return ctxMenu.open(x, y, branchName(w), [entries[0], entries.at(-1)!]);
+  }
   if (!w.is_main) {
     entries.push({ icon: "tools-trash-2", label: "Remove worktree…", danger: true, disabled: removing.has(w.path), run: () => void removeWorktree(p, w) });
   }

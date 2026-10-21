@@ -6,6 +6,7 @@ members = [
   "crates/skiff-client",
   "crates/skiffd",
   "crates/skiff-cli",
+  "crates/skiff-host",
   "apps/desktop/src-tauri",
 ]
 # Vendored dependencies are patched in, not built and tested as members.
@@ -21,6 +22,7 @@ repository = "https://github.com/solutionscay/skiff"
 skiff-host-api = { path = "crates/skiff-host-api" }
 skiff-core = { path = "crates/skiff-core" }
 skiff-client = { path = "crates/skiff-client" }
+skiff-host = { path = "crates/skiff-host" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "process", "signal"] }

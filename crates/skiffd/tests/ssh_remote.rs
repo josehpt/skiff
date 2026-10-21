@@ -471,3 +471,96 @@ async fn a_remote_skiffd_without_identity_is_refused_and_no_local_identity_stand
     assert!(!f.dir.join("i/local-host-id").exists());
     assert!(std::fs::read_dir(&f.dir).unwrap().all(|e| e.unwrap().file_name() != "local-host-id"));
 }
+
+/// M4 over a real forward: the Host's `skiff-host` (a real process with the
+/// Host's private state, started on the Host side by the test, never by the
+/// app) serves that Host's projects and Git status through a second forward
+/// to the socket beside its skiffd. Both planes report one Host. Stopping
+/// the data plane leaves the remote terminal working.
+#[tokio::test]
+async fn remote_projects_and_git_status_come_from_the_hosts_data_plane_over_a_real_forward() {
+    use skiff_client::host::data::{self, DataError};
+    let Some(f) = fixture("d") else { return };
+    let _ = local_client(&f.socket()).await;
+    let repo = f.dir.join("host repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |args: &[&str]| {
+        let ok = Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "-C"])
+            .arg(&repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(ok.status.success(), "{}", String::from_utf8_lossy(&ok.stderr));
+    };
+    git(&["init", "-q"]);
+    std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-qm", "init"]);
+    std::fs::write(repo.join("a.txt"), "one\ntwo\n").unwrap();
+    std::fs::create_dir_all(f.dir.join("config")).unwrap();
+    f.write("config/projects.toml", &format!("[[project]]\nname = \"on the Host\"\npath = \"{}\"\nfleet = \"far\"\n", repo.display()));
+
+    let binary = std::env::var_os("SKIFF_HOST_BIN").map(PathBuf::from).unwrap_or_else(|| Path::new(env!("CARGO_BIN_EXE_skiffd")).with_file_name("skiff-host"));
+    assert!(binary.is_file(), "build skiff-host first: cargo build -p skiff-host (or set SKIFF_HOST_BIN)");
+    let start = || {
+        Command::new(&binary)
+            .arg("--session-socket")
+            .arg(f.socket())
+            .env("SKIFF_CONFIG", f.dir.join("config/projects.toml"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(std::fs::File::options().create(true).append(true).open(f.dir.join("skiff-host.log")).unwrap())
+            .spawn()
+            .unwrap()
+    };
+    struct Service(Child);
+    impl Drop for Service {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let service = Service(start());
+    let data_socket = skiff_core::socket::data_socket(&f.socket());
+    let until = Instant::now() + Duration::from_secs(10);
+    while std::os::unix::net::UnixStream::connect(&data_socket).is_err() {
+        assert!(Instant::now() < until, "skiff-host did not listen");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let selection = f.selection("ssh_config", &f.socket(), "fwd");
+    let host = select(&selection).await.unwrap();
+    let sessions = host.connection();
+    let host_id = sessions.hello().host.host_id.clone();
+    let plane = selection.connect_data(&host_id).await.unwrap();
+    let c = plane.connection();
+    assert_eq!(c.hello().host, sessions.hello().host, "one Host on both forwards");
+    assert_ne!(c.hello().instance_id, sessions.hello().instance_id);
+
+    let projects = data::project_list(&c).await.unwrap();
+    assert_eq!(projects.len(), 1);
+    assert_eq!((projects[0].name.as_str(), projects[0].fleet.as_deref()), ("on the Host", Some("far")));
+    let worktree = projects[0].worktrees[0].path.clone();
+    assert_eq!(Path::new(&worktree).canonicalize().unwrap(), repo.canonicalize().unwrap());
+    let changes = data::git_changes(&c, &worktree).await.unwrap();
+    assert_eq!(changes.len(), 1);
+    assert_eq!((changes[0].path.as_str(), changes[0].added, changes[0].removed), ("a.txt", Some(1), Some(0)));
+
+    // A terminal on the session plane, then the data plane stops on the Host.
+    let spec = SessionSpec { cwd: Some(repo.clone()), cols: 80, rows: 24, ..Default::default() };
+    let s = legacy_create(&sessions, spec).await.unwrap();
+    let mut output = legacy_output(&sessions, &s.id).unwrap();
+    legacy_attach(&sessions, &s.id).await.unwrap();
+    // SAFETY: the test's own child.
+    unsafe { libc::kill(service.0.id() as i32, libc::SIGTERM) };
+    drop(service);
+    assert!(matches!(data::project_list(&c).await, Err(skiff_host_api::Error::TransportLost)));
+    drop(plane);
+    let down = selection.connect_data(&host_id).await.err().unwrap();
+    assert!(matches!(down.downcast_ref(), Some(DataError::NotRunning)), "{down:#}");
+    skiff_client::host::local::legacy_input(&sessions, &s.id, b"echo STILL-$((7*6))\n".to_vec()).unwrap();
+    until_seen(&mut output, "STILL-42").await;
+    assert!(!sessions.is_closed());
+    legacy_kill(&sessions, &s.id).await.unwrap();
+}

@@ -28,5 +28,8 @@ tauri-plugin-dialog = "2"
 libc = "0.2"
 tauri-plugin-clipboard-manager = "2"
 
+[dev-dependencies]
+skiff-host.workspace = true
+
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"

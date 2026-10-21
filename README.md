@@ -94,9 +94,10 @@ limit. Theme files contain color values, so a large collection needs little spac
 ## Layout
 
 ```
-crates/skiff-host-api V2 Host contract types only (M0/M1a–M1g/M2; no I/O)
+crates/skiff-host-api V2 Host contract types only (M0–M4; no I/O)
 crates/skiff-core    session model, wire protocol, projects.toml config, git, themes
 crates/skiffd        daemon: owns every PTY, serves clients over a Unix socket
+crates/skiff-host    V2 data plane: a Host's projects and Git status over the Host API (M4, read-only)
 crates/skiff-client  async client for the socket; Skiff agent setup shared by the app and the CLI
 crates/skiff-cli     the `skiff` command: sessions, groups, the Skiff agent's ledger and watcher
 apps/desktop         Tauri v2 app, vanilla TypeScript + xterm.js

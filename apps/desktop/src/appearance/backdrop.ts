@@ -1,5 +1,6 @@
 /** The project's background image: one picture behind every pane of the terminal area. */
 import { invoke } from "@tauri-apps/api/core";
+import { isRemote } from "../app/hosts";
 import { host } from "../terminal/terminalHost";
 import { S, sessions } from "../app/state";
 import { place } from "../app/stateQueries";
@@ -42,7 +43,8 @@ function shownProject(): Project | undefined {
   return (s && place(s)?.project) ?? S.projects.find((x) => x.name === S.selectedProject);
 }
 
-const wanted = () => shownProject()?.background ?? null;
+// A remote project's background is a path on that Host: never read here (M5 serves bytes).
+const wanted = () => (isRemote() ? null : shownProject()?.background ?? null);
 
 function apply() {
   const path = wanted();

@@ -229,12 +229,15 @@ async function loadAppTheme() {
 
 export async function loadProjects() {
   const seq = ++projectsSeq;
-  // A remote Host's projects are not reachable yet (M4): show its sessions
-  // only, never this Mac's projects under its name.
   // The agents are the selected Host's own, from its account: a remote
   // Host's never come from this Mac.
   if (!S.agents.length) S.agents = await hostInvoke<AgentInfo[]>("session_agents", "list_agents").catch(() => []);
-  if (isRemote()) {
+  // Projects come from the selected Host's data plane (skiff-host), on This
+  // Mac too. A remote Host without it shows its sessions only, never this
+  // Mac's projects under its name. This Mac's service starts on demand, so
+  // its read is tried even before it is offered: a failure says why.
+  const remote = isRemote();
+  if (remote && !hostCan("projects")) {
     S.projects = [];
     S.closedProjects = [];
     S.projectsError = null;
@@ -245,7 +248,9 @@ export async function loadProjects() {
   let err: string | null = null;
   const started = performance.now();
   try {
-    [list] = await Promise.all([invoke<Project[]>("list_projects").finally(() => work("projects refresh (worktrees, branches)", performance.now() - started)), loadFilesSetting(), loadChangesSetting(), loadProjectThemes(), loadAppTheme(), loadSkiffAgent()]);
+    const read = invoke<Project[]>("list_projects").finally(() => work("projects refresh (worktrees, branches)", performance.now() - started));
+    // Files, Changes and theme settings and Skipper are still this Mac's (M5–M6): a remote Host gets none.
+    [list] = await Promise.all(remote ? [read] : [read, loadFilesSetting(), loadChangesSetting(), loadProjectThemes(), loadAppTheme(), loadSkiffAgent()]);
   } catch (e) {
     err = String(e);
   }

@@ -407,3 +407,47 @@ fn m3_agent_list_has_its_own_read_only_capability_and_lossless_golden_shape() {
         );
     }
 }
+
+#[test]
+fn m4_projects_and_git_status_are_read_only_data_plane_families() {
+    let fixture: Value = serde_json::from_str(include_str!("fixtures/m4.json")).unwrap();
+    let projects = Capability::projects();
+    let git = Capability::git_status();
+    assert_eq!(serde_json::to_value(&projects).unwrap(), fixture["capabilities"]["projects"]);
+    assert_eq!(serde_json::to_value(&git).unwrap(), fixture["capabilities"]["git_status"]);
+    let list = Response::Projects { projects: vec![] };
+    let changes = Response::Changes { changes: vec![] };
+    for (key, cap) in [("project_requests", &projects), ("git_requests", &git)] {
+        for value in fixture[key].as_array().unwrap() {
+            let request: Request = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(&request).unwrap(), *value);
+            assert_eq!(request.capability().as_ref(), Some(cap));
+            // Exactly one reply kind each, never Ok.
+            assert!(!request.accepts(&Response::Ok));
+            assert_eq!(request.accepts(&changes), cap == &git);
+        }
+    }
+    assert!(Request::ProjectList.accepts(&list));
+    assert!(!Request::ProjectGet { name: "x".into() }.accepts(&list));
+    for value in fixture["replies"].as_array().unwrap() {
+        let message: Message = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&message).unwrap(), *value);
+    }
+    // Neither family grants a session operation, nor the other family.
+    for session in [Request::SessionInventory, Request::AgentList, Request::GroupList] {
+        let c = session.capability().unwrap();
+        assert!(c != projects && c != git);
+    }
+    assert_ne!(projects, git);
+    // A row needs its states; a status is one of four letters.
+    for bad in [
+        json!({"kind":"changes","changes":[{"path":"a","status":"X","added":1,"removed":0}]}),
+        json!({"kind":"changes","changes":[{"path":"a","added":1,"removed":0}]}),
+        json!({"kind":"projects","projects":[{"name":"x","short":"x","path":"/x","color":null,"agents":[],"worktrees":[],"error":null}]}),
+        json!({"kind":"project","project":{"name":"x"}}),
+    ] {
+        let ok = serde_json::from_value::<Response>(bad.clone()).is_ok();
+        // A project with only the required fields decodes: the rest default.
+        assert_eq!(ok, bad["kind"] == "projects", "{bad}");
+    }
+}

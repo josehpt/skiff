@@ -52,11 +52,11 @@ fn disable_dmabuf_where_broken() {
 const LOCAL_ONLY: &[&str] = &[
     "get_skiff_agent", "set_skiff_agent", "start_skiff_watch", "skiff_watch_log", "open_skiff_agent",
     "preview_skiff_folder", "change_skiff_folder", "ledger_rows",
-    "list_projects", "get_project", "add_worktree", "remove_worktree", "add_project", "inspect_folder",
+    "add_worktree", "remove_worktree", "add_project", "inspect_folder",
     "init_repository", "set_project_icon", "set_project_short", "set_project_fleet", "set_project_color",
     "set_project_closed", "remove_project", "set_project_background", "set_project_background_opacity",
     "set_project_changes", "set_project_files", "project_themes", "set_project_theme", "reorder_projects",
-    "read_image", "list_dir", "git_changes", "open_diff", "preview_file", "open_file", "reveal_file", "open_path",
+    "read_image", "list_dir", "open_diff", "preview_file", "open_file", "reveal_file", "open_path",
     "files_projects", "hidden_changes_projects",
     "list_agent_sessions", "set_agents", "set_agent_command", "rename_agent", "remove_agent",
     "restore_agents", "config_path", "open_config", "install_cli", "restart_daemon", "reload_daemon",
@@ -254,17 +254,19 @@ mod tests {
         }
         // Session and terminal commands go through the selected Host, and are
         // gated by its capabilities instead.
-        for host in ["list_sessions", "subscribe_events", "subscribe_output", "pty_write", "pty_resize", "session_screen", "create_session", "kill_session", "rename_session", "list_groups", "save_group", "delete_group", "list_agents", "daemon_status", "host_capabilities", "list_hosts", "select_host"] {
+        for host in ["list_sessions", "subscribe_events", "subscribe_output", "pty_write", "pty_resize", "session_screen", "create_session", "kill_session", "rename_session", "list_groups", "save_group", "delete_group", "list_agents", "daemon_status", "host_capabilities", "list_hosts", "select_host", "list_projects", "get_project", "git_changes"] {
             assert!(!super::LOCAL_ONLY.contains(&host), "{host}");
         }
-        // Every opener and data family of this Mac is listed.
-        for local in ["open_path", "open_file", "reveal_file", "open_diff", "preview_file", "read_image", "list_dir", "list_projects", "git_changes", "ledger_rows", "get_skiff_agent", "open_skiff_agent", "start_skiff_watch", "restart_daemon", "reload_daemon", "install_cli", "list_agent_sessions", "set_agents", "set_agent_command"] {
+        // M4: project and Git status reads go to the selected Host's data
+        // plane (`skiff-host`), never to this Mac's config or git. Project
+        // writes and every opener of this Mac stay listed.
+        for local in ["open_path", "open_file", "reveal_file", "open_diff", "preview_file", "read_image", "list_dir", "add_worktree", "remove_worktree", "add_project", "set_project_color", "reorder_projects", "ledger_rows", "get_skiff_agent", "open_skiff_agent", "start_skiff_watch", "restart_daemon", "reload_daemon", "install_cli", "list_agent_sessions", "set_agents", "set_agent_command"] {
             assert!(super::LOCAL_ONLY.contains(&local), "{local}");
         }
         // A command added later must be placed on one side or the other.
         let allowed = ["set_menu", "quit_app", "guard_quit", "menu_layout", "set_menu_layout", "set_window_dark", "clipboard_write", "clipboard_read",
             "daemon_status", "host_capabilities", "list_hosts", "add_host", "remove_host", "select_host", "set_host_clipboard", "host_clipboard", "accept_host_identity",
-            "list_sessions", "create_session", "pty_write", "pty_resize", "session_seen", "kill_session", "rename_session", "set_session_theme", "list_agents",
+            "list_sessions", "create_session", "pty_write", "pty_resize", "session_seen", "kill_session", "rename_session", "set_session_theme", "list_agents", "list_projects", "get_project", "git_changes",
             "open_settings", "set_open", "set_open_peek", "open_url", "list_themes", "import_themes", "open_theme_folder", "get_appearance",
             "memory_usage", "get_keys", "trace_info", "trace_write", "trace_set", "system_load", "set_appearance", "set_font_size", "set_mission_filter",
             "list_groups", "session_screen", "save_group", "delete_group", "subscribe_output", "ack_output", "unsubscribe_output", "subscribe_events",

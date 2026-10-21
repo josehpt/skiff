@@ -11,7 +11,9 @@ export type HostCap =
   | "session_terminal"
   | "session_lifecycle"
   | "session_groups"
-  | "session_agents";
+  | "session_agents"
+  | "projects"
+  | "git_status";
 
 /** The major of each capability that this page speaks. */
 const MAJOR: Record<HostCap, number> = {
@@ -22,6 +24,8 @@ const MAJOR: Record<HostCap, number> = {
   session_lifecycle: 1,
   session_groups: 1,
   session_agents: 1,
+  projects: 1,
+  git_status: 1,
 };
 
 /** What each capability offers, for the refusal. */
@@ -33,6 +37,8 @@ const OFFERS: Record<HostCap, string> = {
   session_lifecycle: "new, ended or renamed sessions",
   session_groups: "groups",
   session_agents: "an agent list",
+  projects: "projects",
+  git_status: "Git changes",
 };
 
 /** `name@major` of the selected Host. `null` until the first answer. */

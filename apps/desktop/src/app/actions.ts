@@ -78,6 +78,8 @@ export function runAction(a: Action) {
     case "palette": return switcher.toggle();
     case "new-session": return openNewSession();
     case "new-worktree": {
+      // A remote Host's projects are read-only (M4).
+      if (isRemote()) return;
       const p = currentProject();
       return p ? newWorktree(p) : undefined;
     }
@@ -97,6 +99,8 @@ export function runAction(a: Action) {
     case "project-copy-path": {
       // On a file or change row, the key acts on that file.
       const path = rowPath();
+      // A remote Host's paths are copied as text, never opened on this Mac.
+      if (isRemote() && a !== "project-copy-path") return;
       if (path) return a === "project-copy-path" ? copy(path.path) : path.dir ? open(path.path) : reveal(path.path);
       const p = currentProject();
       return p ? projectRun(p)[a]() : undefined;
@@ -104,6 +108,7 @@ export function runAction(a: Action) {
     case "project-color":
     case "project-changes":
     case "project-files": {
+      if (isRemote()) return;
       const p = currentProject();
       return p ? projectRun(p)[a]() : undefined;
     }
@@ -182,7 +187,8 @@ function closeKey(shown: boolean) {
 function openTheme() {
   const project = () => {
     const p = currentProject();
-    if (p) void projectThemeMenu(p);
+    // A remote Host's project themes are its projects.toml's (read-only, M4).
+    if (p && !isRemote()) void projectThemeMenu(p);
   };
   const row = currentRow();
   const sid = row ? row.dataset.session : S.focused;

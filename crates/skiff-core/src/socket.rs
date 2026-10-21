@@ -12,6 +12,15 @@ pub fn socket_path() -> PathBuf {
     runtime_dir().join("skiff").join(name)
 }
 
+/// Where a Host's data-plane service (`skiff-host`) listens, beside the
+/// skiffd socket it serves with: `x.sock` gives `x-host.sock`. Pure path
+/// arithmetic, so it also names a remote Host's socket without touching
+/// this machine.
+pub fn data_socket(session: &std::path::Path) -> PathBuf {
+    let stem = session.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "skiffd".into());
+    session.with_file_name(format!("{stem}-host.sock"))
+}
+
 /// The user's runtime folder, the same from the desktop and from an SSH
 /// login, where the environment can differ. On Linux, `$XDG_RUNTIME_DIR`,
 /// else `/run/user/<uid>` when it exists. On macOS, the per-user temp folder
@@ -49,4 +58,14 @@ fn darwin_user_temp() -> Option<PathBuf> {
     }
     buf.truncate(n - 1);
     String::from_utf8(buf).ok().map(PathBuf::from)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_data_socket_sits_beside_the_session_socket() {
+        use std::path::Path;
+        assert_eq!(super::data_socket(Path::new("/run/user/1/skiff/skiffd.sock")), Path::new("/run/user/1/skiff/skiffd-host.sock"));
+        assert_eq!(super::data_socket(Path::new("/tmp/t/skiffd-dev.sock")), Path::new("/tmp/t/skiffd-dev-host.sock"));
+    }
 }

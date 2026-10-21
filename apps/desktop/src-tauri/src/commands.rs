@@ -173,11 +173,9 @@ pub(crate) async fn list_dir(path: PathBuf) -> Result<Vec<skiff_core::files::Ent
 
 /// The changed files of one worktree, for the sidebar's Changes section.
 #[tauri::command]
-pub(crate) async fn git_changes(path: PathBuf) -> Result<Vec<skiff_core::git::Change>, String> {
-    tokio::task::spawn_blocking(move || skiff_core::git::changes(&path))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(err)
+pub(crate) async fn git_changes(app: State<'_, App>, path: String) -> Result<Vec<skiff_host_api::HostChange>, String> {
+    let c = crate::connection::data_now(&app).await?;
+    skiff_client::host::data::git_changes(&c, &path).await.map_err(crate::connection::data_err)
 }
 
 /// What happened to an open request.

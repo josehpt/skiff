@@ -1,5 +1,6 @@
 /** Fleets: the order of projects, a drop that moves them, and naming a new fleet. */
 import { invoke } from "@tauri-apps/api/core";
+import { isRemote } from "../app/hosts";
 
 import type { Project } from "../platform/types";
 
@@ -67,6 +68,8 @@ function freeFleetName(): string {
 
 /** The fleets and the project order after the drop, saved in one write. A fleet left with one project goes away. */
 export function applyDrop(moving: Project[], d: Drop): string | null {
+  // A remote Host's order and fleets are its own projects.toml's (read-only, M4).
+  if (isRemote()) return null;
   const order = projectOrder().filter((p) => !moving.includes(p));
   order.splice(order.indexOf(d.anchor) + (d.side === "after" ? 1 : 0), 0, ...moving);
   const made = d.make ? freeFleetName() : null;

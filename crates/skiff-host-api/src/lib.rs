@@ -8,12 +8,14 @@ pub mod agents;
 pub mod groups;
 pub mod inventory;
 pub mod lifecycle;
+pub mod projects;
 pub mod terminal;
 pub mod updates;
 pub use agents::HostAgent;
 pub use groups::Group;
 pub use inventory::InventorySession;
 pub use lifecycle::SessionSpec;
+pub use projects::{ChangeStatus, HostChange, HostProject, HostWorktree};
 pub use terminal::{EchoTimes, TerminalFrame};
 pub use updates::SessionUpdate;
 
@@ -27,6 +29,8 @@ pub const SESSION_TERMINAL: &str = "session_terminal";
 pub const SESSION_LIFECYCLE: &str = "session_lifecycle";
 pub const SESSION_GROUPS: &str = "session_groups";
 pub const SESSION_AGENTS: &str = "session_agents";
+pub const PROJECTS: &str = "projects";
+pub const GIT_STATUS: &str = "git_status";
 
 macro_rules! identity {
     ($name:ident) => {
@@ -118,6 +122,22 @@ impl Capability {
     pub fn session_agents() -> Self {
         Self {
             name: SESSION_AGENTS.into(),
+            version: 1,
+        }
+    }
+    /// Read the Host's projects, fleets and worktrees. Data plane
+    /// (`skiff-host`); grants no project, config or worktree change.
+    pub fn projects() -> Self {
+        Self {
+            name: PROJECTS.into(),
+            version: 1,
+        }
+    }
+    /// Read the changed files of one of the Host's project worktrees. Data
+    /// plane; grants no diff text, file read or Git write.
+    pub fn git_status() -> Self {
+        Self {
+            name: GIT_STATUS.into(),
             version: 1,
         }
     }
@@ -362,6 +382,19 @@ pub enum Request {
     },
     /// Answers `agents` with the Host account's agent list.
     AgentList,
+    /// Answers `projects` with every project in the Host's config, open and
+    /// closed, in config order.
+    ProjectList,
+    /// Answers `project` with one project read again: git runs in it only.
+    ProjectGet {
+        name: String,
+    },
+    /// Answers `changes`, sorted by path. `worktree` is a Host path, and
+    /// must be a worktree of one of the Host's open projects: the Host runs
+    /// git nowhere else (`not_found`).
+    GitChanges {
+        worktree: String,
+    },
 }
 impl Request {
     pub fn capability(&self) -> Option<Capability> {
@@ -383,6 +416,8 @@ impl Request {
                 Some(Capability::session_groups())
             }
             Self::AgentList => Some(Capability::session_agents()),
+            Self::ProjectList | Self::ProjectGet { .. } => Some(Capability::projects()),
+            Self::GitChanges { .. } => Some(Capability::git_status()),
             Self::ListSessions
             | Self::Write { .. }
             | Self::Resize { .. }
@@ -407,6 +442,9 @@ impl Request {
                 | (Self::GroupList, Response::Groups { .. })
                 | (Self::GroupSave { .. }, Response::Group { .. })
                 | (Self::AgentList, Response::Agents { .. })
+                | (Self::ProjectList, Response::Projects { .. })
+                | (Self::ProjectGet { .. }, Response::Project { .. })
+                | (Self::GitChanges { .. }, Response::Changes { .. })
         ) || (!matches!(
             self,
             Self::Hello
@@ -420,6 +458,9 @@ impl Request {
                 | Self::GroupList
                 | Self::GroupSave { .. }
                 | Self::AgentList
+                | Self::ProjectList
+                | Self::ProjectGet { .. }
+                | Self::GitChanges { .. }
         ) && matches!(reply, Response::Ok))
     }
 }
@@ -437,6 +478,10 @@ pub enum Response {
     Groups { groups: Vec<Group> },
     Group { group: Group },
     Agents { agents: Vec<HostAgent> },
+    Projects { projects: Vec<HostProject> },
+    /// Boxed, as `Session`. Same JSON.
+    Project { project: Box<HostProject> },
+    Changes { changes: Vec<HostChange> },
     SessionInventory { sessions: Vec<InventorySession> },
     SessionScreen { lines: Vec<String> },
     ConnectionStatus { version: String, protocol: u32 },

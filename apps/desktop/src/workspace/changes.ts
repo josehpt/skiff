@@ -21,6 +21,7 @@ import { render, scheduleRender } from "../app/render";
 import { collapsed } from "../app/state";
 
 import { storedSet } from "../app/stored";
+import { isRemote } from "../app/hosts";
 
 type Change = { path: string; status: "M" | "A" | "D" | "U"; added: number | null; removed: number | null };
 
@@ -144,8 +145,10 @@ export function changesBlock(w: Worktree): HTMLElement | null {
   const key = `changes:${w.path}`;
   // A click selects the row on mousedown (keyboard.ts), then opens or closes it.
   const head = sectionHeader(key, "Changes", isOpen, glyph, () => toggle(w.path));
+  // A remote Host's diffs need a diff read (M4 follow-up): its list shows, its preview does not.
+  const remote = isRemote();
   setRowActs(key, {
-    preview: { kind: "diff", wt: w.path, branch: branchName(w), wait: true },
+    preview: remote ? undefined : { kind: "diff", wt: w.path, branch: branchName(w), wait: true },
     fold: (open) => { if (open === undefined || open !== shown.has(w.path)) toggle(w.path); },
   });
   // Open, the rows show how many.
@@ -154,7 +157,7 @@ export function changesBlock(w: Worktree): HTMLElement | null {
     e.preventDefault();
     e.stopPropagation();
     ctxMenu.open(e.clientX, e.clientY, "Changes", [
-      { icon: "code-git-branch", label: "Review all changes", run: () => reviewChanges(w) },
+      ...(remote ? [] : [{ icon: "code-git-branch", label: "Review all changes", run: () => reviewChanges(w) }]),
       { icon: "schedule-refresh-cw", label: "Refresh", run: () => load(w.path) },
     ]);
   });
@@ -174,7 +177,9 @@ function row(w: Worktree, c: Change): HTMLElement {
   const key = `change:${path}`;
   const gone = c.status === "D";
   // The row's diff shows while it is current. Shift+Enter opens the file itself.
-  setRowActs(key, { preview: { kind: "diff", wt, branch: branchName(w), file: c.path }, open: gone ? undefined : () => open(path) });
+  // A remote Host's file is that Host's: its path is copied, never previewed or opened here.
+  const remote = isRemote();
+  setRowActs(key, remote ? {} : { preview: { kind: "diff", wt, branch: branchName(w), file: c.path }, open: gone ? undefined : () => open(path) });
   const show = () => select(key, true, true);
   const slash = c.path.lastIndexOf("/");
   const name = c.path.slice(slash + 1);
@@ -195,10 +200,10 @@ function row(w: Worktree, c: Change): HTMLElement {
   r.addEventListener("contextmenu", (m) => {
     m.preventDefault();
     m.stopPropagation();
-    const items: MenuEntry[] = [
+    const items: MenuEntry[] = remote ? [] : [
       { icon: "code-git-branch", label: "Show diff", hint: "Enter", run: show },
     ];
-    if (!gone) items.push(
+    if (!gone && !remote) items.push(
       { icon: "indicators-square-arrow-out-up-right", label: "Open file", hint: "Shift+Enter", run: () => open(path) },
       { icon: "documents-folder-open", label: "Show in file manager", hint: keyLabel("project-folder"), run: () => reveal(path) },
     );

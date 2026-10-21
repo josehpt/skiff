@@ -8,7 +8,7 @@
  * Open: the work is not closed and no agent is on it: the rows that need the
  * person first, then done tasks, then the rest. A row that needs the person
  * turns amber. Finished: the work Skipper closed on the person's word, newest
- * first, the last 20. A plan is a head row with its tasks always open under
+ * first, the last 100. A plan is a head row with its tasks always open under
  * it, and it counts as one item. Rows slide to their new place, flash on a
  * change and fade in; a close slides the work down into Finished.
  *
@@ -77,8 +77,8 @@ const URGENT: State[] = ["approval", "blocked", "interrupted", "gone", "exited"]
 /** The order in Open: needs the person, then done, then the rest. */
 const rank = (st: State) => (NEED[st] ? 0 : st === "done" ? 1 : 2);
 
-/** Finished keeps this many items. A plan counts as one. */
-const KEEP = 20;
+/** Finished keeps this many items. A plan counts as one. The backend reads no more. */
+const KEEP = 100;
 
 /** A task as the panel shows it. */
 interface Look {

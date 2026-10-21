@@ -32,13 +32,22 @@ pub async fn ledger_rows() -> Result<Vec<Entry>, String> {
     tauri::async_runtime::spawn_blocking(read).await.map_err(|e| e.to_string())?.map_err(err)
 }
 
+/// Finished shows this many closed items, newest first. Keep in step with
+/// `KEEP` in `workspace/ledger.ts`.
+const KEEP: i64 = 100;
+
+/// The rows the panel shows: all work not closed, and the last [`KEEP`]
+/// closed work heads with their tasks. Older closed work stays in the file.
+const PANEL: &str = "WHERE coalesce(parent, uid) NOT IN (SELECT uid FROM tasks WHERE closed_at IS NOT NULL) \
+     OR coalesce(parent, uid) IN (SELECT uid FROM tasks WHERE closed_at IS NOT NULL ORDER BY closed_at DESC, id DESC LIMIT ?1)";
+
 fn read() -> anyhow::Result<Vec<Entry>> {
     let file = ledger::path()?;
     if !file.exists() {
         return Ok(Vec::new());
     }
     let db = ledger::open_read(&file)?;
-    let mut rows = ledger::rows(&db, "", None)?;
+    let mut rows = ledger::rows(&db, PANEL, Some(&KEEP))?;
     ledger::roll_up(&mut rows);
     let here = skiff_core::state::socket();
     Ok(rows

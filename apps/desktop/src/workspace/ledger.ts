@@ -590,12 +590,13 @@ export function renderLedger() {
 
 // ── Keys ────────────────────────────────────────────────────────────────────
 
-/** The keys are in the panel. The panel wears a frame in the pane-focus color meanwhile. */
+/** The keys are in the panel. The panel wears the focused pane's frame meanwhile. */
 let keys = false;
 
 function setKeys(on: boolean) {
   keys = on;
-  document.getElementById("ledger")?.classList.toggle("has-keys", on);
+  // One frame on screen: Skipper's pane drops its frame while the panel has the keys.
+  document.body.classList.toggle("ledger-keys", on);
 }
 /** The lit row's uid. */
 let lit: string | null = null;

@@ -1,7 +1,7 @@
 //! M1c lossless inventory: explicit fakes and selected private socket parity.
 use serde_json::{json, Value};
 use skiff_client::host::{
-    local::{legacy_inventory, LocalSelection},
+    local::{legacy_inventory, HostSelection},
     HostConnection, InventorySource, ScreenSource, StatusSource,
 };
 use skiff_host_api::*;
@@ -261,7 +261,7 @@ async fn selected_inventory_wire_fields_order_defaults_and_json_match_legacy_on_
     let socket = dir.0.join("a.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     let other = UnixListener::bind(dir.0.join("b.sock")).unwrap();
-    let selection = LocalSelection::new(socket, dir.0.join("local-host-id"));
+    let selection = HostSelection::new(socket, dir.0.join("local-host-id"));
     let (pending, peer) = tokio::join!(selection.connect(), listener.accept());
     let host = pending.unwrap().activate().await.unwrap();
     let client = host.client();
@@ -320,7 +320,7 @@ async fn selected_inventory_malformed_service_errors_and_legacy_error_text_are_d
     let dir = Dir::new();
     let socket = dir.0.join("a.sock");
     let listener = UnixListener::bind(&socket).unwrap();
-    let selection = LocalSelection::new(socket, dir.0.join("local-host-id"));
+    let selection = HostSelection::new(socket, dir.0.join("local-host-id"));
     let (pending, peer) = tokio::join!(selection.connect(), listener.accept());
     let host = pending.unwrap().activate().await.unwrap();
     let client = host.client();
@@ -406,7 +406,7 @@ async fn selected_inventory_stall_is_timeout_and_disconnect_keeps_legacy_text() 
     let dir = Dir::new();
     let socket = dir.0.join("a.sock");
     let listener = UnixListener::bind(&socket).unwrap();
-    let selection = LocalSelection::new(socket, dir.0.join("local-host-id"));
+    let selection = HostSelection::new(socket, dir.0.join("local-host-id"));
     let (pending, peer) = tokio::join!(selection.connect(), listener.accept());
     let host = pending.unwrap().activate().await.unwrap();
     let connection = host.connection();
@@ -436,7 +436,7 @@ async fn correlated_inventory_decode_error_survives_subsequent_eof() {
     let dir = Dir::new();
     let socket = dir.0.join("a.sock");
     let listener = UnixListener::bind(&socket).unwrap();
-    let selection = LocalSelection::new(socket, dir.0.join("local-host-id"));
+    let selection = HostSelection::new(socket, dir.0.join("local-host-id"));
     let (pending, peer) = tokio::join!(selection.connect(), listener.accept());
     let host = pending.unwrap().activate().await.unwrap();
     let connection = host.connection();

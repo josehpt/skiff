@@ -1,6 +1,6 @@
 //! M1b fake contract and real legacy-client parity. Private sockets only.
 use skiff_client::host::{
-    local::{legacy_screen, LocalSelection},
+    local::{legacy_screen, HostSelection},
     HostConnection, ScreenSource, StatusSource,
 };
 use skiff_host_api::*;
@@ -293,7 +293,7 @@ async fn selected_screen_matches_legacy_requests_outputs_and_errors_on_the_same_
     let socket = dir.0.join("a.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     let unused = UnixListener::bind(dir.0.join("b.sock")).unwrap();
-    let selection = LocalSelection::new(socket, dir.0.join("local-host-id"));
+    let selection = HostSelection::new(socket, dir.0.join("local-host-id"));
     let (pending, peer) = tokio::join!(selection.connect(), listener.accept());
     let host = pending.unwrap().activate().await.unwrap();
     let client = host.client();
@@ -379,7 +379,7 @@ async fn selected_screen_error_paths(response: serde_json::Value) -> (Error, Str
     let dir = Dir::new();
     let socket = dir.0.join("a.sock");
     let listener = UnixListener::bind(&socket).unwrap();
-    let selection = LocalSelection::new(socket, dir.0.join("local-host-id"));
+    let selection = HostSelection::new(socket, dir.0.join("local-host-id"));
     let (pending, peer) = tokio::join!(selection.connect(), listener.accept());
     let host = pending.unwrap().activate().await.unwrap();
     let connection = host.connection();
@@ -462,7 +462,7 @@ async fn correlated_decode_failure_is_not_overwritten_by_a_subsequent_disconnect
     let dir = Dir::new();
     let socket = dir.0.join("a.sock");
     let listener = UnixListener::bind(&socket).unwrap();
-    let selection = LocalSelection::new(socket, dir.0.join("local-host-id"));
+    let selection = HostSelection::new(socket, dir.0.join("local-host-id"));
     let (pending, peer) = tokio::join!(selection.connect(), listener.accept());
     let host = pending.unwrap().activate().await.unwrap();
     let connection = host.connection();

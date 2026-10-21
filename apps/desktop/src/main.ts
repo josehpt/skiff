@@ -13,7 +13,9 @@ import { bySessionPriority } from "./workspace/model";
 import type { Appearance, DaemonStatus } from "./platform/types";
 import { invoke } from "@tauri-apps/api/core";
 import { switcher } from "./app/commands";
-import { loadProjects, refreshSessions, reloadDaemon, setDaemon, subscribeEvents } from "./app/daemon";
+import { loadProjects, reconnectRemote, refreshSessions, reloadDaemon, setDaemon, subscribeEvents, untilConnected } from "./app/daemon";
+import { isRemote, loadHosts, setHostConnected, watchHostLink } from "./app/hosts";
+import { muteInput } from "./terminal/terminalRuntime";
 import { loadHostCaps } from "./app/hostCaps";
 import { $ } from "./ui/dom";
 import { showError } from "./ui/alerts";
@@ -41,7 +43,6 @@ configureRender(render);
 configurePaneActions({ focusPane, closePane, dragSessions });
 configureActionDispatch(runAction);
 configureCommandUi(switcher);
-startLedger();
 
 // Skiff owns right-click. The webview's own menu (Back, Reload, Inspect)
 // never shows; text fields keep theirs for cut, copy and paste.
@@ -53,6 +54,10 @@ document.addEventListener("contextmenu", (e) => {
 
 async function boot() {
   await startWorkspaceQuitGuard();
+  // Which Host this window shows decides everything below.
+  await loadHosts().catch(showError);
+  // The ledger is this Mac's; a remote Host's is not reachable yet (M6).
+  if (!isRemote()) startLedger();
   // `tauri dev` build: a badge in the status bar tells it apart from an installed Skiff.
   if (import.meta.env.DEV) {
     const badge = document.createElement("span");
@@ -90,7 +95,16 @@ async function boot() {
     }
     setDaemon(status);
   }
-  if (!status.connected) return;
+  if (!status.connected) {
+    if (!isRemote()) return;
+    // A remote Host that is down at launch: wait for it, input off.
+    setHostConnected(false);
+    muteInput(true);
+    status = await untilConnected();
+    muteInput(false);
+    setHostConnected(true);
+  }
+  watchHostLink(reconnectRemote);
 
   // What the selected Host offers decides which session surfaces it gets.
   await loadHostCaps().catch(console.error);

@@ -1,6 +1,6 @@
 use std::{collections::HashMap, path::PathBuf, process::Stdio, sync::{atomic::{AtomicBool, Ordering}, Arc}, time::Duration};
 use serde::Serialize;
-use skiff_client::{Client, host::{HostConnection, local::{LocalSelection, ProcessControl, SelectedLocalHost, connection_status}}};
+use skiff_client::{Client, host::{HostConnection, local::{HostSelection, ProcessControl, SelectedHost, connection_status}}};
 use skiff_core::{socket::socket_path, session::SessionState};
 use tauri::{async_runtime::JoinHandle, State};
 use tokio::sync::Mutex;
@@ -8,10 +8,11 @@ use crate::{input::Input, reload::{self, NoPlan, Plan}, streaming::Flow};
 
 #[derive(Default)]
 pub(crate) struct App {
-    pub(crate) host: Mutex<Option<Arc<SelectedLocalHost>>>,
-    /// One local selection for this runtime; no ambient endpoint re-selection
-    /// on reconnect. Legacy paths only borrow its accepted Client.
-    local: std::sync::OnceLock<LocalSelection>,
+    pub(crate) host: Mutex<Option<Arc<SelectedHost>>>,
+    /// The one endpoint this window reaches: this Mac, or the remote Host
+    /// `hosts.toml` selects. Only `select_host` changes it, never a reconnect.
+    /// Legacy paths only borrow its accepted Client.
+    selection: std::sync::Mutex<Option<HostSelection>>,
     /// The same selected Host connection, for keystrokes, which must not
     /// wait on a lock.
     pub(crate) live: std::sync::Mutex<Option<Arc<HostConnection>>>,
@@ -47,12 +48,98 @@ pub(crate) struct App {
 }
 
 impl App {
-    pub(crate) fn local(&self) -> &LocalSelection {
-        self.local.get_or_init(|| LocalSelection::new(
-            socket_path(),
-            skiff_core::config::config_path().with_file_name("local-host-id"),
-        ))
+    /// The selected endpoint, from `hosts.toml` on first use. A file that
+    /// cannot be read selects this Mac.
+    pub(crate) fn selection(&self) -> HostSelection {
+        let mut selection = self.selection.lock().unwrap();
+        let selection = selection.get_or_insert_with(|| {
+            crate::hosts::load(&crate::hosts::path())
+                .map(|hosts| hosts.selection(local_selection))
+                .unwrap_or_else(|e| {
+                    eprintln!("hosts.toml: {e:#}; showing this Mac");
+                    local_selection()
+                })
+        });
+        selection.clone()
     }
+
+    /// The window shows a remote Host. Commands that read this Mac's data
+    /// are refused then (see `lib.rs`).
+    pub(crate) fn remote(&self) -> bool {
+        !self.selection().is_local()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_selection(&self, selection: HostSelection) {
+        *self.selection.lock().unwrap() = Some(selection);
+    }
+}
+
+/// This Mac: the local skiffd socket, and the bootstrap id for an older one.
+pub(crate) fn local_selection() -> HostSelection {
+    HostSelection::new(socket_path(), skiff_core::config::config_path().with_file_name("local-host-id"))
+}
+
+/// Shows another endpoint. The old connection, its streams and any held
+/// input go first: nothing typed for one Host reaches another.
+pub(crate) async fn replace_selection(app: &App, selection: HostSelection) {
+    let mut guard = app.host.lock().await;
+    *guard = None;
+    *app.live.lock().unwrap() = None;
+    app.input.discard();
+    for (_, task) in app.subs.lock().await.drain() {
+        task.abort();
+    }
+    app.flows.lock().unwrap().clear();
+    if let Some(task) = app.events.lock().await.take() {
+        task.abort();
+    }
+    *app.warning.lock().await = None;
+    *app.replaced.lock().await = None;
+    *app.reload.lock().await = None;
+    *app.failed.lock().unwrap() = None;
+    *app.selection.lock().unwrap() = Some(selection);
+}
+
+/// How long a remote skiffd may take to answer the first Ping.
+const REMOTE_HELLO_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// A remote Host: connect through its forward, adopt the identity it reports,
+/// and never start, reload, stop or replace anything. A version mismatch is
+/// reported, not acted on.
+async fn connect_remote(app: &App, selection: &HostSelection, guard: &mut Option<Arc<SelectedHost>>) -> Result<(Arc<SelectedHost>, bool), String> {
+    let destination = selection.ssh_target().map(|t| t.destination.clone()).unwrap_or_default();
+    let mut c = selection.connect().await.map_err(err)?;
+    let info = match tokio::time::timeout(REMOTE_HELLO_TIMEOUT, c.daemon_info()).await {
+        Ok(Ok(info)) => info,
+        Ok(Err(e)) => return Err(err(e)),
+        Err(_) => return Err(format!("skiffd on {destination} did not answer within {}s", REMOTE_HELLO_TIMEOUT.as_secs())),
+    };
+    *app.warning.lock().await = (info.protocol != skiff_core::PROTOCOL).then(|| Warning {
+        kind: "remote",
+        message: format!(
+            "skiffd {} on {destination} speaks protocol {}, and this app speaks {}. Parts of the app fail. \
+             Update Skiff on {destination}: this app does not change it.",
+            info.version, info.protocol, skiff_core::PROTOCOL
+        ),
+        sessions: None,
+    });
+    let host = match c.activate().await {
+        Ok(host) => Arc::new(host),
+        Err(e) => {
+            let message = match e.downcast_ref::<skiff_host_api::Error>() {
+                Some(skiff_host_api::Error::IdentityChanged { .. }) => format!(
+                    "Another Host answers at {destination}. Skiff stopped. Check that Host, then pick it again."
+                ),
+                _ => err(e),
+            };
+            *app.warning.lock().await = Some(Warning { kind: "remote", message: message.clone(), sessions: None });
+            return Err(message);
+        }
+    };
+    *app.live.lock().unwrap() = Some(host.connection());
+    *guard = Some(host.clone());
+    Ok((host, false))
 }
 
 #[derive(Serialize, Clone)]
@@ -170,7 +257,7 @@ pub(crate) async fn updates_now(app: &App) -> Result<skiff_client::host::local::
     skiff_client::host::local::legacy_updates(&host.connection()).map_err(err)
 }
 
-async fn ensure_host(app: &App) -> Result<(Arc<SelectedLocalHost>, bool), String> {
+async fn ensure_host(app: &App) -> Result<(Arc<SelectedHost>, bool), String> {
     let mut guard = app.host.lock().await;
     if let Some(host) = guard.as_ref() {
         if !host.connection().is_closed() {
@@ -178,14 +265,18 @@ async fn ensure_host(app: &App) -> Result<(Arc<SelectedLocalHost>, bool), String
         }
     }
     *guard = None;
-    let path = app.local().socket();
+    let selection = app.selection();
+    if !selection.is_local() {
+        return connect_remote(app, &selection, &mut guard).await;
+    }
+    let path = selection.socket();
     // Starting a daemon is endpoint-local lifecycle. Without it this only connects.
-    let control = app.local().process_control();
+    let control = selection.process_control();
     let mut spawned = false;
     let mut replaced = false;
     let mut last = String::new();
     for _ in 0..40 {
-        let mut c = match app.local().connect().await {
+        let mut c = match selection.connect().await {
             Ok(c) => c,
             Err(e) => {
                 last = format!("{e:#}");
@@ -268,7 +359,7 @@ async fn check_info(app: &App, c: &Client, info: Option<skiff_client::DaemonInfo
     }
     // Never a downgrade, and one try per app run. Planning runs the bundled
     // skiffd and replacing signals the daemon: endpoint-local only.
-    let control = app.local().process_control();
+    let control = app.selection().process_control();
     let mut old_build = None;
     let planned = (order.is_lt() || other_build) && !app.reload_tried.load(Ordering::Relaxed);
     if let (true, Some(local)) = (planned, &control) {
@@ -393,10 +484,11 @@ pub(crate) async fn restart_daemon(app: State<'_, App>) -> Result<DaemonStatus, 
     {
         let mut guard = app.host.lock().await;
         // A peer pid is the local socket's peer: signal it only for a local endpoint.
-        let control = app.local().process_control().ok_or("skiffd on this Host is not managed by this app")?;
+        let selection = app.selection();
+        let control = selection.process_control().ok_or("skiffd on this Host is not managed by this app")?;
         let pid = match guard.as_ref() {
             Some(host) => host.client().daemon_pid,
-            None => app.local().connect().await.ok().and_then(|c| c.client().daemon_pid),
+            None => selection.connect().await.ok().and_then(|c| c.client().daemon_pid),
         };
         *guard = None;
         *app.live.lock().unwrap() = None;
@@ -425,7 +517,14 @@ pub(crate) async fn daemon_status(app: State<'_, App>) -> Result<DaemonStatus, S
 }
 
 pub(crate) async fn status_now(app: &App) -> DaemonStatus {
-    let socket = app.local().socket().display().to_string();
+    let selection = app.selection();
+    // A remote Host shows as its destination and socket. Its forward's peer
+    // pid is this Mac's `ssh`, never the daemon: it is not shown.
+    let socket = match selection.ssh_target() {
+        Some(t) => format!("{}:{}", t.destination, t.socket),
+        None => selection.socket().display().to_string(),
+    };
+    let local = selection.is_local();
     match ensure_host(app).await {
         Ok((host, spawned)) => {
             let c = host.client();
@@ -435,7 +534,7 @@ pub(crate) async fn status_now(app: &App) -> DaemonStatus {
                 version: hello.as_ref().map(|(v, _)| v.clone()),
                 protocol: hello.map(|(_, p)| p),
                 socket,
-                pid: c.daemon_pid,
+                pid: c.daemon_pid.filter(|_| local),
                 spawned,
                 warning: app.warning.lock().await.clone(),
                 replaced: app.replaced.lock().await.clone(),
@@ -476,7 +575,7 @@ mod tests {
         std::fs::write(&config, "# existing config\n").unwrap();
         std::fs::write(&ledger, b"existing ledger fixture").unwrap();
         let app = App::default();
-        assert!(app.local.set(LocalSelection::new(socket.clone(), dir.join("local-host-id"))).is_ok());
+        app.set_selection(HostSelection::new(socket.clone(), dir.join("local-host-id")));
         let inventory_fixture: serde_json::Value = serde_json::from_str(include_str!("../../../../crates/skiff-host-api/tests/fixtures/m1c.json")).unwrap();
         let inventory = inventory_fixture["reply"]["sessions"].clone();
         let expected_inventory: Vec<skiff_core::session::SessionInfo> = serde_json::from_value(inventory.clone()).unwrap();
@@ -645,8 +744,55 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// A remote Host is reached, never managed: a failing SSH endpoint gets
+    /// an explanation, and the app starts, reloads and signals nothing here.
+    #[test]
+    fn a_remote_endpoint_never_runs_local_lifecycle_and_reports_why() {
+        use super::*;
+        let _env = crate::reload::tests::ENV.lock().unwrap_or_else(|e| e.into_inner());
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let dir = std::env::temp_dir().join(format!("skiff-remote-life-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).unwrap();
+        // A local "skiffd" and "ssh" that only leave a mark.
+        let mark = |name: &str| {
+            let script = dir.join(name);
+            std::fs::write(&script, format!("#!/bin/sh\necho \"$@\" >> {}/{name}.ran\nexit 255\n", dir.display())).unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            script
+        };
+        let old_daemon = std::env::var_os("SKIFF_DAEMON");
+        std::env::set_var("SKIFF_DAEMON", mark("skiffd"));
+        let app = App::default();
+        let target = skiff_client::host::ssh::SshTarget { destination: "devbox".into(), socket: "/run/user/1/skiff/skiffd.sock".into() };
+        let options = skiff_client::host::ssh::SshOptions { program: mark("ssh"), config: None };
+        app.set_selection(HostSelection::ssh(target, options, dir.join("fwd")).unwrap());
+        assert!(app.remote());
+        assert!(app.selection().process_control().is_none());
+        let started = std::time::Instant::now();
+        let status = status_now(&app).await;
+        assert!(!status.connected && !status.spawned && status.pid.is_none());
+        assert_eq!(status.socket, "devbox:/run/user/1/skiff/skiffd.sock");
+        // One ssh run, no retry loop, and a second try waits.
+        assert!(started.elapsed() < Duration::from_secs(5));
+        let e = ensure_host(&app).await.err().unwrap();
+        assert!(e.contains("tries again"), "{e}");
+        assert_eq!(std::fs::read_to_string(dir.join("ssh.ran")).unwrap().lines().count(), 1);
+        assert!(!dir.join("skiffd.ran").exists(), "the local daemon binary ran for a remote Host");
+        // Switching back to this Mac drops the remote selection and its forward.
+        replace_selection(&app, local_selection()).await;
+        assert!(!app.remote());
+        match old_daemon {
+            Some(v) => std::env::set_var("SKIFF_DAEMON", v),
+            None => std::env::remove_var("SKIFF_DAEMON"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
+
     fn local_control() -> ProcessControl {
-        App::default().local().process_control().unwrap()
+        App::default().selection().process_control().unwrap()
     }
 
     #[test]

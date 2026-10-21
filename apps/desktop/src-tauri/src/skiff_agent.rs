@@ -51,7 +51,7 @@ fn cli() -> PathBuf {
 #[tauri::command]
 pub async fn start_skiff_watch(app: State<'_, App>, session: String) -> Result<bool, String> {
     // A remote Host's watcher runs there; this app only reaches it.
-    let Some(local) = app.local().process_control() else { return Ok(false) };
+    let Some(local) = app.selection().process_control() else { return Ok(false) };
     ensure_watch(&app, &local, cli(), session).await
 }
 
@@ -70,7 +70,7 @@ pub(crate) async fn ensure_watch(app: &App, _local: &ProcessControl, cli: PathBu
     // Only the bundled CLI replaces a watcher: a bare `skiff` from PATH is
     // not known to be this app's build.
     let tried = cli.is_absolute().then(|| app.watch_tried.clone());
-    let socket = app.local().socket().to_path_buf();
+    let socket = app.selection().socket().to_path_buf();
     let out = blocking(move || skipper::ensure_watch(&socket, &cli, skipper::CLI_VERSION, &session, &known, tried.as_deref())).await?;
     match out {
         skipper::WatchOutcome::Started => Ok(true),
@@ -114,7 +114,7 @@ pub async fn open_skiff_agent(app: State<'_, App>, restore: Option<u64>) -> Resu
         None => skipper::Open::Start,
     };
     let Some(found) = skipper::open(&c, how).await.map_err(err)? else { return Ok(None) };
-    let watch_error = match app.local().process_control() {
+    let watch_error = match app.selection().process_control() {
         Some(local) => ensure_watch(&app, &local, cli(), found.session.id.clone()).await.err(),
         None => None,
     };

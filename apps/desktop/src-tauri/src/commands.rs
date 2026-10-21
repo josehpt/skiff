@@ -22,6 +22,9 @@ pub(crate) async fn create_session(app: State<'_, App>, spec: SessionSpec) -> Re
 #[tauri::command]
 pub(crate) fn pty_write(handle: AppHandle, app: State<'_, App>, session: String, data: String) -> Result<(), String> {
     let live = app.live.lock().unwrap().clone().filter(|c| !c.is_closed());
+    if app.remote() {
+        return remote_input(live.as_deref(), &session, data.into_bytes());
+    }
     match app.input.write(live.as_deref(), &session, data.into_bytes()).map_err(err)? {
         Sent::Done | Sent::Held => {}
         // No connection yet. Rare: connect, then send what waits.
@@ -35,6 +38,23 @@ pub(crate) fn pty_write(handle: AppHandle, app: State<'_, App>, session: String,
     }
     Ok(())
 }
+
+/// Input to a remote Host is never held: while the link is down it is off,
+/// and what is refused is gone. It never arrives late or twice.
+fn remote_input(live: Option<&skiff_client::host::HostConnection>, session: &str, data: Vec<u8>) -> Result<(), String> {
+    let Some(c) = live else { return Err(INPUT_OFF.into()) };
+    match c.terminal_input(session, data, false) {
+        Ok(()) => Ok(()),
+        Err(skiff_host_api::Error::HostBusy) => Err(format!(
+            "Input refused: the link is slow, and {} KiB wait to be sent. Type again when the terminal catches up.",
+            skiff_client::host::local::REMOTE_INPUT_LIMIT / 1024
+        )),
+        Err(_) => Err(INPUT_OFF.into()),
+    }
+}
+
+/// Why typing does nothing while a remote Host is disconnected.
+pub(crate) const INPUT_OFF: &str = "Input is off: the remote Host is disconnected. Nothing you type is sent.";
 
 #[tauri::command]
 pub(crate) async fn pty_resize(
@@ -379,4 +399,12 @@ pub(crate) async fn save_group(app: State<'_, App>, group: Group) -> Result<Grou
 pub(crate) async fn delete_group(app: State<'_, App>, group: String) -> Result<(), String> {
     let c = crate::connection::host_now(&app).await?;
     legacy_delete_group(&c, &group).await.map_err(err)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn remote_input_is_off_while_disconnected_and_never_held() {
+        assert_eq!(super::remote_input(None, "s", b"ls\n".to_vec()), Err(super::INPUT_OFF.to_string()));
+    }
 }

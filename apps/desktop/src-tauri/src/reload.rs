@@ -330,10 +330,10 @@ async fn run(app: &App, plan: &Plan) -> Outcome {
 
 /// Connects again and asks the daemon what it is. Never starts a daemon.
 /// Waits up to [`RECONNECT`], and up to [`ADOPT_LIMIT`] while `pid` lives.
-async fn reconnect(app: &App, pid: u32) -> Result<(skiff_client::host::local::PendingLocalConnection, DaemonInfo), String> {
+async fn reconnect(app: &App, pid: u32) -> Result<(skiff_client::host::local::PendingConnection, DaemonInfo), String> {
     let start = Instant::now();
     loop {
-        let last = match app.local().connect().await {
+        let last = match app.selection().connect().await {
             // Activation takes the Host's identity from this pong.
             Ok(mut c) => match tokio::time::timeout(HELLO_TIMEOUT, c.daemon_info()).await {
                 Ok(Ok(info)) => return Ok((c, info)),
@@ -362,14 +362,14 @@ fn alive(pid: u32) -> bool {
 }
 
 #[cfg(all(test, unix))]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::connection::ensure_client;
     use skiff_client::skipper;
     use skiff_core::session::SessionSpec;
 
     /// The tests that set `SKIFF_SOCKET` run one at a time.
-    static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    pub(crate) static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// A bundled skiffd no newer than the daemon is stale, before the
     /// handover check: a restart onto it would ask again.
@@ -713,7 +713,7 @@ os.execv("/bin/cat", ["skiff", "watch"])
 
             // The watcher, from a start and a restore at once.
             // Watcher reconciliation is endpoint-local: the local endpoint grants it.
-            let local = app.local().process_control().unwrap();
+            let local = app.selection().process_control().unwrap();
             let (a, b) = tokio::join!(
                 crate::skiff_agent::ensure_watch(&app, &local, skiff.clone(), agent.id.clone()),
                 crate::skiff_agent::ensure_watch(&app, &local, skiff.clone(), agent.id.clone()),
@@ -749,7 +749,7 @@ os.execv("/bin/cat", ["skiff", "watch"])
             assert_eq!((&status["reload"], &status["replaced"]), (&false.into(), &serde_json::Value::Null), "{status}");
             assert!(status["warning"].is_null(), "{status}");
             assert!(matches!(crate::cli_path::reconcile(&[bin.as_path()], &skiff, false).unwrap(), crate::cli_path::Linked::Current(_)));
-            assert_eq!(crate::skiff_agent::ensure_watch(&next, &next.local().process_control().unwrap(), skiff.clone(), agent.id.clone()).await, Ok(false));
+            assert_eq!(crate::skiff_agent::ensure_watch(&next, &next.selection().process_control().unwrap(), skiff.clone(), agent.id.clone()).await, Ok(false));
             assert_eq!(skipper::watch_status(&socket).unwrap().holder.map(|h| h.pid), Some(holder.pid));
             let same = next.host.lock().await.as_ref().unwrap().client();
             assert_eq!(same.daemon_info().await.unwrap().pid, Some(pid));

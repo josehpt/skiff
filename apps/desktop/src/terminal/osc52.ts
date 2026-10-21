@@ -10,6 +10,7 @@
 import type { Terminal } from "@xterm/xterm";
 import { copyText } from "../platform/clipboard";
 import { showError } from "../ui/alerts";
+import { clipboardWrites } from "../app/hosts";
 
 /** The most base64 a program may send: about 6 MB of text. */
 const MAX = 8 << 20;
@@ -18,6 +19,8 @@ export function handleOsc52(term: Terminal) {
   term.parser.registerOscHandler(52, (data) => {
     const payload = data.slice(data.indexOf(";") + 1);
     if (!data.includes(";") || !payload || payload === "?" || payload.length > MAX) return true;
+    // A remote Host's programs write this Mac's clipboard only when allowed.
+    if (!clipboardWrites()) return true;
     let text: string;
     try {
       const bin = atob(payload);

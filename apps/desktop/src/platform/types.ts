@@ -180,7 +180,8 @@ export interface Reloaded {
 }
 
 export interface DaemonWarning {
-  kind: "outdated" | "protocol" | "newer" | "hung" | "failed";
+  /** `remote`: a remote Host this app reaches but never restarts or updates. */
+  kind: "outdated" | "protocol" | "newer" | "hung" | "failed" | "remote";
   message: string;
   /** Live sessions a restart stops. `null` when the daemon did not say. */
   sessions: number | null;

@@ -29,18 +29,23 @@ import { panes } from "../terminal/terminalState";
 import { ptySized } from "../terminal/terminal";
 import { reattachPanes } from "../terminal/terminalRuntime";
 import { focusPane, inBackground, paneNear, revealSession, rowNear, showSingle, splitWith, unfocus } from "../workspace/view";
-import { hostInvoke, loadHostCaps } from "./hostCaps";
+import { hostCan, hostInvoke, loadHostCaps } from "./hostCaps";
+import { hostName, isRemote, setHostConnected } from "./hosts";
+import { muteInput } from "../terminal/terminalRuntime";
 
 export function setDaemon(status: DaemonStatus) {
   const dot = $("daemon").querySelector(".dot") as HTMLElement;
   dot.className = "dot " + (status.connected ? "connected" : "error");
-  $("daemon-label").textContent = status.reload
+  const where = isRemote() ? `${hostName()} · ` : "";
+  $("daemon-label").textContent = where + (status.reload
     ? "Reloading skiffd…"
     : status.connected
     ? `skiffd ${status.version ?? ""}${status.replaced ? ` (updated from ${status.replaced})` : status.spawned ? " (started)" : ""}`
     : status.warning?.kind === "hung"
       ? "skiffd not responding"
-      : "skiffd unreachable";
+      : isRemote()
+        ? "disconnected, input is off"
+        : "skiffd unreachable");
   const socket = $("socket");
   if (status.pid) socket.replaceChildren(`${status.socket} · pid ${status.pid}`, pidCopy(status.pid));
   else socket.textContent = status.socket;
@@ -92,6 +97,45 @@ export async function reloadDaemon(): Promise<DaemonStatus> {
     return r.status;
   } finally {
     quietSeen(false);
+  }
+}
+
+/** Asks for the selected Host until it answers: 1 s, then twice as long
+ *  each time, up to 30 s. Each try runs SSH and the handshake again. */
+export async function untilConnected(): Promise<DaemonStatus> {
+  let wait = 1000;
+  for (;;) {
+    const status = await invoke<DaemonStatus>("daemon_status").catch(() => null);
+    if (status) setDaemon(status);
+    if (status?.connected) return status;
+    await new Promise((r) => setTimeout(r, wait));
+    wait = Math.min(wait * 2, 30_000);
+  }
+}
+
+/**
+ * The link to a remote Host dropped. Input is off until it is back; nothing
+ * typed meanwhile is kept or sent later. Then the same steps as after a
+ * reload: the Host's capabilities, events first, the list, groups, and each
+ * shown pane from a fresh snapshot. A different Host at the same address
+ * never connects (Rust refuses it), so this keeps waiting and says why.
+ */
+export async function reconnectRemote(): Promise<void> {
+  muteInput(true);
+  quietSeen(true);
+  try {
+    const status = await untilConnected();
+    await loadHostCaps().catch(console.error);
+    await subscribeEvents().catch(console.error);
+    await refreshSessions().catch(console.error);
+    if (hostCan("session_groups")) await loadGroups().catch(console.error);
+    reattachPanes();
+    setDaemon(status);
+    render();
+  } finally {
+    quietSeen(false);
+    muteInput(false);
+    setHostConnected(true);
   }
 }
 
@@ -175,6 +219,15 @@ async function loadAppTheme() {
 
 export async function loadProjects() {
   const seq = ++projectsSeq;
+  // A remote Host's projects are not reachable yet (M4): show its sessions
+  // only, never this Mac's projects under its name.
+  if (isRemote()) {
+    S.projects = [];
+    S.closedProjects = [];
+    S.projectsError = null;
+    if (S.selectedProject !== OTHER) S.selectedProject = null;
+    return;
+  }
   if (!S.agents.length) S.agents = await invoke<AgentInfo[]>("list_agents").catch(() => []);
   let list: Project[] | null = null;
   let err: string | null = null;

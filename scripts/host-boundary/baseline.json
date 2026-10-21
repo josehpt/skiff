@@ -11,7 +11,7 @@
     "reasons": [
       "dependency surface"
     ],
-    "sha256": "41261386bd4d00071133de8177d33069f83a608aabfb89600c17e3a47478ac05"
+    "sha256": "14ad05232c5f03408bbccf96453e2dd55dccc2cfbfd6f2dd64f8a1f216a934cb"
   },
   "apps/desktop/src-tauri/src/cli_path.rs": {
     "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
@@ -35,7 +35,7 @@
       "fs",
       "skiff_core"
     ],
-    "sha256": "55e009f423584e7270ba1c6874057fc49980bfbbd65d84d9412482bf76e97938"
+    "sha256": "357720276d2fbe2a2df077977fc9e9b3628801db628e8a0a0f8c231cde29ca85"
   },
   "apps/desktop/src-tauri/src/config.rs": {
     "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
@@ -63,7 +63,7 @@
       "skiff_client",
       "skiff_core"
     ],
-    "sha256": "03d123b6a4e9f645784e5989cb93a4927091c54ac7174f71b6bb807287af6f32"
+    "sha256": "ad14cc88b7e4638ada81a07eea3fa765914babaa20e024a0b4e8af46e6e5a0fc"
   },
   "apps/desktop/src-tauri/src/diagnostics.rs": {
     "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
@@ -86,6 +86,19 @@
     ],
     "sha256": "59d7c1d0f495418689d2a14932ababc20ddaf40a6461db7aa916d11bcc8bb61d"
   },
+  "apps/desktop/src-tauri/src/hosts.rs": {
+    "ownership": "client policy: hosts.toml (known Hosts, the selected Host, per-Host clipboard opt-in) and building the selected SSH endpoint",
+    "reasons": [
+      "config",
+      "env",
+      "fs",
+      "libc",
+      "process",
+      "read_to_string",
+      "skiff_core"
+    ],
+    "sha256": "82316265bd969a032c0b33069e8da0937d00c0e2baa9a9acad902c2fc2ad4461"
+  },
   "apps/desktop/src-tauri/src/ledger.rs": {
     "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
     "reasons": [
@@ -105,10 +118,11 @@
       "config",
       "env",
       "exists",
+      "include_str",
       "ledger",
       "skiff_agent"
     ],
-    "sha256": "a31d600c7f4f26c08cba644390b01ec5ac46d95cb0c9632404a19d730f2de08f"
+    "sha256": "b91d40875388971d0966d9f3d6b08c4968ad44ac7cbabd9e945006569f462dfe"
   },
   "apps/desktop/src-tauri/src/native_menu.rs": {
     "ownership": "client policy: exact existing adapter only",
@@ -142,7 +156,7 @@
       "skiff_core",
       "skipper"
     ],
-    "sha256": "11223385cdcccfb29d1d6a1cd2fc19c2c93deaa3c6c2ee21c41b615305f38901"
+    "sha256": "a6e2d58bdc00fc7335d7e064351161975b0c551fe0d7fbd05ec301c91bf7af0c"
   },
   "apps/desktop/src-tauri/src/skiff_agent.rs": {
     "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
@@ -156,14 +170,14 @@
       "skiff_core",
       "skipper"
     ],
-    "sha256": "015c0ad74e705187f7cc74da1f57a472a4275b1937a9d6757a8fe58ca6f94ae6"
+    "sha256": "caadc83f73a748c805756bb0b6992aeae90ab845730ff98645916d98c128f306"
   },
   "apps/desktop/src-tauri/src/streaming.rs": {
     "ownership": "M1e terminal output via selected Host session_terminal@1; M1d page session events via selected Host; core Event only for the page channel type",
     "reasons": [
       "skiff_core"
     ],
-    "sha256": "99487e954faad89e2b2682eb4eb52f61793314fbc692675c753220ee51f6d504"
+    "sha256": "dc760fd4cf4b76a145502bd7cf9d3660b13e934cced2cab2ccf8f7ab38c20e31"
   },
   "apps/desktop/src-tauri/src/workspace_file.rs": {
     "ownership": "client policy: exact existing adapter only",
@@ -199,7 +213,7 @@
       "@tauri-apps/api/event",
       "invoke"
     ],
-    "sha256": "02c39ed42a3241501f3df48fcd72faf041bca1d6b27297281b8ebd0b77fc4f18"
+    "sha256": "cb832b04311a707b19e74cab58a49f75de440861c1f8d29ebb4a52bac9c8dac0"
   },
   "apps/desktop/src/app/daemonRestart.ts": {
     "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
@@ -207,7 +221,7 @@
       "@tauri-apps/api/core",
       "invoke"
     ],
-    "sha256": "a38154df9942f80845117289454750b8fc4fec9233e9f2081cd360bd57669b0a"
+    "sha256": "da87e8a225e7a949f5489e849f0bf83d0b90971f0471f22e3ef090724b0ac9c0"
   },
   "apps/desktop/src/app/groups.ts": {
     "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
@@ -218,7 +232,7 @@
       "local provider: apps/desktop/src/app/stateQueries.ts",
       "local provider: apps/desktop/src/workspace/view.ts"
     ],
-    "sha256": "8c971e4fd3ef5ead05837aaa6cf99699960de07b02fad5a7c69b131ed54d74c0"
+    "sha256": "a4551d0cc4aecbdad59ad1c1526e38fcefbc943adf84d26bdb5408305d2ecefd"
   },
   "apps/desktop/src/app/hostCaps.ts": {
     "ownership": "Host capability gate: the page's only invoke for session/terminal commands, each refused unless the selected Host advertises its capability; Rust routes them through HostConnection",
@@ -227,6 +241,15 @@
       "invoke"
     ],
     "sha256": "2859cc40b9421de2386c9900bb40b2837173aeb62bc5dbacb5897c199b0b499d"
+  },
+  "apps/desktop/src/app/hosts.ts": {
+    "ownership": "client policy: Host picker and label (list/select/add/forget Hosts, clipboard opt-in) and the remote link-lost signal",
+    "reasons": [
+      "@tauri-apps/api/core",
+      "@tauri-apps/api/event",
+      "invoke"
+    ],
+    "sha256": "83eea07599b7e06a2e0328e9bc2d70c068c6113bb098bdf26cb689c988529900"
   },
   "apps/desktop/src/app/keyboard.ts": {
     "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
@@ -300,7 +323,7 @@
       "local provider: apps/desktop/src/app/state.ts",
       "local provider: apps/desktop/src/terminal/peek.ts"
     ],
-    "sha256": "01588103a56defceb93a29a84f75cb33cd54c57e4f5d1729a25dbd41494be57f"
+    "sha256": "4876a2ad378feed9aa49008b08209f269f2fc55be5d43546cee554d26aedb32d"
   },
   "apps/desktop/src/app/skiffAgent.ts": {
     "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
@@ -421,7 +444,7 @@
       "@tauri-apps/api/core",
       "invoke"
     ],
-    "sha256": "3af2167443d9e0ff137f43724fac413ec7e0edeeebd5cd686d38c0435c849545"
+    "sha256": "171984aa21648c495841f2c61dafe168de6a6b38c212372fd60004d97a0f1792"
   },
   "apps/desktop/src/platform/clipboard.ts": {
     "ownership": "client policy: exact existing adapter only",
@@ -451,9 +474,10 @@
   "apps/desktop/src/terminal/osc52.ts": {
     "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
     "reasons": [
+      "local provider: apps/desktop/src/app/hosts.ts",
       "local provider: apps/desktop/src/platform/clipboard.ts"
     ],
-    "sha256": "9b3809100fbf3f4eb8d27f0ec1d6ee3c1d7054070bc3ae35d93f46c9ae680f37"
+    "sha256": "6814c9b2c0bcc7cbbc2946349c5566b99804d6ce801c1ae35957b30e05af0a17"
   },
   "apps/desktop/src/terminal/paneActions.ts": {
     "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
@@ -711,6 +735,7 @@
   "apps/desktop/src/workspace/sidebar.ts": {
     "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
     "reasons": [
+      "local provider: apps/desktop/src/app/hosts.ts",
       "local provider: apps/desktop/src/app/keyboard.ts",
       "local provider: apps/desktop/src/app/panels.ts",
       "local provider: apps/desktop/src/app/skiffAgent.ts",
@@ -732,7 +757,7 @@
       "local provider: apps/desktop/src/workspace/treeDrag.ts",
       "local provider: apps/desktop/src/workspace/view.ts"
     ],
-    "sha256": "650699a709dea12c69bc81a1a6fb8e2a9f2275f21ad3db8192037d46819eb324"
+    "sha256": "ef4ae5a8c25d227af9a595ab9715230ffab89a9694ad851a4a20d8789711efed"
   },
   "apps/desktop/src/workspace/sidebarLines.ts": {
     "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
@@ -792,6 +817,7 @@
     "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
     "reasons": [
       "local provider: apps/desktop/src/app/daemon.ts",
+      "local provider: apps/desktop/src/app/hosts.ts",
       "local provider: apps/desktop/src/app/panels.ts",
       "local provider: apps/desktop/src/app/state.ts",
       "local provider: apps/desktop/src/app/stateQueries.ts",
@@ -799,6 +825,6 @@
       "local provider: apps/desktop/src/workspace/menus.ts",
       "local provider: apps/desktop/src/workspace/projectClose.ts"
     ],
-    "sha256": "3f596f38297a3423e1212f8a3e3fb56601367a4bcda32476f4616cadf783aa30"
+    "sha256": "6968092eb02580262b3f71a0662cbaf3df39ee88d1539928b71e2c2f03692541"
   }
 }

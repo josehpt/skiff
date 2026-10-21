@@ -84,9 +84,21 @@ impl Client {
             data,
             paste,
         };
+        // Input to a closed connection would vanish in its queue: refuse it.
+        if self.is_closed() {
+            return Err(anyhow!("skiffd connection closed"));
+        }
         let mut line = serde_json::to_vec(&Envelope { id, request })?;
         line.push(b'\n');
-        self.tx.send(line).map_err(|_| anyhow!("skiffd connection closed"))
+        let limit = self.input_limit.load(Ordering::Relaxed);
+        if limit > 0 && self.queued.load(Ordering::Relaxed) + line.len() > limit {
+            return Err(crate::InputBusy(limit).into());
+        }
+        if self.send_line(line) {
+            Ok(())
+        } else {
+            Err(anyhow!("skiffd connection closed"))
+        }
     }
 
     pub async fn set_session_theme(&self, session: &str, theme: Option<String>) -> Result<SessionInfo> {

@@ -1,7 +1,7 @@
 use std::{future::Future, pin::Pin, sync::{Arc, atomic::{AtomicUsize, Ordering}}};
 use skiff_client::host::{local::{legacy_attach, legacy_detach, legacy_output}, OutputGap, TerminalFrame};
 use skiff_core::protocol::Event;
-use tauri::{ipc::{Channel, InvokeResponseBody}, State};
+use tauri::{ipc::{Channel, InvokeResponseBody}, AppHandle, Emitter, State};
 use tokio::sync::Notify;
 use crate::connection::{App, err, host_now, updates_now};
 
@@ -179,17 +179,33 @@ pub(crate) async fn unsubscribe_output(app: State<'_, App>, session: String) -> 
     legacy_detach(&c, &session).await.map_err(err)
 }
 
+/// The selected remote Host's connection ended.
+pub(crate) const HOST_LOST: &str = "skiff:host-lost";
+
 /// Streams every non-output event: state changes, exits, created, removed.
 /// The client routes output elsewhere, so a busy terminal cannot make this lag.
 #[tauri::command]
-pub(crate) async fn subscribe_events(app: State<'_, App>, on_event: Channel<Event>) -> Result<(), String> {
+pub(crate) async fn subscribe_events(handle: AppHandle, app: State<'_, App>, on_event: Channel<Event>) -> Result<(), String> {
     // Through the selected Host; a lag is skipped there, as it was here.
     let mut updates = updates_now(&app).await?;
+    let connection = host_now(&app).await?;
+    let remote = app.remote();
     let task = tauri::async_runtime::spawn(async move {
-        while let Some(e) = updates.recv().await {
-            if on_event.send(e).is_err() {
-                break;
+        // The stream does not end when the link drops: look each second.
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
+        loop {
+            tokio::select! {
+                e = updates.recv() => match e {
+                    Some(e) => if on_event.send(e).is_err() { return },
+                    None => break,
+                },
+                _ = tick.tick() => if connection.is_closed() { break },
             }
+        }
+        // A remote Host's page reconnects on this: handshake, identity,
+        // then fresh subscriptions and snapshots. This Mac keeps its policy.
+        if remote {
+            let _ = handle.emit(HOST_LOST, ());
         }
     });
     if let Some(old) = app.events.lock().await.replace(task) {

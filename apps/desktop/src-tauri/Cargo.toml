@@ -21,6 +21,7 @@ serde_json.workspace = true
 toml.workspace = true
 skiff-core.workspace = true
 skiff-client.workspace = true
+skiff-host-api.workspace = true
 tokio.workspace = true
 anyhow.workspace = true
 tauri-plugin-dialog = "2"

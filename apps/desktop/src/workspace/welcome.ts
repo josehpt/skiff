@@ -15,6 +15,7 @@ import { addProject } from "../app/panels";
 import { openClosedProject } from "./projectClose";
 
 import { S } from "../app/state";
+import { hostName, isRemote } from "../app/hosts";
 import { accent, currentProject, launchChoices, shownIds } from "../app/stateQueries";
 
 let welcomeSig = "";
@@ -32,7 +33,14 @@ export function renderWelcome() {
   welcomeBox?.remove();
   welcomeBox = null;
   const box = h("div", "welcome");
-  if (S.projects.length === 0 && S.closedProjects.length && !S.projectsError) {
+  if (isRemote()) {
+    // A remote Host: its sessions, and work starts from its own CLI (M2).
+    if (S.focused || shownIds().length) return;
+    box.append(
+      h("div", "welcome-title", `Sessions on ${hostName()}`),
+      h("div", "welcome-text", `Pick a session in the list. To start work, run skiff on ${hostName()}, for example: skiff new --agent claude.`),
+    );
+  } else if (S.projects.length === 0 && S.closedProjects.length && !S.projectsError) {
     // Every project is closed: open one again, or add another.
     const actions = h("div", "welcome-actions");
     for (const c of S.closedProjects) {

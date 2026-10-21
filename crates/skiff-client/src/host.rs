@@ -24,6 +24,7 @@ use crate::transport::Transport;
 mod inventory;
 mod lifecycle;
 pub mod local;
+pub mod ssh;
 mod terminal;
 mod updates;
 

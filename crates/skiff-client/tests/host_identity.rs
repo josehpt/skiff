@@ -3,7 +3,7 @@
 //! never infers it from the socket, peer credentials or pid. Private sockets
 //! and identity paths only.
 use skiff_client::host::{
-    local::{legacy_attach, legacy_output, IdentitySource, LocalSelection, SelectedLocalHost},
+    local::{legacy_attach, legacy_output, HostSelection, IdentitySource, SelectedHost},
     Continuity, OutputGap, TerminalFrame,
 };
 use skiff_host_api::Error;
@@ -43,10 +43,10 @@ async fn reply(peer: &mut Peer, value: serde_json::Value) {
 
 /// Connects, answers the recorded Ping with `identity` (or none), activates.
 async fn activate(
-    selection: &LocalSelection,
+    selection: &HostSelection,
     listener: &UnixListener,
     identity: Option<serde_json::Value>,
-) -> (anyhow::Result<SelectedLocalHost>, Peer) {
+) -> (anyhow::Result<SelectedHost>, Peer) {
     let (pending, peer) = tokio::join!(selection.connect(), listener.accept());
     let mut pending = pending.unwrap();
     let mut peer = BufReader::new(peer.unwrap().0);
@@ -86,7 +86,7 @@ async fn reported_identity_is_adopted_and_every_reconnect_validates_it() {
     let socket = dir.0.join("a.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     let bootstrap = dir.0.join("config/local-host-id");
-    let selection = LocalSelection::new(socket, bootstrap.clone());
+    let selection = HostSelection::new(socket, bootstrap.clone());
 
     let (first, _p1) = activate(&selection, &listener, Some(identity("host-a", "run-1"))).await;
     let first = first.unwrap();
@@ -146,7 +146,7 @@ async fn an_older_daemon_gets_the_bootstrap_identity_and_always_a_new_instance()
     let socket = dir.0.join("a.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     let bootstrap = dir.0.join("config/local-host-id");
-    let selection = LocalSelection::new(socket, bootstrap.clone());
+    let selection = HostSelection::new(socket, bootstrap.clone());
     let (old, _p1) = activate(&selection, &listener, None).await;
     let old = old.unwrap();
     assert_eq!(old.identity_source(), IdentitySource::LocalBootstrap);
@@ -170,7 +170,7 @@ async fn same_instance_still_takes_a_fresh_subscription_and_snapshot() {
     let dir = Dir::new();
     let socket = dir.0.join("a.sock");
     let listener = UnixListener::bind(&socket).unwrap();
-    let selection = LocalSelection::new(socket, dir.0.join("local-host-id"));
+    let selection = HostSelection::new(socket, dir.0.join("local-host-id"));
     let (first, _p1) = activate(&selection, &listener, Some(identity("host-a", "run-1"))).await;
     let first = first.unwrap();
     let mut old = legacy_output(&first.connection(), "s").unwrap();

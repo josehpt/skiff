@@ -4,7 +4,7 @@ use std::{
     collections::HashMap,
     path::Path,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex,
     },
 };
@@ -118,6 +118,17 @@ impl std::fmt::Display for ReplyDecodeError {
 }
 impl std::error::Error for ReplyDecodeError {}
 
+/// Input refused because the connection's bounded queue is full. Nothing of
+/// it was sent, and nothing queues it for later.
+#[derive(Debug)]
+pub struct InputBusy(pub usize);
+impl std::fmt::Display for InputBusy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "input refused: more than {} bytes wait to reach skiffd", self.0)
+    }
+}
+impl std::error::Error for InputBusy {}
+
 pub struct Client {
     /// The daemon's pid, from the socket's peer credentials.
     pub daemon_pid: Option<i32>,
@@ -130,6 +141,10 @@ pub struct Client {
     outputs: Outputs,
     /// Set when the daemon closes the connection.
     closed: Arc<AtomicBool>,
+    /// Bytes queued for the socket and not yet written.
+    queued: Arc<AtomicUsize>,
+    /// Most bytes input may queue; 0 means no limit, as a local socket has.
+    input_limit: AtomicUsize,
 }
 
 impl Client {
@@ -142,13 +157,18 @@ impl Client {
         let (rd, mut wr) = transport::Transport::split(stream);
 
         let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
-        tokio::spawn(async move {
-            while let Some(line) = rx.recv().await {
-                if wr.write_all(&line).await.is_err() {
-                    break;
+        let queued = Arc::new(AtomicUsize::new(0));
+        {
+            let queued = queued.clone();
+            tokio::spawn(async move {
+                while let Some(line) = rx.recv().await {
+                    if wr.write_all(&line).await.is_err() {
+                        break;
+                    }
+                    queued.fetch_sub(line.len(), Ordering::Relaxed);
                 }
-            }
-        });
+            });
+        }
 
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
         let (events, _) = broadcast::channel(4096);
@@ -202,7 +222,26 @@ impl Client {
             events,
             outputs,
             closed,
+            queued,
+            input_limit: AtomicUsize::new(0),
         })
+    }
+
+    /// Refuse input once `bytes` wait to be written. For a slow link, such as
+    /// an SSH forward: input is refused there, never held for a retry.
+    pub fn limit_input(&self, bytes: usize) {
+        self.input_limit.store(bytes, Ordering::Relaxed);
+    }
+
+    /// Queues one frame, and counts it until the writer has written it.
+    fn send_line(&self, line: Vec<u8>) -> bool {
+        let n = line.len();
+        self.queued.fetch_add(n, Ordering::Relaxed);
+        if self.tx.send(line).is_err() {
+            self.queued.fetch_sub(n, Ordering::Relaxed);
+            return false;
+        }
+        true
     }
 
     /// True once the daemon has closed the connection. No round trip.
@@ -247,7 +286,7 @@ impl Client {
         }
         let mut line = serde_json::to_vec(&Envelope { id, request })?;
         line.push(b'\n');
-        if self.tx.send(line).is_err() {
+        if !self.send_line(line) {
             bail!("skiffd connection closed");
         }
         let decoded = match timeout {
@@ -295,6 +334,8 @@ mod tests {
             events,
             outputs: Arc::new(Mutex::new(HashMap::new())),
             closed: Arc::new(AtomicBool::new(false)),
+            queued: Arc::new(AtomicUsize::new(0)),
+            input_limit: AtomicUsize::new(0),
         }, rx)
     }
 

@@ -1,4 +1,4 @@
-# Host API — M0 contract and local M1a–M1g seams
+# Host API — M0 contract, local M1a–M1g seams and M2 remote terminals
 
 Tracking: [M0 #156](https://github.com/solutionscay/skiff/issues/156),
 [epic #155](https://github.com/solutionscay/skiff/issues/155).
@@ -796,6 +796,197 @@ workspace files, traces and window state) stay in the client.
   missing or other-major capability is refused with no IPC; keystroke order
   holds across the first answer and later calls are synchronous; a reload
   re-reads the capabilities.
+
+## M2 (first slice): remote terminals over SSH
+
+### Topology: the verified adapter over a forwarded skiffd socket
+
+Today's skiffd speaks its own newline-JSON protocol (PROTOCOL 27), not the Host
+envelope. No Host-envelope server exists on any Host. M2 therefore does not
+invent one. The same in-process adapter that M1 verified (`LegacyReadOnly`,
+`LegacyTerminal`) runs over a different byte stream: the local end of an
+OpenSSH stream-local forward to the remote skiffd socket.
+
+- The app sends exactly the skiffd frames it sends locally. Parity is already
+  proven frame by frame in M1b–M1g.
+- The Host-envelope wire backend (`HostConnection::connect`) stays tested but
+  unused. It becomes useful when a Host service speaks the envelope. That is
+  the data-plane service of M4–M6, as decided in M1f.
+
+### Transport and trust (`skiff-client::host::ssh`)
+
+- **The system ssh:** `/usr/bin/ssh` (else `ssh` on PATH), so `~/.ssh/config`,
+  ProxyJump, agents, hardware keys and known_hosts behave as in a terminal.
+- **The forward:** `-N -L <private>/skiffd.sock:<remote socket> -- <destination>`.
+  The local socket lives in a per-account `0700` directory in the temp dir;
+  the path is short enough for `sun_path`.
+- **Options forced on the command line**, so they win over ssh config:
+  - `BatchMode=yes`, `StrictHostKeyChecking=yes`, `UpdateHostKeys=no`
+  - `ExitOnForwardFailure=yes`, `ServerAliveInterval=15`/`CountMax=3`,
+    `ConnectTimeout=15`
+  - `StreamLocalBindMask=0177`, `StreamLocalBindUnlink=yes`
+  - `ControlMaster=no`, `ControlPath=none`, `ForwardAgent=no`, `ForwardX11=no`,
+    `PermitLocalCommand=no`, `RequestTTY=no`, `LogLevel=INFO` (so a refused
+    channel can be explained)
+- **Trust:** an unknown or changed host key fails. Nothing is learned or
+  written: Skiff has no TOFU prompt, no auth of its own, no TCP listener.
+- **Destination validation:** one word, never starting with `-`. The socket
+  must be an absolute path with no colon.
+- **Failures** become plain causes (`SshError`): unknown key, changed key, no
+  login without a prompt, unreachable, timed out, ssh exited, and a refused
+  channel.
+  - OpenSSH 9.7 reports a missing remote socket and disabled
+    `AllowStreamLocalForwarding` with the same line, so the refused-channel
+    message names both causes. Telling them apart would take a remote command,
+    which Skiff does not run.
+  - ssh's own output is never shown, because it can name key paths.
+- **Backoff:** after a failed open, the next waits 1, 2, 4 … up to 30 s.
+
+### Identity (required remotely)
+
+- A remote Host must report `identity` in its `pong` (M1f skiffd).
+- With none, activation is refused ("reports no Host identity. Update Skiff on
+  that Host."). The app's bootstrap id is never read or made for a remote Host.
+- The forward's peer pid is this Mac's `ssh`. It is never shown or signalled:
+  status reports no pid for a remote Host.
+- On reconnect, a different `host_id` is refused with an explanation, and the
+  page keeps waiting.
+
+### Lifecycle
+
+- `ProcessControl` exists only for a local endpoint, so a remote Host never
+  gets:
+  - daemon spawn
+  - stop/replace
+  - restart
+  - reload plan and run
+  - CLI link
+  - watcher start/replace
+- **The remote connect path skips the reload plan entirely.** A protocol
+  mismatch is reported as a `remote` warning ("Update Skiff on that Host"),
+  with no Restart button.
+- **The app's own transport:** stopping or dropping the forward (switching
+  Host, quitting) ends only the `ssh` process and removes its private
+  directory. Remote sessions run on, and the tests prove it.
+
+### Input, backpressure and reconnect
+
+- **Input is never held for a remote Host.** While the link is down, `pty_write`
+  refuses it ("Input is off …"). The page also mutes the terminals and shows
+  the Host label as disconnected.
+- **A keystroke to a connection that is already closed** is refused by
+  `Client::input_now`. Before this change the keystroke vanished into a dead
+  queue; that bug was found in the SSH test and fixed for local too.
+- **Backpressure:** a remote connection bounds queued input at 1 MiB
+  (`REMOTE_INPUT_LIMIT`). More is refused as `host_busy` with a message, and
+  nothing is kept to send later. Local input stays unbounded, as before.
+- **Link loss detection:** the event task checks the connection each second and
+  emits `skiff:host-lost`.
+- **The page then reconnects:** `daemon_status` with 1→30 s backoff (each try
+  is ssh, handshake and identity check), then capabilities, events, the
+  session list, groups if offered, and every shown pane re-attached for a
+  fresh snapshot.
+  - The real-SSH test shows SameInstance continuity after the link returns.
+  - Nothing typed while down arrives later.
+- **No retries:** mutations are not retried; lifecycle is not offered remotely
+  in M2 anyway.
+
+### What a remote Host shows
+
+- **Capabilities:** a remote Host gets status, screen, inventory, updates and
+  terminal. It does not get `session_lifecycle` or `session_groups`: create,
+  end, rename, theme, seen and groups are M3. The M1g capability gates hide
+  those actions. Remote work starts from that Host's own `skiff` CLI.
+- **Local data:** projects, Git, files and local openers, the ledger, Skipper,
+  agents, `projects.toml` and daemon lifecycle are refused in Rust by one gate
+  (`LOCAL_ONLY` in `lib.rs`, checked against the selection). A test fails if a
+  new command is not placed on one side. The page also does not load them:
+  - no projects
+  - the ledger does not start
+  - the welcome screen says "Sessions on <Host>"
+  - the sidebar lists sessions under Other
+- **OSC 52:** remote clipboard writes are ignored unless allowed for that Host
+  ("Allow clipboard writes from this Host…", stored per Host). Reads stay
+  unsupported, as everywhere.
+
+### Picker and label
+
+- **The Host cell in the top bar** shows a state dot and the name ("This Mac"
+  or the destination). The status bar's skiffd label and the window title
+  (`Skiff — <Host>`) name it too.
+- **Its menu** picks a Host, adds an SSH Host (destination and socket), forgets
+  one, and toggles the clipboard opt-in.
+- **Picking a Host** tears down the old connection, streams and held input,
+  then reloads the page: no view mixes two Hosts.
+- **`hosts.toml`** (client-owned, beside `projects.toml`) stores the known
+  Hosts, `selected` and `clipboard`. An unknown or invalid selected entry falls
+  back to This Mac.
+
+### Agent list: M3
+
+The agent list (`list_agents`, `list_agent_sessions`, agent command settings)
+moves with **M3, remote session lifecycle**. It exists to start and resume
+sessions, which M2 does not do remotely. In M2 its commands are local-only, and
+the remote CLI starts work.
+
+### Demo
+
+1. **On the remote Host:** install a Skiff whose skiffd reports identity (M1f
+   or later). Run `skiff info` and copy the `socket` line. Its sshd must allow
+   stream-local forwarding; OpenSSH allows it by default.
+2. **On this Mac:** `ssh <alias>` must work without a prompt (key in the agent
+   or ssh config), and the host key must already be in known_hosts.
+3. **Start this V2 build.** Use a private local state, so it does not touch a
+   v1 daemon.
+4. Click the Host cell, then Add SSH Host… Enter the alias and the socket, then
+   pick it.
+5. Remote sessions list under Other. Open one, type, paste and resize. On the
+   remote Host, start more with `skiff new --agent <id>`.
+6. **Drop the link** (Wi-Fi off or laptop sleep). The cell turns red, input is
+   off, and the status bar says why. Restore the link: Skiff reconnects and
+   redraws each pane from a snapshot.
+7. **Quit the app.** The remote sessions keep running; check with `skiff ls`
+   there.
+
+### Tests
+
+- **Unit** (`host::ssh`): option set and order (strict trust, nothing accepting
+  new keys, `--` before the destination), refused destinations and sockets,
+  stderr→cause mapping without echo, private-directory refusal.
+- **Real SSH** (`crates/skiffd/tests/ssh_remote.rs`): a private skiffd, a
+  loopback sshd with throwaway keys and known_hosts, the system ssh with
+  `-F <fixture config>`. Nothing touches `~/.ssh`.
+  - Attach, input and output over the forward; the remote adapter's
+    capabilities; no `ProcessControl`.
+  - Link drop: closed stream, input refused, session alive.
+  - Down-link error, then backoff.
+  - Reconnect gives SameInstance, a fresh snapshot, and no "LOST" input.
+  - Quit removes the forward directory; the session survives.
+  - Unknown key, changed key (known_hosts unchanged), wrong socket, forwarding
+    disabled, and a remote skiffd without identity refused, with no bootstrap
+    file.
+  - It skips when this machine has no usable unprivileged sshd.
+- **Desktop:**
+  - a remote endpoint runs neither the local daemon binary nor a second ssh
+    (backoff), and status shows `destination:socket` with no pid
+  - every command is classified local-only or allowed
+  - remote input is off while disconnected
+  - `hosts.toml` round trip; an unknown or invalid selection is This Mac
+- **Page:** `hosts.test.ts` (clipboard opt-in per Host, pick saves then
+  reloads, one reconnect per lost link) plus the existing suites.
+- **CI** now runs `tsc` and the page tests (`desktop-ts` job) and
+  `ssh_remote`.
+
+### Not yet (M2 acceptance gaps)
+
+- No manual run on two machines yet: the Termius side-by-side, the Wi-Fi drop
+  and the laptop sleep in the M2 "done when". CI has not run (not pushed).
+- Remote session create, rename, end and groups, and the agent list: M3.
+  Resize contention with other clients: M3.
+- The picker has no "test connection" step. Errors show when the Host is picked.
+- Remote URL activation is unchanged (it opens only after a click, as before).
+  The security review before M2 ships to anyone is still open.
+- Latency was not measured over a real link (M1f topology follow-up).
 
 ## M0 demo and handoff
 

@@ -1,6 +1,6 @@
 //! M1a: private socket fixtures and fake status sources, never live user data.
 use skiff_client::host::{
-    local::{connection_status, LocalSelection},
+    local::{connection_status, HostSelection},
     Continuity, HostConnection, StatusSource,
 };
 use skiff_host_api::*;
@@ -140,7 +140,7 @@ async fn selected_endpoint_is_the_only_status_source_and_keeps_legacy_wire_and_c
     let a = UnixListener::bind(&socket).unwrap();
     let b = UnixListener::bind(dir.0.join("b.sock")).unwrap();
     let identity = dir.0.join("config/local-host-id");
-    let selection = LocalSelection::new(socket.clone(), identity.clone());
+    let selection = HostSelection::new(socket.clone(), identity.clone());
     let (connection, peer) = tokio::join!(selection.connect(), a.accept());
     let pending = connection.unwrap();
     let client = pending.client().clone();
@@ -217,7 +217,7 @@ async fn selected_endpoint_is_the_only_status_source_and_keeps_legacy_wire_and_c
     drop(peer2);
     // Reopening the app and even using another endpoint does not derive identity
     // from the locator: the same explicit identity store is authoritative.
-    let reopened = LocalSelection::new(dir.0.join("b.sock"), identity.clone());
+    let reopened = HostSelection::new(dir.0.join("b.sock"), identity.clone());
     let (again, _peer) = tokio::join!(reopened.connect(), b.accept());
     assert_eq!(
         again
@@ -246,7 +246,7 @@ async fn bootstrap_concurrency_permissions_and_invalid_identity_are_safe() {
     let dir = Dir::new();
     let listener = UnixListener::bind(dir.0.join("a.sock")).unwrap();
     let identity = dir.0.join("config/local-host-id");
-    let selection = LocalSelection::new(dir.0.join("a.sock"), identity.clone());
+    let selection = HostSelection::new(dir.0.join("a.sock"), identity.clone());
     let mut pending = Vec::new();
     let mut peers = Vec::new();
     for _ in 0..8 {
@@ -291,7 +291,7 @@ async fn bootstrap_concurrency_permissions_and_invalid_identity_are_safe() {
         .is_symlink());
     assert_eq!(std::fs::read_to_string(target).unwrap(), "not an identity");
     // No fallback connection or daemon start: an absent selected endpoint fails.
-    let missing = LocalSelection::new(dir.0.join("missing.sock"), dir.0.join("unused-id"));
+    let missing = HostSelection::new(dir.0.join("missing.sock"), dir.0.join("unused-id"));
     assert!(missing.connect().await.is_err());
     assert!(!dir.0.join("unused-id").exists());
 }
@@ -330,7 +330,7 @@ fn bare_relative_config_bootstraps_on_first_activation() {
         assert!(!identity.exists(), "must test the very first publication");
         let socket = PathBuf::from("s.sock");
         let listener = UnixListener::bind(&socket).unwrap();
-        let selection = LocalSelection::new(socket, identity.clone());
+        let selection = HostSelection::new(socket, identity.clone());
         let (pending, _peer) = tokio::join!(selection.connect(), listener.accept());
         let host = pending
             .unwrap()
@@ -358,7 +358,7 @@ async fn stalled_selected_legacy_ping_is_a_typed_host_timeout() {
     let dir = Dir::new();
     let socket = dir.0.join("s.sock");
     let listener = UnixListener::bind(&socket).unwrap();
-    let selection = LocalSelection::new(socket, dir.0.join("local-host-id"));
+    let selection = HostSelection::new(socket, dir.0.join("local-host-id"));
     let (pending, peer) = tokio::join!(selection.connect(), listener.accept());
     let host = pending.unwrap().activate().await.unwrap();
     let connection = host.connection();

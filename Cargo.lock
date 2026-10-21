@@ -3564,6 +3564,7 @@ dependencies = [
  "serde_json",
  "skiff-client",
  "skiff-core",
+ "skiff-host-api",
  "tauri",
  "tauri-build",
  "tauri-plugin-clipboard-manager",

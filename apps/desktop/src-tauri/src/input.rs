@@ -101,6 +101,12 @@ impl Input {
         }
     }
 
+    /// Drops every held input and opens the gate: another Host is selected,
+    /// so nothing typed for the old one may reach it.
+    pub(crate) fn discard(&self) {
+        *self.0.lock().unwrap() = State::default();
+    }
+
     /// Holds all input from now on.
     pub(crate) fn close_gate(&self) {
         let mut st = self.0.lock().unwrap();

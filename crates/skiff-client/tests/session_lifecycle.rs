@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use skiff_client::host::{
     local::{
         legacy_create, legacy_delete_group, legacy_groups, legacy_kill, legacy_rename,
-        legacy_save_group, legacy_seen, legacy_set_theme, LocalSelection,
+        legacy_save_group, legacy_seen, legacy_set_theme, HostSelection,
     },
     GroupSource, HostConnection, LifecycleSource, LocalSources, StatusSource,
 };
@@ -122,7 +122,7 @@ async fn selected_lifecycle_and_groups_match_legacy_frames_results_and_errors_on
     let socket = dir.0.join("a.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     let other = UnixListener::bind(dir.0.join("b.sock")).unwrap();
-    let selection = LocalSelection::new(socket, dir.0.join("local-host-id"));
+    let selection = HostSelection::new(socket, dir.0.join("local-host-id"));
     let (pending, peer) = tokio::join!(selection.connect(), listener.accept());
     let host = pending.unwrap().activate().await.unwrap();
     let client = host.client();
@@ -305,7 +305,7 @@ async fn a_coordinator_spec_is_refused_rather_than_silently_changed() {
     let dir = Dir::new();
     let socket = dir.0.join("a.sock");
     let listener = UnixListener::bind(&socket).unwrap();
-    let selection = LocalSelection::new(socket, dir.0.join("local-host-id"));
+    let selection = HostSelection::new(socket, dir.0.join("local-host-id"));
     let (pending, peer) = tokio::join!(selection.connect(), listener.accept());
     let host = pending.unwrap().activate().await.unwrap();
     let mut spec = spec();

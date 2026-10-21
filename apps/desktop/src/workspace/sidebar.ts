@@ -37,6 +37,7 @@ import { render } from "../app/renderRequest";
 import { projectsPlus, renderWorkspaceBar, shows, workspaceOpen } from "./profile";
 import { ledgerNeeds } from "./ledger";
 import { openSkiffAgent, SKIFF_AGENT_KEY, skiffAgentChoice, skiffAgentFolder, skiffAgentName, skiffAgentSession, skiffWatch, syncSkiffAgent } from "../app/skiffAgent";
+import { hostName, isRemote } from "../app/hosts";
 
 /** 20px lines, flush against whatever follows. */
 function sessionBlock(lines: Line[], color: string): HTMLElement {
@@ -209,7 +210,8 @@ export function renderSidebar() {
     for (const p of sec.projects) kids.appendChild(projectBlock(p));
     side.appendChild(kids);
   }
-  if (!S.projects.length) side.appendChild(h("div", "note-row", "No projects"));
+  if (isRemote()) side.appendChild(h("div", "note-row", `Projects on ${hostName()} show in a later version`));
+  else if (!S.projects.length) side.appendChild(h("div", "note-row", "No projects"));
   else if (!S.projects.some(shows)) side.appendChild(h("div", "note-row", "No projects in this workspace"));
   // Sessions whose folder is in no project.
   const other = worktreeLines(null);

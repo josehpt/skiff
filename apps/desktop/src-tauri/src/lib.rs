@@ -6,6 +6,7 @@ mod connection;
 mod commands;
 mod config;
 mod diagnostics;
+mod hosts;
 mod input;
 mod ledger;
 mod quit;
@@ -43,6 +44,28 @@ fn disable_dmabuf_where_broken() {
     }
 }
 
+/// Commands that read or change this Mac's host-owned data or processes:
+/// projects, worktrees, Git, files and local openers, the ledger, Skipper,
+/// agents and daemon lifecycle. While a remote Host is selected they are
+/// refused here, in one place, so a page bug cannot show this Mac's data
+/// under a remote Host's name. M4–M6 move them behind Host APIs.
+const LOCAL_ONLY: &[&str] = &[
+    "get_skiff_agent", "set_skiff_agent", "start_skiff_watch", "skiff_watch_log", "open_skiff_agent",
+    "preview_skiff_folder", "change_skiff_folder", "ledger_rows",
+    "list_projects", "get_project", "add_worktree", "remove_worktree", "add_project", "inspect_folder",
+    "init_repository", "set_project_icon", "set_project_short", "set_project_fleet", "set_project_color",
+    "set_project_closed", "remove_project", "set_project_background", "set_project_background_opacity",
+    "set_project_changes", "set_project_files", "project_themes", "set_project_theme", "reorder_projects",
+    "read_image", "list_dir", "git_changes", "open_diff", "preview_file", "open_file", "reveal_file", "open_path",
+    "files_projects", "hidden_changes_projects",
+    "list_agents", "list_agent_sessions", "set_agents", "set_agent_command", "rename_agent", "remove_agent",
+    "restore_agents", "config_path", "open_config", "install_cli", "restart_daemon", "reload_daemon",
+];
+
+/// Why a [`LOCAL_ONLY`] command was refused.
+pub(crate) const LOCAL_ONLY_REFUSED: &str =
+    "Not available on a remote Host yet. It reads projects, files, the ledger or Skipper on this Mac.";
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "linux")]
@@ -55,7 +78,7 @@ pub fn run() {
         // The window starts hidden: GTK takes a header bar only before it shows.
         .setup(|app| {
             // Endpoint-local lifecycle: a remote Host's CLI is its own.
-            if let Some(local) = app.state::<App>().local().process_control() {
+            if let Some(local) = app.state::<App>().selection().process_control() {
                 std::thread::spawn(move || cli_path::sync(&local));
             }
             std::thread::spawn(skiff_agent::sync);
@@ -72,7 +95,7 @@ pub fn run() {
         .on_menu_event(|app, event| {
             let _ = app.emit("skiff:menu", event.id().as_ref());
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(local_only(tauri::generate_handler![
             native_menu::set_menu,
             quit::quit_app,
             quit::guard_quit,
@@ -83,6 +106,11 @@ pub fn run() {
             clipboard::clipboard_read,
             connection::daemon_status,
             connection::host_capabilities,
+            hosts::list_hosts,
+            hosts::add_host,
+            hosts::remove_host,
+            hosts::select_host,
+            hosts::set_host_clipboard,
             cli_path::install_cli,
             skiff_agent::get_skiff_agent,
             skiff_agent::set_skiff_agent,
@@ -171,7 +199,7 @@ pub fn run() {
             workspace_file::workspace_write,
             workspace_file::workspace_launch_file,
             workspace_file::workspace_took,
-        ])
+        ]))
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
         .run(|_app, _event| {
@@ -184,4 +212,61 @@ pub fn run() {
                 workspace_file::os_open(_app, urls.iter().map(|u| u.to_string()));
             }
         });
+}
+
+/// Wraps the command handler: [`LOCAL_ONLY`] commands are refused while a
+/// remote Host is selected, before they run.
+fn local_only<R: tauri::Runtime>(
+    handler: impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static,
+) -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
+    move |invoke| {
+        if LOCAL_ONLY.contains(&invoke.message.command()) && invoke.message.webview().state::<App>().remote() {
+            invoke.resolver.reject(LOCAL_ONLY_REFUSED);
+            return true;
+        }
+        handler(invoke)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The registered commands, as `generate_handler!` lists them.
+    fn registered() -> Vec<String> {
+        let source = include_str!("lib.rs");
+        let start = source.find("generate_handler![").unwrap();
+        let end = source[start..].find("])").unwrap() + start;
+        source[start + "generate_handler![".len()..end]
+            .split(',')
+            .filter_map(|c| c.trim().rsplit("::").next().map(str::to_string))
+            .filter(|c| !c.is_empty())
+            .collect()
+    }
+
+    #[test]
+    fn every_local_only_command_exists_and_none_reaches_a_host_session_path() {
+        let all = registered();
+        for name in super::LOCAL_ONLY {
+            assert!(all.iter().any(|c| c == name), "{name} is not a registered command");
+        }
+        // Session and terminal commands go through the selected Host, and are
+        // gated by its capabilities instead.
+        for host in ["list_sessions", "subscribe_events", "subscribe_output", "pty_write", "pty_resize", "session_screen", "create_session", "kill_session", "list_groups", "daemon_status", "host_capabilities", "list_hosts", "select_host"] {
+            assert!(!super::LOCAL_ONLY.contains(&host), "{host}");
+        }
+        // Every opener and data family of this Mac is listed.
+        for local in ["open_path", "open_file", "reveal_file", "open_diff", "preview_file", "read_image", "list_dir", "list_projects", "git_changes", "ledger_rows", "get_skiff_agent", "open_skiff_agent", "start_skiff_watch", "restart_daemon", "reload_daemon", "install_cli"] {
+            assert!(super::LOCAL_ONLY.contains(&local), "{local}");
+        }
+        // A command added later must be placed on one side or the other.
+        let allowed = ["set_menu", "quit_app", "guard_quit", "menu_layout", "set_menu_layout", "set_window_dark", "clipboard_write", "clipboard_read",
+            "daemon_status", "host_capabilities", "list_hosts", "add_host", "remove_host", "select_host", "set_host_clipboard",
+            "list_sessions", "create_session", "pty_write", "pty_resize", "session_seen", "kill_session", "rename_session", "set_session_theme",
+            "open_settings", "set_open", "set_open_peek", "open_url", "list_themes", "import_themes", "open_theme_folder", "get_appearance",
+            "memory_usage", "get_keys", "trace_info", "trace_write", "trace_set", "system_load", "set_appearance", "set_font_size", "set_mission_filter",
+            "list_groups", "session_screen", "save_group", "delete_group", "subscribe_output", "ack_output", "unsubscribe_output", "subscribe_events",
+            "workspace_read", "workspace_revision", "workspace_write", "workspace_launch_file", "workspace_took"];
+        for c in &all {
+            assert!(super::LOCAL_ONLY.contains(&c.as_str()) || allowed.contains(&c.as_str()), "{c}: decide whether a remote Host may run it");
+        }
+    }
 }

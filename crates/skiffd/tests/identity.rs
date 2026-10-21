@@ -10,7 +10,7 @@ use std::{
 };
 
 use skiff_client::{
-    host::{local::{IdentitySource, LocalSelection}, Continuity},
+    host::{local::{IdentitySource, HostSelection}, Continuity},
     Client,
 };
 use skiff_core::protocol::Identity;
@@ -85,7 +85,7 @@ async fn identity_is_durable_and_each_start_and_reload_is_a_new_instance() {
     assert_eq!(identity(&socket).await.0, first);
 
     // The selected adapter adopts it, and a reconnect to the same run is SameInstance.
-    let selection = LocalSelection::new(socket.clone(), dir.join("app-bootstrap-id"));
+    let selection = HostSelection::new(socket.clone(), dir.join("app-bootstrap-id"));
     let activate = || async {
         let mut pending = selection.connect().await.unwrap();
         pending.daemon_info().await.unwrap();

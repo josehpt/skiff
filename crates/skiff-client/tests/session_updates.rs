@@ -1,7 +1,7 @@
 //! M1d read-only session updates: explicit fakes and selected private socket parity.
 use serde_json::Value;
 use skiff_client::host::{
-    local::{legacy_updates, LocalSelection},
+    local::{legacy_updates, HostSelection},
     HostConnection, InventorySource, ScreenSource, StatusSource, UpdateGap, UpdateSource,
     UpdateStream,
 };
@@ -212,7 +212,7 @@ async fn selected_updates_match_the_legacy_stream_on_one_client_without_requests
     let dir = Dir::new();
     let socket = dir.0.join("a.sock");
     let listener = UnixListener::bind(&socket).unwrap();
-    let selection = LocalSelection::new(socket, dir.0.join("local-host-id"));
+    let selection = HostSelection::new(socket, dir.0.join("local-host-id"));
     let (pending, peer) = tokio::join!(selection.connect(), listener.accept());
     let host = pending.unwrap().activate().await.unwrap();
     assert!(host.connection().hello().capabilities.contains(&Capability::session_updates()));

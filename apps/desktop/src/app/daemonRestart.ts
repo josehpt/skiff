@@ -17,6 +17,7 @@ const WARNINGS: Record<DaemonWarning["kind"], [string, string]> = {
   newer: ["skiffd newer", "skiffd is newer than this app"],
   hung: ["skiffd not responding", "skiffd is not responding"],
   failed: ["Reload failed", "skiffd did not come back"],
+  remote: ["Host problem", "The remote Host needs attention"],
 };
 
 let shown: DaemonWarning | null = null;
@@ -81,7 +82,9 @@ export function daemonBadge(warning: DaemonWarning | null, requested = false) {
         else restartDialog();
       });
   const foot = h("div", "confirm-foot");
-  foot.append(later, restart);
+  // This app never restarts or updates skiffd on a remote Host.
+  if (warning.kind === "remote") foot.append(later);
+  else foot.append(later, restart);
   const body = whenIdle
     ? `skiffd restarts when no agent is working. ${plural(working().length, "agent is", "agents are")} working now.`
     : warning.message;

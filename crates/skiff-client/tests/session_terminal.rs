@@ -2,7 +2,7 @@
 use serde_json::Value;
 use skiff_client::host::{
     local::{
-        legacy_attach, legacy_detach, legacy_input, legacy_output, legacy_resize, LocalSelection,
+        legacy_attach, legacy_detach, legacy_input, legacy_output, legacy_resize, HostSelection,
     },
     HostConnection, LocalSources, OutputGap, OutputStream, StatusSource, TerminalFrame,
     TerminalSource,
@@ -318,7 +318,7 @@ async fn selected_terminal_sends_exactly_the_legacy_frames_on_one_client() {
     let dir = Dir::new();
     let socket = dir.0.join("a.sock");
     let listener = UnixListener::bind(&socket).unwrap();
-    let selection = LocalSelection::new(socket, dir.0.join("local-host-id"));
+    let selection = HostSelection::new(socket, dir.0.join("local-host-id"));
     let (pending, peer) = tokio::join!(selection.connect(), listener.accept());
     let host = pending.unwrap().activate().await.unwrap();
     let connection = host.connection();

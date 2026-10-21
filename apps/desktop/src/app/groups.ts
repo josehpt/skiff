@@ -10,7 +10,7 @@ import { S, sessions } from "./state";
 import { activeGroupObj, shownIds } from "./stateQueries";
 
 import { inBackground, unfocus } from "../workspace/view";
-import { hostInvoke } from "./hostCaps";
+import { hostCan, hostInvoke } from "./hostCaps";
 
 /** Group writes run one at a time, so a new group has its id before the next save. */
 let groupQueue = Promise.resolve();
@@ -77,6 +77,11 @@ export function deleteGroup(g: Group) {
 export async function loadGroups() {
   if (groupWrites > 0) {
     reloadGroups = true;
+    return;
+  }
+  // A remote Host's groups come in M3; its sessions show without them.
+  if (!hostCan("session_groups")) {
+    S.groups = [];
     return;
   }
   let list: Group[];

@@ -94,7 +94,7 @@ pub fn add_project(
         set_project_closed(&p.name, false)?;
         return Ok(ProjectConfig { closed: false, ..p.clone() });
     }
-    let _edit = edit_lock();
+    let _edit = edit_lock()?;
     let name = name
         .map(|n| n.trim().to_string())
         .filter(|n| !n.is_empty())
@@ -249,7 +249,7 @@ pub fn set_project_closed(project: &str, closed: bool) -> Result<()> {
 /// Drops the named project's `[[project]]` table and its settings. The
 /// folder stays. Comments and layout around the other tables are kept.
 pub fn remove_project(project: &str) -> Result<()> {
-    let _edit = edit_lock();
+    let _edit = edit_lock()?;
     let file = config_path();
     let text = std::fs::read_to_string(&file).with_context(|| format!("read {}", file.display()))?;
     let mut doc: toml_edit::DocumentMut = text
@@ -282,7 +282,7 @@ pub fn arrange_projects(order: &[String], fleets: &[(String, String)]) -> Result
     for (_, fleet) in fleets {
         check_label("fleet name", fleet)?;
     }
-    let _edit = edit_lock();
+    let _edit = edit_lock()?;
     let file = config_path();
     let text = std::fs::read_to_string(&file).with_context(|| format!("read {}", file.display()))?;
     let mut doc: toml_edit::DocumentMut = text
@@ -327,7 +327,7 @@ pub fn arrange_projects(order: &[String], fleets: &[(String, String)]) -> Result
 }
 
 fn set_project_key(project: &str, key: &str, value: Option<impl Into<toml_edit::Value>>) -> Result<()> {
-    let _edit = edit_lock();
+    let _edit = edit_lock()?;
     let file = config_path();
     let text = std::fs::read_to_string(&file).with_context(|| format!("read {}", file.display()))?;
     let mut doc: toml_edit::DocumentMut = text

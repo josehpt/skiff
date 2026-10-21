@@ -38,34 +38,68 @@ impl Drop for EditLock {
     }
 }
 
-pub(super) fn edit_lock() -> EditLock {
+pub(super) fn edit_lock() -> Result<EditLock> {
     edit_lock_for(&config_path())
 }
 
-/// The edit lock, with the lock file beside `file`. Taken again on a thread
-/// that holds it for `file`, it is already held; for another file, that
-/// file's lock is taken under the mutex this thread already holds.
-pub(super) fn edit_lock_for(file: &Path) -> EditLock {
+/// The edit lock, with the lock file beside the file `file` names, links
+/// followed: every spelling of one file takes one lock. Taken again on a
+/// thread that holds it for that file, it is already held; for another file,
+/// that file's lock is taken under the mutex this thread already holds.
+/// Without the lock file nothing is written: another process could write
+/// over the edit.
+pub(super) fn edit_lock_for(file: &Path) -> Result<EditLock> {
+    let file = target(file)?;
     let (same, nested) = HELD.with(|h| {
         let h = h.borrow();
-        (h.iter().any(|f| f == file), !h.is_empty())
+        (h.contains(&file), !h.is_empty())
     });
-    HELD.with(|h| h.borrow_mut().push(file.to_path_buf()));
     if same {
-        return EditLock { _file: None, _guard: None };
+        HELD.with(|h| h.borrow_mut().push(file));
+        return Ok(EditLock { _file: None, _guard: None });
     }
     let guard = (!nested).then(|| EDIT.lock().unwrap_or_else(|e| e.into_inner()));
     let mut path = file.as_os_str().to_owned();
     path.push(".lock");
-    // Without the lock file, edits still exclude each other inside this process.
-    let file = std::fs::OpenOptions::new()
+    let path = PathBuf::from(path);
+    let lock = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
         .open(&path)
-        .ok()
-        .filter(|f| f.lock().is_ok());
-    EditLock { _file: file, _guard: guard }
+        .with_context(|| format!("open the edit lock {}", path.display()))?;
+    lock.lock().with_context(|| format!("take the edit lock {}", path.display()))?;
+    HELD.with(|h| h.borrow_mut().push(file));
+    Ok(EditLock { _file: Some(lock), _guard: guard })
+}
+
+/// The file `file` names, links followed, in its folder's canonical path:
+/// the one name every spelling of it shares, whether or not the file exists
+/// yet. Its folder is made if missing.
+pub(super) fn target(file: &Path) -> Result<PathBuf> {
+    let mut file = file.to_path_buf();
+    let mut links = 0;
+    while let Ok(to) = std::fs::read_link(&file) {
+        links += 1;
+        if links > 40 {
+            anyhow::bail!("{}: too many links", file.display());
+        }
+        file = match file.parent() {
+            Some(dir) => dir.join(to),
+            None => to,
+        };
+    }
+    let name = file
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("{} names no file", file.display()))?
+        .to_owned();
+    let dir = match file.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
+        _ => PathBuf::from("."),
+    };
+    std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+    let dir = dir.canonicalize().with_context(|| format!("resolve {}", dir.display()))?;
+    Ok(dir.join(name))
 }
 
 /// The `[[project]]` tables changed after they were read: a Host write
@@ -127,7 +161,7 @@ pub fn check_label<'a>(what: &str, value: &'a str) -> Result<&'a str> {
 /// still at `revision`; else [`Stale`] and nothing is written. Answers what
 /// `edit` returns and the revision after it.
 pub fn edit_projects<T>(revision: &str, edit: impl FnOnce() -> Result<T>) -> Result<(T, String)> {
-    let _edit = edit_lock();
+    let _edit = edit_lock()?;
     if projects_revision(&load()?.projects) != revision {
         return Err(Stale.into());
     }
@@ -136,9 +170,10 @@ pub fn edit_projects<T>(revision: &str, edit: impl FnOnce() -> Result<T>) -> Res
 }
 
 /// Writes a temp file beside the target and renames it over, so a reader
-/// never sees a half-written file. Writes through a symlink to its target.
+/// never sees a half-written file. Writes through a symlink to its target,
+/// the file whose edit lock [`edit_lock_for`] takes.
 pub fn write_atomic(file: &Path, text: &str) -> Result<()> {
-    let file = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
+    let file = target(file)?;
     let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let tmp = file.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
     std::fs::write(&tmp, text).with_context(|| format!("write {}", tmp.display()))?;
@@ -177,7 +212,7 @@ pub(super) fn edit_table(name: &str, f: impl FnOnce(&mut toml_edit::Table) -> Re
 
 /// [`edit_table`] in another file of the same format, under its own lock.
 pub(super) fn edit_table_in(file: &Path, name: &str, f: impl FnOnce(&mut toml_edit::Table) -> Result<()>) -> Result<()> {
-    let _edit = edit_lock_for(file);
+    let _edit = edit_lock_for(file)?;
     let file = file.to_path_buf();
     let text = if file.exists() {
         std::fs::read_to_string(&file).with_context(|| format!("read {}", file.display()))?
@@ -220,5 +255,47 @@ pub(super) fn expand_home(p: &Path) -> PathBuf {
     match dirs::home_dir() {
         Some(home) => home.join(rest),
         None => p.to_path_buf(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every spelling of one file is one lock, taken again on this thread
+    /// without waiting on itself. Separate processes: tests/config_lock.rs.
+    #[test]
+    fn a_link_and_its_file_share_one_reentrant_lock() {
+        let d = std::env::temp_dir().join(format!("skiff-lock-unit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("real")).unwrap();
+        let real = d.join("real").join("projects.toml");
+        std::fs::write(&real, "").unwrap();
+        let alias = d.join("alias.toml");
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        assert_eq!(target(&alias).unwrap(), target(&real).unwrap());
+        // Not yet there: its folder is made, and the name is the same.
+        let fresh = d.join("new").join("deep").join("projects.toml");
+        assert_eq!(target(&fresh).unwrap(), d.canonicalize().unwrap().join("new/deep/projects.toml"));
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (r, a) = (real.clone(), alias.clone());
+        std::thread::spawn(move || {
+            let outer = edit_lock_for(&r).unwrap();
+            let inner = edit_lock_for(&a).unwrap();
+            drop(inner);
+            drop(outer);
+            tx.send(()).unwrap();
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(10)).expect("a nested lock through a link waits on itself");
+        assert!(d.join("real").join("projects.toml.lock").exists());
+        assert!(!d.join("alias.toml.lock").exists());
+
+        // A lock that cannot be made refuses the edit.
+        let blocked = d.join("blocked.toml");
+        std::fs::create_dir_all(d.join("blocked.toml.lock")).unwrap();
+        assert!(edit_lock_for(&blocked).is_err());
+        HELD.with(|h| assert!(h.borrow().is_empty()));
+        std::fs::remove_dir_all(&d).unwrap();
     }
 }

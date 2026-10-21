@@ -87,7 +87,7 @@ pub fn plan(projects: &Path, client: &Path) -> Result<Migration> {
 /// `projects.toml` is only read. An existing `client.toml` is never
 /// replaced: one of another schema is refused as it is.
 pub fn migrate(projects: &Path, client: &Path) -> Result<Migration> {
-    let _edit = edit_lock_for(client);
+    let _edit = edit_lock_for(client)?;
     let step = plan(projects, client)?;
     if let Migration::Copy { text, .. } = &step {
         if let Some(dir) = client.parent() {
@@ -132,7 +132,7 @@ pub fn load_from(projects: &Path, client: &Path) -> Result<ClientConfig> {
 /// Edits one table of `client.toml`, made first from `projects.toml`.
 pub(super) fn edit_table(name: &str, f: impl FnOnce(&mut toml_edit::Table) -> Result<()>) -> Result<()> {
     let client = path();
-    let _edit = edit_lock_for(&client);
+    let _edit = edit_lock_for(&client)?;
     migrate(&config_path(), &client)?;
     edit_table_in(&client, name, f)
 }

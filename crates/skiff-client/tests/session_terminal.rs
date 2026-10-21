@@ -120,6 +120,7 @@ fn connect(source: &Arc<Fake>, hello: Hello, terminal: bool) -> Result<HostConne
             terminal: terminal.then(|| source.clone() as Arc<dyn TerminalSource>),
             lifecycle: None,
             groups: None,
+            agents: None,
         },
         hello,
         None,

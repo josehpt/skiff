@@ -367,3 +367,43 @@ fn m1g_lifecycle_and_groups_have_their_own_capabilities_and_lossless_golden_shap
     let m0: Request = serde_json::from_value(json!({"cmd":"list_sessions"})).unwrap();
     assert_eq!(m0.capability(), Some(Capability::sessions()));
 }
+
+#[test]
+fn m3_agent_list_has_its_own_read_only_capability_and_lossless_golden_shape() {
+    let fixture: Value = serde_json::from_str(include_str!("fixtures/m3.json")).unwrap();
+    let agents = Capability::session_agents();
+    assert_eq!(
+        serde_json::to_value(&agents).unwrap(),
+        fixture["capabilities"]["agents"]
+    );
+    let list = Response::Agents { agents: vec![] };
+    for value in fixture["agent_requests"].as_array().unwrap() {
+        let request: Request = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&request).unwrap(), *value);
+        assert_eq!(request.capability(), Some(agents.clone()));
+        // Exactly one reply shape: never Ok, a row or groups.
+        assert!(request.accepts(&list));
+        assert!(!request.accepts(&Response::Ok));
+        assert!(!request.accepts(&Response::Groups { groups: vec![] }));
+    }
+    for value in fixture["replies"].as_array().unwrap() {
+        let message: Message = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&message).unwrap(), *value);
+    }
+    // No other request is answered by an agent list.
+    let kill: Request = serde_json::from_value(json!({"cmd":"session_kill","session":"s"})).unwrap();
+    assert!(!kill.accepts(&list));
+    // The list grants nothing else: lifecycle and groups keep their own.
+    assert_ne!(kill.capability(), Some(agents.clone()));
+    // A row needs its id, command and states; extra fields are ignored.
+    for bad in [
+        json!({"kind":"agents","agents":[{"id":"x","command":"x","installed":true}]}),
+        json!({"kind":"agents","agents":[{"command":"x","installed":true,"enabled":true}]}),
+        json!({"kind":"agents"}),
+    ] {
+        assert!(
+            serde_json::from_value::<Response>(bad.clone()).is_err(),
+            "{bad}"
+        );
+    }
+}

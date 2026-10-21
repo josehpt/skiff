@@ -75,6 +75,12 @@ pub trait GroupSource: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<Response, Error>> + Send + '_>>;
 }
 
+/// M3: the agent CLIs the Host account can start. It receives only
+/// `session_agents@1` requests. Read-only.
+pub trait AgentSource: Send + Sync {
+    fn agents(&self) -> Pin<Box<dyn Future<Output = Result<Response, Error>> + Send + '_>>;
+}
+
 /// Read-only non-output session events. Each call starts a receiver at the
 /// live tail: nothing earlier is replayed.
 pub trait UpdateSource: Send + Sync {
@@ -155,8 +161,10 @@ pub struct LocalSources {
     pub terminal: Option<Arc<dyn TerminalSource>>,
     pub lifecycle: Option<Arc<dyn LifecycleSource>>,
     pub groups: Option<Arc<dyn GroupSource>>,
+    pub agents: Option<Arc<dyn AgentSource>>,
 }
 
+#[allow(clippy::large_enum_variant, reason = "one Backend per Host connection, never in a collection")]
 enum Backend {
     Wire(Engine),
     Local {
@@ -167,6 +175,7 @@ enum Backend {
         terminal: Option<Arc<dyn TerminalSource>>,
         lifecycle: Option<Arc<dyn LifecycleSource>>,
         groups: Option<Arc<dyn GroupSource>>,
+        agents: Option<Arc<dyn AgentSource>>,
         read_slots: tokio::sync::Semaphore,
         /// Attach/detach/resize: bounded, apart from reads and status.
         terminal_slots: tokio::sync::Semaphore,
@@ -478,6 +487,7 @@ impl HostConnection {
                 terminal: None,
                 lifecycle: None,
                 groups: None,
+                agents: None,
             },
             hello,
             previous,
@@ -500,6 +510,7 @@ impl HostConnection {
                 terminal: None,
                 lifecycle: None,
                 groups: None,
+                agents: None,
             },
             hello,
             previous,
@@ -523,6 +534,7 @@ impl HostConnection {
                 terminal: None,
                 lifecycle: None,
                 groups: None,
+                agents: None,
             },
             hello,
             previous,
@@ -548,6 +560,7 @@ impl HostConnection {
                 terminal: None,
                 lifecycle: None,
                 groups: None,
+                agents: None,
             },
             hello,
             previous,
@@ -556,7 +569,8 @@ impl HostConnection {
 
     /// An in-process local adapter. It may advertise only the capabilities
     /// its sources serve; M1e adds `session_terminal@1` with a TerminalSource,
-    /// M1g `session_lifecycle@1` and `session_groups@1`. Never `sessions@1`.
+    /// M1g `session_lifecycle@1` and `session_groups@1`, M3 `session_agents@1`.
+    /// Never `sessions@1`.
     pub fn local(
         sources: LocalSources,
         hello: Hello,
@@ -570,6 +584,7 @@ impl HostConnection {
             terminal,
             lifecycle,
             groups,
+            agents,
         } = sources;
         hello.validate()?;
         if hello.capabilities.iter().any(|c| {
@@ -580,6 +595,7 @@ impl HostConnection {
                 && !(terminal.is_some() && c.name == skiff_host_api::SESSION_TERMINAL)
                 && !(lifecycle.is_some() && c.name == skiff_host_api::SESSION_LIFECYCLE)
                 && !(groups.is_some() && c.name == skiff_host_api::SESSION_GROUPS)
+                && !(agents.is_some() && c.name == skiff_host_api::SESSION_AGENTS)
         }) {
             return Err(Error::MalformedContract {
                 message: "local adapter cannot advertise capabilities without a source".into(),
@@ -598,6 +614,7 @@ impl HostConnection {
                 terminal,
                 lifecycle,
                 groups,
+                agents,
                 read_slots,
                 terminal_slots: tokio::sync::Semaphore::new(limit),
                 closed: watch::channel(false).0,
@@ -640,6 +657,7 @@ impl HostConnection {
                 terminal,
                 lifecycle,
                 groups,
+                agents,
                 read_slots,
                 terminal_slots,
                 closed,
@@ -770,6 +788,22 @@ impl HostConnection {
                                 .map_err(|_| Error::TransportLost)?;
                             let _slot = slots.acquire().await.map_err(|_| Error::TransportLost)?;
                             groups.groups(request).await
+                        })
+                    }
+                    Request::AgentList => {
+                        let agents =
+                            agents
+                                .as_ref()
+                                .ok_or_else(|| Error::UnsupportedCapability {
+                                    capability: capability.clone(),
+                                })?;
+                        Box::pin(async move {
+                            let _read = read_slots
+                                .acquire()
+                                .await
+                                .map_err(|_| Error::TransportLost)?;
+                            let _slot = slots.acquire().await.map_err(|_| Error::TransportLost)?;
+                            agents.agents().await
                         })
                     }
                     _ => return Err(Error::UnsupportedCapability { capability }),

@@ -1,7 +1,7 @@
 //! M1g lifecycle and group boundary. Exhaustive mappings, as in inventory:
 //! a new core field or variant is a compile error until projected here.
-use skiff_core::{group as core_group, session as core};
-use skiff_host_api::{groups as api_group, lifecycle as api, Error};
+use skiff_core::{group as core_group, project::AgentInfo, session as core};
+use skiff_host_api::{groups as api_group, lifecycle as api, Error, HostAgent};
 
 use super::inventory::{project_role, restore_role};
 
@@ -134,5 +134,44 @@ fn restore_layout(value: api_group::Layout) -> core_group::Layout {
             a: Box::new(restore_layout(*a)),
             b: Box::new(restore_layout(*b)),
         },
+    }
+}
+
+/// M3: one agent of the Host account's list, as skiffd reports it.
+pub(super) fn project_agent(value: AgentInfo) -> HostAgent {
+    let AgentInfo {
+        id,
+        command,
+        default_command,
+        custom,
+        installed,
+        enabled,
+    } = value;
+    HostAgent {
+        id,
+        command,
+        default_command,
+        custom,
+        installed,
+        enabled,
+    }
+}
+
+pub(super) fn restore_agent(value: HostAgent) -> AgentInfo {
+    let HostAgent {
+        id,
+        command,
+        default_command,
+        custom,
+        installed,
+        enabled,
+    } = value;
+    AgentInfo {
+        id,
+        command,
+        default_command,
+        custom,
+        installed,
+        enabled,
     }
 }

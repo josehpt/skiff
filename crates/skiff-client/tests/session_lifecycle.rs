@@ -4,7 +4,8 @@
 use serde_json::{json, Value};
 use skiff_client::host::{
     local::{
-        legacy_create, legacy_delete_group, legacy_groups, legacy_kill, legacy_rename,
+        legacy_agents, legacy_create, legacy_delete_group, legacy_groups, legacy_kill,
+        legacy_rename,
         legacy_save_group, legacy_seen, legacy_set_theme, HostSelection,
     },
     GroupSource, HostConnection, LifecycleSource, LocalSources, StatusSource,
@@ -300,6 +301,52 @@ async fn selected_lifecycle_and_groups_match_legacy_frames_results_and_errors_on
     assert_eq!(format!("{legacy:#}"), format!("{hosted:#}"));
 }
 
+/// M3: the agent list through the selected Host sends the very same
+/// `list_agents` frame and returns the same rows and error text as the legacy
+/// Client. It has its own capability.
+#[tokio::test]
+async fn selected_agent_list_matches_the_legacy_frame_result_and_errors() {
+    let dir = Dir::new();
+    let socket = dir.0.join("a.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let selection = HostSelection::new(socket, dir.0.join("local-host-id"));
+    let (pending, peer) = tokio::join!(selection.connect(), listener.accept());
+    let host = pending.unwrap().activate().await.unwrap();
+    let client = host.client();
+    let conn = host.connection();
+    assert!(conn
+        .hello()
+        .capabilities
+        .contains(&Capability::session_agents()));
+    let mut peer = BufReader::new(peer.unwrap().0);
+    let mut id = 0;
+    let rows = json!([
+        {"id":"claude","command":"claude --model λ","default_command":"claude","custom":false,"installed":true,"enabled":true},
+        {"id":"mine","command":"/opt/λ/mine","default_command":"","custom":true,"installed":false,"enabled":false}
+    ]);
+    let list = op!(client, conn, |c| c.list_agents(), |h| legacy_agents(&h));
+    let frame = json!({"cmd":"list_agents"});
+    assert_eq!(
+        same(&mut peer, &mut id, &frame, &json!({"type":"agents","agents":rows}), &list).await,
+        Ok(rows)
+    );
+    assert_eq!(
+        same(
+            &mut peer,
+            &mut id,
+            &frame,
+            &json!({"type":"error","message":"daemon reloading"}),
+            &list
+        )
+        .await,
+        Err("daemon reloading".into())
+    );
+    assert!(same(&mut peer, &mut id, &frame, &json!({"type":"ok"}), &list)
+        .await
+        .unwrap_err()
+        .starts_with("unexpected reply: Ok"));
+}
+
 #[tokio::test]
 async fn a_coordinator_spec_is_refused_rather_than_silently_changed() {
     let dir = Dir::new();
@@ -389,6 +436,7 @@ fn local(
             terminal: None,
             lifecycle: lifecycle.then(|| fake.clone() as Arc<dyn LifecycleSource>),
             groups: groups.then(|| fake.clone() as Arc<dyn GroupSource>),
+            agents: None,
         },
         hello(caps),
         None,

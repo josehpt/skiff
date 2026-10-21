@@ -4,11 +4,13 @@ use std::{collections::BTreeMap, fmt};
 
 use serde::{Deserialize, Serialize};
 
+pub mod agents;
 pub mod groups;
 pub mod inventory;
 pub mod lifecycle;
 pub mod terminal;
 pub mod updates;
+pub use agents::HostAgent;
 pub use groups::Group;
 pub use inventory::InventorySession;
 pub use lifecycle::SessionSpec;
@@ -24,6 +26,7 @@ pub const SESSION_UPDATES: &str = "session_updates";
 pub const SESSION_TERMINAL: &str = "session_terminal";
 pub const SESSION_LIFECYCLE: &str = "session_lifecycle";
 pub const SESSION_GROUPS: &str = "session_groups";
+pub const SESSION_AGENTS: &str = "session_agents";
 
 macro_rules! identity {
     ($name:ident) => {
@@ -107,6 +110,14 @@ impl Capability {
     pub fn session_groups() -> Self {
         Self {
             name: SESSION_GROUPS.into(),
+            version: 1,
+        }
+    }
+    /// List the agent CLIs the Host account can start, from its own
+    /// environment. Read-only; grants no create and no settings change.
+    pub fn session_agents() -> Self {
+        Self {
+            name: SESSION_AGENTS.into(),
             version: 1,
         }
     }
@@ -299,6 +310,11 @@ pub enum Request {
     TerminalDetach {
         session: String,
     },
+    /// A session has one PTY size for every attached client. The Host
+    /// applies resizes in the order it receives them: the last one applied
+    /// is the size, and every client hears it as a session update. A client
+    /// does not answer another client's size with its own; it sends again
+    /// only when its own view changes size. Answers `ok`.
     TerminalResize {
         session: String,
         cols: u16,
@@ -344,6 +360,8 @@ pub enum Request {
     GroupDelete {
         group: String,
     },
+    /// Answers `agents` with the Host account's agent list.
+    AgentList,
 }
 impl Request {
     pub fn capability(&self) -> Option<Capability> {
@@ -364,6 +382,7 @@ impl Request {
             Self::GroupList | Self::GroupSave { .. } | Self::GroupDelete { .. } => {
                 Some(Capability::session_groups())
             }
+            Self::AgentList => Some(Capability::session_agents()),
             Self::ListSessions
             | Self::Write { .. }
             | Self::Resize { .. }
@@ -387,6 +406,7 @@ impl Request {
                 )
                 | (Self::GroupList, Response::Groups { .. })
                 | (Self::GroupSave { .. }, Response::Group { .. })
+                | (Self::AgentList, Response::Agents { .. })
         ) || (!matches!(
             self,
             Self::Hello
@@ -399,6 +419,7 @@ impl Request {
                 | Self::SessionSetTheme { .. }
                 | Self::GroupList
                 | Self::GroupSave { .. }
+                | Self::AgentList
         ) && matches!(reply, Response::Ok))
     }
 }
@@ -415,6 +436,7 @@ pub enum Response {
     Session { session: Box<InventorySession> },
     Groups { groups: Vec<Group> },
     Group { group: Group },
+    Agents { agents: Vec<HostAgent> },
     SessionInventory { sessions: Vec<InventorySession> },
     SessionScreen { lines: Vec<String> },
     ConnectionStatus { version: String, protocol: u32 },

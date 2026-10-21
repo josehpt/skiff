@@ -13,7 +13,10 @@ use std::{
 
 use skiff_client::{
     host::{
-        local::{legacy_attach, legacy_output, HostSelection, IdentitySource, SelectedHost},
+        local::{
+            legacy_agents, legacy_attach, legacy_create, legacy_delete_group, legacy_groups, legacy_kill, legacy_output,
+            legacy_rename, legacy_save_group, HostSelection, IdentitySource, SelectedHost,
+        },
         ssh::{SshError, SshOptions, SshTarget},
         Continuity, OutputGap, TerminalFrame,
     },
@@ -250,10 +253,10 @@ async fn a_remote_terminal_over_a_real_forward_survives_a_dropped_link() {
     assert_eq!(host.identity_source(), IdentitySource::Host);
     let hello = host.connection().hello().clone();
     assert_eq!(host.connection().continuity(), Continuity::FirstConnection);
-    // Sessions and terminals only: create, end, rename and groups are M3.
-    assert!(hello.capabilities.contains(&Capability::session_terminal()));
-    assert!(!hello.capabilities.contains(&Capability::session_lifecycle()));
-    assert!(!hello.capabilities.contains(&Capability::session_groups()));
+    // The same protocol: terminals, and M3's lifecycle, groups and agents.
+    for cap in [Capability::session_terminal(), Capability::session_lifecycle(), Capability::session_groups(), Capability::session_agents()] {
+        assert!(hello.capabilities.contains(&cap), "{cap:?}");
+    }
     // The forward's peer is `ssh`: its pid is never the daemon's.
     assert_ne!(host.client().daemon_pid.map(|p| p as u32), f.daemon.id().into());
 
@@ -321,6 +324,118 @@ async fn a_remote_terminal_over_a_real_forward_survives_a_dropped_link() {
     assert!(left.is_empty(), "the forward's directory is removed: {left:?}");
     let after = host_side.list_sessions().await.unwrap().into_iter().find(|s| s.id == shell.id).unwrap();
     assert_eq!((after.pid, after.state == skiff_core::session::SessionState::Done), (shell.pid, false));
+}
+
+/// M3 over the real forward: the agent list is the remote account's own (its
+/// config, its PATH); a session starts in a folder on the Host and runs
+/// there; rename, groups and end act on the remote skiffd. The app's own
+/// config is never read for it.
+#[tokio::test]
+async fn remote_lifecycle_groups_and_agents_come_from_the_host_over_a_real_forward() {
+    let Some(f) = fixture("m") else { return };
+    let host_side = local_client(&f.socket()).await;
+    std::fs::create_dir_all(f.dir.join("config")).unwrap();
+    f.write("config/projects.toml", "[agents.commands]\nhostonly = \"/bin/sh -i\"\n");
+    let work = f.dir.join("host λ");
+    std::fs::create_dir_all(&work).unwrap();
+    let work = work.canonicalize().unwrap();
+
+    let selection = f.selection("ssh_config", &f.socket(), "fwd");
+    let host = select(&selection).await.unwrap();
+    let conn = host.connection();
+    let agents = legacy_agents(&conn).await.unwrap();
+    let mine = agents.iter().find(|a| a.id == "hostonly").expect("the Host account's own agent");
+    assert_eq!((mine.command.as_str(), mine.custom, mine.installed, mine.enabled), ("/bin/sh -i", true, true, true));
+
+    let words: Vec<String> = mine.command.split_whitespace().map(String::from).collect();
+    let spec = SessionSpec {
+        label: "hostonly".into(),
+        name: Some("on the Host".into()),
+        cwd: Some(work.clone()),
+        command: Some(words[0].clone()),
+        args: words[1..].to_vec(),
+        cols: 80,
+        rows: 24,
+        ..Default::default()
+    };
+    let created = legacy_create(&conn, spec).await.unwrap();
+    assert_eq!(created.cwd, work);
+    let mut output = legacy_output(&conn, &created.id).unwrap();
+    legacy_attach(&conn, &created.id).await.unwrap();
+    skiff_client::host::local::legacy_input(&conn, &created.id, b"echo AT-$(pwd)\n".to_vec()).unwrap();
+    until_seen(&mut output, &format!("AT-{}", work.display())).await;
+
+    let renamed = legacy_rename(&conn, &created.id, "renamed on the Host").await.unwrap();
+    assert_eq!(renamed.name.as_deref(), Some("renamed on the Host"));
+    let group: skiff_core::group::Group = serde_json::from_value(serde_json::json!({
+        "name":"Remote","layout":{"type":"pane","session":created.id},"cwd":work.to_str().unwrap()}))
+    .unwrap();
+    let saved = legacy_save_group(&conn, group).await.unwrap();
+    assert!(!saved.id.is_empty());
+    // The Host keeps it: its own CLI sees the same group.
+    let theirs = host_side.list_groups().await.unwrap();
+    assert!(theirs.iter().any(|g| g.id == saved.id && g.cwd.as_deref() == work.to_str()));
+    assert!(legacy_groups(&conn).await.unwrap().iter().any(|g| g.id == saved.id));
+    legacy_delete_group(&conn, &saved.id).await.unwrap();
+
+    legacy_kill(&conn, &created.id).await.unwrap();
+    let left = host_side.list_sessions().await.unwrap();
+    assert!(!left.iter().any(|s| s.id == created.id), "the remote session ended on the Host");
+    assert!(selection.process_control().is_none());
+}
+
+/// Resize contention, with the app over the forward and a client on the Host
+/// (as `skiff attach` from Termius). A session has one PTY size. skiffd
+/// applies each resize in the order it receives them: the last one applied
+/// is the size for every client. It tells every client each new size, so the
+/// app learns of a size it did not send. Nobody re-asserts on that event.
+#[tokio::test]
+async fn the_last_applied_resize_is_the_size_for_every_attached_client() {
+    let Some(f) = fixture("r") else { return };
+    let host_side = local_client(&f.socket()).await;
+    let shell = host_side
+        .create_session(SessionSpec { label: "shared".into(), command: Some("/bin/sh".into()), cols: 80, rows: 24, ..Default::default() })
+        .await
+        .unwrap();
+    let selection = f.selection("ssh_config", &f.socket(), "fwd");
+    let host = select(&selection).await.unwrap();
+    let conn = host.connection();
+    let mut updates = skiff_client::host::local::legacy_updates(&conn).unwrap();
+    legacy_attach(&conn, &shell.id).await.unwrap();
+    let size = || async {
+        let s = host_side.list_sessions().await.unwrap().into_iter().find(|s| s.id == shell.id).unwrap();
+        (s.cols, s.rows)
+    };
+    // The app sizes it, then the Host-side client, then the app again.
+    skiff_client::host::local::legacy_resize(&conn, &shell.id, 100, 30).await.unwrap();
+    assert_eq!(size().await, (100, 30));
+    host_side.resize(&shell.id, 120, 40).await.unwrap();
+    assert_eq!(size().await, (120, 40), "the later resize wins");
+    // The app hears the size it did not send.
+    let until = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        match tokio::time::timeout_at(until, updates.recv()).await {
+            Ok(Some(skiff_core::protocol::Event::SessionUpdated { session })) if session.id == shell.id && (session.cols, session.rows) == (120, 40) => break,
+            Ok(Some(_)) => {}
+            other => panic!("no foreign size event: {other:?}"),
+        }
+    }
+    // Nothing re-asserts: the size stays until a client resizes again.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(size().await, (120, 40));
+    skiff_client::host::local::legacy_resize(&conn, &shell.id, 90, 20).await.unwrap();
+    assert_eq!(size().await, (90, 20));
+    // Two at once: whichever skiffd applies last is the size, and both see it.
+    let (a, b) = tokio::join!(
+        skiff_client::host::local::legacy_resize(&conn, &shell.id, 70, 21),
+        host_side.resize(&shell.id, 71, 22)
+    );
+    a.unwrap();
+    b.unwrap();
+    let last = size().await;
+    assert!(last == (70, 21) || last == (71, 22), "{last:?}");
+    let screen_size = host_side.list_sessions().await.unwrap().into_iter().find(|s| s.id == shell.id).map(|s| (s.cols, s.rows));
+    assert_eq!(screen_size, Some(last));
 }
 
 #[tokio::test]

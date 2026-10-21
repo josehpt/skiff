@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 use super::ssh::{SshError, SshForward, SshOptions, SshTarget};
 use super::{
-    GroupSource, HostConnection, InventorySource, LifecycleSource, LocalSources, OutputGap,
+    AgentSource, GroupSource, HostConnection, InventorySource, LifecycleSource, LocalSources, OutputGap,
     OutputStream, ScreenSource, SessionUpdates, StatusSource, TerminalOutput, TerminalSource,
     UpdateGap, UpdateSource, UpdateStream,
 };
@@ -244,9 +244,9 @@ impl PendingConnection {
     /// an adapter generation for the instance, so every reconnect is
     /// NewInstance. Never a pid or peer credentials.
     pub async fn activate(self) -> anyhow::Result<SelectedHost> {
-        let (version, identity) = match self.info {
-            Some(info) => (Some(info.version), info.identity),
-            None => (None, None),
+        let (version, protocol, identity) = match self.info {
+            Some(info) => (Some(info.version), Some(info.protocol), info.identity),
+            None => (None, None, None),
         };
         let remote = self.selection.ssh_target().cloned();
         // A remote Host must say who it is. The app's bootstrap id describes
@@ -309,13 +309,16 @@ impl PendingConnection {
                 .into());
             }
         }
+        // What the endpoint can actually do. Locally the app replaces or
+        // reloads a skiffd that speaks another protocol, so every family is
+        // served. A remote skiffd is never changed: its mutations and agent
+        // list are offered only when it speaks this app's legacy frames.
+        let mutable = remote.is_none() || protocol == Some(skiff_core::PROTOCOL);
         let hello = Hello {
             host,
             instance_id,
             service_versions,
             api_major: API_MAJOR,
-            // M2 reaches remote sessions only: create, end, rename and groups
-            // on a remote Host are M3.
             capabilities: [
                 Capability::connection_status(),
                 Capability::session_screen(),
@@ -325,12 +328,12 @@ impl PendingConnection {
             ]
             .into_iter()
             .chain(
-                remote
-                    .is_none()
+                mutable
                     .then(|| {
                         [
                             Capability::session_lifecycle(),
                             Capability::session_groups(),
+                            Capability::session_agents(),
                         ]
                     })
                     .into_iter()
@@ -345,6 +348,10 @@ impl PendingConnection {
         let connection = {
             let mut previous = self.selection.0.previous.lock().unwrap();
             let source = Arc::new(LegacyReadOnly(self.client.clone()));
+            let sessions = Arc::new(LegacySessions {
+                client: self.client.clone(),
+                remote: remote.is_some(),
+            });
             let connection = HostConnection::local(
                 LocalSources {
                     status: source.clone(),
@@ -352,12 +359,9 @@ impl PendingConnection {
                     inventory: Some(source.clone()),
                     updates: Some(source),
                     terminal: Some(Arc::new(LegacyTerminal(self.client.clone()))),
-                    lifecycle: remote
-                        .is_none()
-                        .then(|| Arc::new(LegacySessions(self.client.clone())) as _),
-                    groups: remote
-                        .is_none()
-                        .then(|| Arc::new(LegacySessions(self.client.clone())) as _),
+                    lifecycle: mutable.then(|| sessions.clone() as _),
+                    groups: mutable.then(|| sessions.clone() as _),
+                    agents: mutable.then(|| sessions.clone() as _),
                 },
                 hello,
                 previous.as_ref(),
@@ -830,19 +834,24 @@ pub async fn connection_status(connection: &HostConnection) -> Result<(String, u
 /// M1g: session lifecycle and groups. The very same skiffd requests the
 /// desktop sent before (`create_session`, `kill`, `rename_session`,
 /// `set_session_theme`, `seen`, `list_groups`, `save_group`, `delete_group`)
-/// on the selected Client. No Host envelope, no retry.
-struct LegacySessions(Arc<Client>);
+/// on the selected Client, and M3's `list_agents`. No Host envelope, no
+/// retry: each request is written once, and a lost reply is an error.
+struct LegacySessions {
+    client: Arc<Client>,
+    /// A remote Host: an operation that acts on this Mac is refused.
+    remote: bool,
+}
 impl LegacySessions {
     async fn call(
         &self,
         request: skiff_core::protocol::Request,
     ) -> Result<skiff_core::protocol::Response, Error> {
-        match self.0.request_decoded(request).await {
+        match self.client.request_decoded(request).await {
             Ok(skiff_core::protocol::Response::Error { message }) => {
                 Err(Error::OperationFailed { message })
             }
             Ok(reply) => Ok(reply),
-            Err(e) => Err(legacy_transport_error(&self.0, e)),
+            Err(e) => Err(legacy_transport_error(&self.client, e)),
         }
     }
 
@@ -874,6 +883,13 @@ impl LifecycleSource for LegacySessions {
         use skiff_core::protocol::Request as Legacy;
         Box::pin(async move {
             match request {
+                // A peek tool shows a file of this Mac over its terminals: it
+                // never starts on a remote Host.
+                Request::SessionCreate { spec } if self.remote && spec.peek => {
+                    Err(Error::Permission {
+                        message: "A peek tool runs on this Mac only, not on a remote Host.".into(),
+                    })
+                }
                 Request::SessionCreate { spec } => {
                     self.row(Legacy::CreateSession {
                         spec: super::lifecycle::restore_spec(spec),
@@ -925,6 +941,23 @@ impl GroupSource for LegacySessions {
                 _ => Err(Error::MalformedContract {
                     message: "not a session group request".into(),
                 }),
+            }
+        })
+    }
+}
+
+impl AgentSource for LegacySessions {
+    fn agents(&self) -> Op<'_> {
+        use skiff_core::protocol::{Request as Legacy, Response as LegacyReply};
+        Box::pin(async move {
+            match self.call(Legacy::ListAgents).await? {
+                LegacyReply::Agents { agents } => Ok(Response::Agents {
+                    agents: agents
+                        .into_iter()
+                        .map(super::lifecycle::project_agent)
+                        .collect(),
+                }),
+                other => Err(unexpected(other)),
             }
         })
     }
@@ -1049,4 +1082,20 @@ pub async fn legacy_delete_group(connection: &HostConnection, group: &str) -> an
     )
     .await
     .map(drop)
+}
+
+/// M3: the Host account's agent list, in the existing Tauri result.
+pub async fn legacy_agents(
+    connection: &HostConnection,
+) -> anyhow::Result<Vec<skiff_core::project::AgentInfo>> {
+    match legacy_request(connection, Request::AgentList).await? {
+        Response::Agents { agents } => Ok(agents
+            .into_iter()
+            .map(super::lifecycle::restore_agent)
+            .collect()),
+        _ => Err(Error::MalformedContract {
+            message: "expected agents".into(),
+        }
+        .into()),
+    }
 }

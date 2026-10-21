@@ -97,6 +97,16 @@ fn route(outputs: &Outputs, e: Event) {
 /// A request with no reply after this long fails instead of hanging.
 const REPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
+/// Preserve timeout identity for the Host adapter without parsing legacy copy.
+#[derive(Debug)]
+struct ReplyTimeout(std::time::Duration);
+impl std::fmt::Display for ReplyTimeout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "skiffd did not answer within {}s", self.0.as_secs())
+    }
+}
+impl std::error::Error for ReplyTimeout {}
+
 pub struct Client {
     /// The daemon's pid, from the socket's peer credentials.
     pub daemon_pid: Option<i32>,
@@ -219,9 +229,7 @@ impl Client {
         };
         match tokio::time::timeout(limit, r).await {
             Ok(reply) => reply.map_err(|_| anyhow!("skiffd connection closed")),
-            Err(_) => {
-                bail!("skiffd did not answer within {}s", limit.as_secs())
-            }
+            Err(_) => Err(ReplyTimeout(limit).into()),
         }
     }
 
@@ -292,7 +300,9 @@ mod tests {
     #[tokio::test]
     async fn timed_out_and_closed_requests_release_their_reply_slots() {
         let (client, sent) = client();
-        assert!(client.request_within(Request::Ping, Some(std::time::Duration::ZERO)).await.is_err());
+        let timeout = client.request_within(Request::Ping, Some(std::time::Duration::ZERO)).await.unwrap_err();
+        assert!(timeout.downcast_ref::<ReplyTimeout>().is_some());
+        assert_eq!(format!("{timeout:#}"), "skiffd did not answer within 0s");
         assert!(client.pending.lock().unwrap().is_empty());
         drop(sent);
         assert!(client.request(Request::Ping).await.is_err());

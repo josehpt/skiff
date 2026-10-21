@@ -278,3 +278,93 @@ async fn bootstrap_concurrency_permissions_and_invalid_identity_are_safe() {
     assert!(missing.connect().await.is_err());
     assert!(!dir.0.join("unused-id").exists());
 }
+
+#[test]
+fn bare_relative_config_bootstraps_on_first_activation() {
+    const CHILD: &str = "SKIFF_TEST_RELATIVE_HOST_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        // Isolate cwd and config environment from other parallel test cases.
+        let dir = Dir::new();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "bare_relative_config_bootstraps_on_first_activation",
+                "--nocapture",
+            ])
+            .current_dir(&dir.0)
+            .env(CHILD, "1")
+            .env("SKIFF_CONFIG", "projects.toml")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let config = skiff_core::config::config_path();
+        assert_eq!(config, PathBuf::from("projects.toml"));
+        std::fs::write(&config, "# existing config\n").unwrap();
+        let identity = config.with_file_name("local-host-id");
+        assert_eq!(identity.parent().unwrap(), std::path::Path::new(""));
+        assert!(!identity.exists(), "must test the very first publication");
+        let socket = PathBuf::from("s.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let selection = LocalSelection::new(socket, identity.clone());
+        let (pending, _peer) = tokio::join!(selection.connect(), listener.accept());
+        let host = pending
+            .unwrap()
+            .activate()
+            .await
+            .expect("first activation must succeed, without retry");
+        assert_eq!(
+            std::fs::read_to_string(identity).unwrap().trim(),
+            host.connection().hello().host.host_id.as_str()
+        );
+        assert_eq!(
+            std::fs::read_to_string(config).unwrap(),
+            "# existing config\n"
+        );
+        assert!(!std::fs::read_dir(".").unwrap().any(|entry| entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".tmp")));
+    });
+}
+
+#[tokio::test]
+async fn stalled_selected_legacy_ping_is_a_typed_host_timeout() {
+    let dir = Dir::new();
+    let socket = dir.0.join("s.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let selection = LocalSelection::new(socket, dir.0.join("local-host-id"));
+    let (pending, peer) = tokio::join!(selection.connect(), listener.accept());
+    let host = pending.unwrap().activate().await.unwrap();
+    let connection = host.connection();
+    let mut request = Box::pin(connection_status(&connection));
+    let mut peer = BufReader::new(peer.unwrap().0);
+    let mut line = String::new();
+    tokio::select! {
+        biased;
+        result = &mut request => panic!("status completed before Ping: {result:?}"),
+        result = peer.read_line(&mut line) => { assert!(result.unwrap() > 0); }
+    }
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&line).unwrap(),
+        serde_json::json!({"id":1,"cmd":"ping"})
+    );
+    // Leave the real Unix connection open, withhold Pong, and don't poll the
+    // request until BOTH its 20s deadlines have expired. Tokio polls the inner
+    // source first: a Fake::status() without Client's timeout cannot catch this.
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(21)).await;
+    assert_eq!(request.await, Err(Error::TimedOut));
+    assert!(
+        !host.client().is_closed(),
+        "this is a stall, not transport loss"
+    );
+}

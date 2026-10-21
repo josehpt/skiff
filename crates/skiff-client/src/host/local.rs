@@ -139,6 +139,7 @@ impl StatusSource for LegacyStatus {
         Box::pin(async {
             match self.0.hello().await {
                 Ok((version, protocol)) => Ok(Response::ConnectionStatus { version, protocol }),
+                Err(e) if e.downcast_ref::<crate::ReplyTimeout>().is_some() => Err(Error::TimedOut),
                 Err(_) if self.0.is_closed() => Err(Error::TransportLost),
                 Err(e) => Err(Error::MalformedContract {
                     message: format!("{e:#}"),
@@ -160,6 +161,13 @@ fn load_identity(path: &Path) -> anyhow::Result<HostId> {
         Err(e) => return Err(e),
     }
     let parent = path.parent().context("local Host identity has no parent")?;
+    // A bare SKIFF_CONFIG filename yields an empty parent, which is valid
+    // for path joins but not for opening the directory to sync publication.
+    let parent = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    };
     fs::create_dir_all(parent)?;
     let uuid = Uuid::new_v4();
     let temp = parent.join(format!(".local-host-id-{uuid}.tmp"));

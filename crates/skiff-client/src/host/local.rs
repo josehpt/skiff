@@ -31,10 +31,11 @@ struct Selection {
     /// The app's bootstrap id, for an older local skiffd only.
     identity_file: PathBuf,
     previous: Mutex<Option<Hello>>,
-    /// The Host id this endpoint must report: the client's stored pin, else
-    /// the first identity it accepted. A different one is IdentityChanged,
-    /// on every connection of this selection and every one built with the
-    /// same pin, until the person accepts the new identity.
+    /// The Host id this endpoint must report: the client's stored pin. A
+    /// different one is IdentityChanged, on every connection of this
+    /// selection and every one built with the same pin, until the person
+    /// accepts the new identity. Activation never sets it: the client does,
+    /// once the first identity is stored where every later selection reads it.
     pin: Mutex<Option<HostId>>,
     remote: Option<Remote>,
 }
@@ -113,7 +114,8 @@ impl HostSelection {
         self.0.pin.lock().unwrap().clone()
     }
     /// Makes `host_id` the one this endpoint must report, as the client's
-    /// store says when it holds another id than the first one accepted here.
+    /// store now holds it: the first identity once it is stored, or the one
+    /// another window or run stored first.
     pub fn repin(&self, host_id: HostId) {
         *self.0.pin.lock().unwrap() = Some(host_id);
     }
@@ -361,14 +363,9 @@ impl PendingConnection {
                 previous.as_ref(),
             )?;
             *previous = Some(connection.hello().clone());
-            if remote.is_some() {
-                self.selection
-                    .0
-                    .pin
-                    .lock()
-                    .unwrap()
-                    .get_or_insert_with(|| connection.hello().host.host_id.clone());
-            }
+            // No pin is taken here: the client pins a first identity only
+            // after it stored it, so a failed store leaves this selection
+            // unpinned and the next try stores it again.
             Arc::new(connection)
         };
         Ok(SelectedHost {

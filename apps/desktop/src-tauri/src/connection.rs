@@ -72,6 +72,11 @@ impl App {
         !self.selection().is_local()
     }
 
+    /// The Host id this window's live connection accepted, if it has one.
+    pub(crate) fn live_identity(&self) -> Option<skiff_host_api::HostId> {
+        self.live.lock().unwrap().as_ref().map(|c| c.hello().host.host_id.clone())
+    }
+
     #[cfg(test)]
     pub(crate) fn set_selection(&self, selection: HostSelection) {
         *self.selection.lock().unwrap() = Some(selection);
@@ -115,7 +120,7 @@ const REMOTE_HELLO_TIMEOUT: Duration = Duration::from_secs(15);
 /// repeat ssh's own output.
 async fn connect_remote(app: &App, selection: &HostSelection, guard: &mut Option<Arc<SelectedHost>>) -> Result<(Arc<SelectedHost>, bool), String> {
     let destination = selection.ssh_target().map(|t| t.destination.clone()).unwrap_or_default();
-    match try_remote(app, selection, &destination).await {
+    match try_remote(app, selection, &destination, crate::hosts::path()).await {
         Ok(host) => {
             *app.changed.lock().unwrap() = None;
             *app.live.lock().unwrap() = Some(host.connection());
@@ -136,7 +141,7 @@ async fn connect_remote(app: &App, selection: &HostSelection, guard: &mut Option
     }
 }
 
-async fn try_remote(app: &App, selection: &HostSelection, destination: &str) -> anyhow::Result<Arc<SelectedHost>> {
+async fn try_remote(app: &App, selection: &HostSelection, destination: &str, file: PathBuf) -> anyhow::Result<Arc<SelectedHost>> {
     let mut c = selection.connect().await?;
     let info = match tokio::time::timeout(REMOTE_HELLO_TIMEOUT, c.daemon_info()).await {
         Ok(info) => info?,
@@ -154,17 +159,24 @@ async fn try_remote(app: &App, selection: &HostSelection, destination: &str) -> 
     let first = selection.pinned().is_none();
     let host = Arc::new(c.activate().await?);
     if first {
-        // The first identity becomes the Host's pin before anything uses it.
+        // The first identity becomes the Host's pin before anything uses it:
+        // stored in hosts.toml first, then pinned here. Until the store
+        // succeeds the selection stays unpinned, so every try stores again
+        // and none connects on an identity only this window holds.
         let id = host.connection().hello().host.host_id.clone();
         let d = destination.to_string();
-        let stored = tauri::async_runtime::spawn_blocking(move || crate::hosts::pin_first(&crate::hosts::path(), &d, &id)).await?;
-        if let Err(e) = stored {
-            // Another window or run stored another identity first: that one
-            // is the pin from now on, here too.
-            if let Some(skiff_host_api::Error::IdentityChanged { expected, .. }) = e.downcast_ref() {
-                selection.repin(expected.clone());
+        let pinned = id.clone();
+        let stored = tauri::async_runtime::spawn_blocking(move || crate::hosts::pin_first(&file, &d, &id)).await?;
+        match stored {
+            Ok(()) => selection.repin(pinned),
+            Err(e) => {
+                // Another window or run stored another identity first: that
+                // one is the pin from now on, here too.
+                if let Some(skiff_host_api::Error::IdentityChanged { expected, .. }) = e.downcast_ref() {
+                    selection.repin(expected.clone());
+                }
+                return Err(e);
             }
-            return Err(e);
         }
     }
     Ok(host)
@@ -1015,6 +1027,87 @@ mod tests {
                 assert_eq!(rt.block_on(app.warning.lock()).as_ref().map(|w| w.kind), Some("protocol"));
             }
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Residual P1, failure injection: the first identity's store fails (a
+    /// directory sits where the new hosts.toml is written). The connection is
+    /// refused and the selection stays unpinned, on a retry too; once the
+    /// store works, the retry stores the pin before it connects. A Host that
+    /// then answers as B is refused here and by a selection rebuilt from the
+    /// file. A fake `ssh` only (a Python Unix-socket server), never OpenSSH.
+    #[test]
+    fn a_first_identity_connects_only_once_it_is_stored_even_on_a_retry() {
+        use super::*;
+        if !std::path::Path::new("/usr/bin/python3").is_file() {
+            eprintln!("skipped: no /usr/bin/python3");
+            return;
+        }
+        // Short: the forward's socket path must fit in sun_path.
+        let dir = PathBuf::from("/tmp").join(format!("sd-store-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let id_file = dir.join("remote-id");
+        let script = format!(
+            "#!/usr/bin/python3\n\
+             import socket,sys,json,threading\n\
+             spec=sys.argv[sys.argv.index('-L')+1]\n\
+             s=socket.socket(socket.AF_UNIX); s.bind(spec.split(':')[0]); s.listen()\n\
+             def serve(c):\n\
+             \x20with c, c.makefile('rb') as f:\n\
+             \x20 for line in f:\n\
+             \x20  req=json.loads(line)\n\
+             \x20  if req.get('cmd')=='ping':\n\
+             \x20   hid=open('{id}').read()\n\
+             \x20   data={{'id':req['id'],'type':'pong','version':'{v}','protocol':{p},'identity':{{'host_id':hid,'instance_id':'run','os':'fixture','account':'fixture'}}}}\n\
+             \x20   c.sendall((json.dumps(data)+'\\n').encode())\n\
+             while True:\n\
+             \x20c,_=s.accept();threading.Thread(target=serve,args=(c,),daemon=True).start()\n",
+            id = id_file.display(),
+            v = env!("CARGO_PKG_VERSION"),
+            p = skiff_core::PROTOCOL,
+        );
+        let ssh = dir.join("fake-ssh");
+        std::fs::write(&ssh, script).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(&id_file, "A").unwrap();
+        let file = dir.join("hosts.toml");
+        std::fs::write(&file, "selected = \"fixture\"\n[[host]]\ndestination = \"fixture\"\nsocket = \"/fixture.sock\"\n").unwrap();
+        let target = skiff_client::host::ssh::SshTarget { destination: "fixture".into(), socket: "/fixture.sock".into() };
+        let options = skiff_client::host::ssh::SshOptions { program: ssh, config: None };
+        let selection = |pin: Option<&str>| {
+            let pin = pin.map(|p| skiff_host_api::HostId::try_from(p.to_string()).unwrap());
+            HostSelection::ssh(target.clone(), options.clone(), dir.join("fwd"), pin).unwrap()
+        };
+        let disk_pin = || crate::hosts::load(&file).unwrap().hosts[0].host_id.clone();
+        let changed = |r: &anyhow::Result<Arc<SelectedHost>>| matches!(r.as_ref().err().and_then(|e| e.downcast_ref()), Some(skiff_host_api::Error::IdentityChanged { .. }));
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let app = App::default();
+            let first = selection(None);
+            // Only the store fails: the new file cannot be written beside.
+            let obstruction = file.with_extension(format!("toml.{}.tmp", std::process::id()));
+            std::fs::create_dir(&obstruction).unwrap();
+            for attempt in 0..2 {
+                let r = try_remote(&app, &first, "fixture", file.clone()).await;
+                assert!(r.is_err(), "attempt {attempt} connected with no stored pin");
+                assert_eq!(first.pinned(), None, "attempt {attempt} pinned an unstored identity");
+                assert_eq!(disk_pin(), None);
+            }
+            std::fs::remove_dir(&obstruction).unwrap();
+            let retry = try_remote(&app, &first, "fixture", file.clone()).await;
+            assert!(retry.is_ok(), "{:?}", retry.err());
+            assert_eq!(disk_pin().as_deref(), Some("A"), "the retry connected without storing its pin");
+            assert_eq!(first.pinned().map(|p| p.as_str().to_string()).as_deref(), Some("A"));
+            drop(retry);
+            // Another Host answers there now.
+            std::fs::write(&id_file, "B").unwrap();
+            assert!(changed(&try_remote(&app, &first, "fixture", file.clone()).await), "the same selection accepted B");
+            drop(first);
+            let rebuilt = selection(disk_pin().as_deref());
+            assert!(changed(&try_remote(&app, &rebuilt, "fixture", file.clone()).await), "a rebuilt selection accepted B");
+            assert_eq!(disk_pin().as_deref(), Some("A"));
+        });
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

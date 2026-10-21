@@ -13,17 +13,18 @@ import { showError } from "../ui/alerts";
 export interface KnownHost {
   destination: string;
   socket: string;
-  /** OSC 52 clipboard writes from this Host's terminals reach this Mac. */
-  clipboard: boolean;
 }
 
 interface HostList {
   /** `null`: this Mac. */
   selected: string | null;
   hosts: KnownHost[];
+  /** The shown remote Host's clipboard permission, for the menu: given to
+   *  the identity this window accepted. Each write asks Rust again. */
+  clipboard: boolean;
 }
 
-let list: HostList = { selected: null, hosts: [] };
+let list: HostList = { selected: null, hosts: [], clipboard: false };
 let connected = true;
 
 /** Reads the known Hosts and the selected one. Call it before anything loads. */
@@ -38,11 +39,17 @@ export const isRemote = () => list.selected !== null;
 
 export const hostName = () => list.selected ?? "This Mac";
 
-/** A program in a terminal may write the clipboard: always on this Mac, and
- *  on a remote Host only after the person allows it for that Host. */
-export function clipboardWrites(): boolean {
+/** The menu's view: clipboard writes are allowed from the shown Host. */
+export const clipboardAllowed = () => !isRemote() || list.clipboard;
+
+/** A program in a terminal may write the clipboard now: always on this Mac,
+ *  and on a remote Host only after the person allows it for the identity
+ *  this window's connection accepted. Rust decides on every write, against
+ *  the live connection and the file as it is now, never from what the page
+ *  loaded: another window may have accepted another identity since. */
+export async function clipboardWrites(): Promise<boolean> {
   if (!isRemote()) return true;
-  return list.hosts.some((x) => x.destination === list.selected && x.clipboard);
+  return invoke<boolean>("host_clipboard").catch(() => false);
 }
 
 /** The link to the shown Host is up or down. While down, input is off. */
@@ -104,7 +111,7 @@ export function openHostMenu(anchor: HTMLElement) {
   if (isRemote()) {
     entries.push({
       icon: "code-copy",
-      label: clipboardWrites() ? "Block clipboard writes from this Host" : "Allow clipboard writes from this Host…",
+      label: clipboardAllowed() ? "Block clipboard writes from this Host" : "Allow clipboard writes from this Host…",
       run: () => void toggleClipboard(),
     });
   }
@@ -123,7 +130,7 @@ async function forget(x: KnownHost) {
 }
 
 async function toggleClipboard() {
-  const allow = !clipboardWrites();
+  const allow = !clipboardAllowed();
   if (allow) {
     const ok = await confirmAction({
       title: `Allow clipboard writes from ${hostName()}?`,

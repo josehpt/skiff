@@ -103,9 +103,11 @@ async fn a_changed_identity_stays_refused_after_reselection() {
     let first = f.selection(None);
     f.report("A");
     activate(&first).await.unwrap();
-    // What the desktop stores in hosts.toml after the first accepted connection.
-    let pin = first.pinned().expect("the first identity is pinned");
-    assert_eq!(pin.as_str(), "A");
+    // Activation pins nothing: the desktop pins only what it stored in
+    // hosts.toml, so a failed store leaves nothing to skip it on a retry.
+    assert_eq!(first.pinned(), None, "activation pinned before the store");
+    let pin = HostId::try_from("A".to_string()).unwrap();
+    first.repin(pin.clone());
     f.report("B");
     assert!(changed(activate(&first).await), "same selection accepted B");
     drop(first);

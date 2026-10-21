@@ -19,8 +19,6 @@ export function handleOsc52(term: Terminal) {
   term.parser.registerOscHandler(52, (data) => {
     const payload = data.slice(data.indexOf(";") + 1);
     if (!data.includes(";") || !payload || payload === "?" || payload.length > MAX) return true;
-    // A remote Host's programs write this Mac's clipboard only when allowed.
-    if (!clipboardWrites()) return true;
     let text: string;
     try {
       const bin = atob(payload);
@@ -28,7 +26,10 @@ export function handleOsc52(term: Terminal) {
     } catch {
       return true;
     }
-    void copyText(text).catch(showError);
+    // A remote Host's programs write this Mac's clipboard only when allowed.
+    void clipboardWrites()
+      .then((ok) => (ok ? copyText(text) : undefined))
+      .catch(showError);
     return true;
   });
 }

@@ -55,6 +55,7 @@
       "exists",
       "fs",
       "include_str",
+      "is_file",
       "ledger",
       "libc",
       "net",
@@ -63,7 +64,7 @@
       "skiff_client",
       "skiff_core"
     ],
-    "sha256": "17dee1083075c42a851e6bbb4092da9bc33134845ef12c85d17cb7df877185cc"
+    "sha256": "f63fcaa8d084be7763b51e255b62d92bcf78f5fccd8d01fac347ec49aab90d7e"
   },
   "apps/desktop/src-tauri/src/diagnostics.rs": {
     "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
@@ -91,6 +92,7 @@
     "reasons": [
       "config",
       "env",
+      "exists",
       "fs",
       "libc",
       "process",
@@ -98,7 +100,7 @@
       "skiff_agent",
       "skiff_core"
     ],
-    "sha256": "c5e06ca97798284f13187f8697239021967ff45f80f3ad52188ac3f3b16dc3f1"
+    "sha256": "3eca42993cc410531beea9331a6daae4f4fb6ffa248a9f34419a5fd844a360cf"
   },
   "apps/desktop/src-tauri/src/ledger.rs": {
     "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
@@ -125,7 +127,7 @@
       "ledger",
       "skiff_agent"
     ],
-    "sha256": "20c409261cbc31131f9b67c40f237bb30ed62ca7592893b090ec58b2c92971ec"
+    "sha256": "7c5923eb3ace4b48f373247cd9acea236f13e7a6c3cc844a3c64e317447c22c1"
   },
   "apps/desktop/src-tauri/src/native_menu.rs": {
     "ownership": "client policy: exact existing adapter only",
@@ -255,7 +257,7 @@
       "@tauri-apps/api/event",
       "invoke"
     ],
-    "sha256": "6c39f2f6a422ad0c09122d21f6eff8bf4f5c2cdcc1a0cf38612424f29c6fdc82"
+    "sha256": "b40694bfd588e119c72c2b8a4446caebd39b2b6cc80ac1cf089a3a22782b1053"
   },
   "apps/desktop/src/app/keyboard.ts": {
     "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
@@ -483,7 +485,7 @@
       "local provider: apps/desktop/src/app/hosts.ts",
       "local provider: apps/desktop/src/platform/clipboard.ts"
     ],
-    "sha256": "6814c9b2c0bcc7cbbc2946349c5566b99804d6ce801c1ae35957b30e05af0a17"
+    "sha256": "6b36b1cefa438b9786f9eb645d3e5cf93431ac4cd69d64302982569ec91d586f"
   },
   "apps/desktop/src/terminal/paneActions.ts": {
     "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",

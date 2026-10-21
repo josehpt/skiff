@@ -125,11 +125,10 @@ function regionOf(el: Element | null): number {
   if (!el) return -1;
   if (el.closest("#sidebar-scroll")) return 0;
   if (host.contains(el) || el.closest(".peek")) return 1;
-  if (el.closest("#workspace-bar")) return 2;
   return -1;
 }
 
-/** F6 and Shift+F6: the session list, then the terminal, then the workspace selector. */
+/** F6 and Shift+F6: the session list, then the terminal. */
 export function cycleRegion(dir: 1 | -1) {
   document.body.classList.add("kbd");
   const stops: (() => boolean)[] = [
@@ -141,7 +140,6 @@ export function cycleRegion(dir: 1 | -1) {
       t.focus();
       return true;
     },
-    () => focusEl(document.querySelector<HTMLElement>("#workspace-bar .ws-pick")),
   ];
   let i = regionOf(document.activeElement);
   for (let n = 0; n < stops.length; n++) {

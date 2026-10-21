@@ -34,7 +34,7 @@ import { animateFold, growOpened } from "../ui/fold";
 import { dragTree } from "./treeDrag";
 import { bareWorktree, fleetKey, folded, isOpen, openToFocused, projectBadge, projectKey, rollup, toggleRow, treeDrag, treeSections, type Section } from "./tree";
 import { render } from "../app/renderRequest";
-import { projectsPlus, renderWorkspaceBar, shows, workspaceOpen } from "./profile";
+import { projectsPlus, renderWorkspaceStatus, shows, workspaceOpen } from "./profile";
 import { ledgerNeeds } from "./ledger";
 import { openSkiffAgent, SKIFF_AGENT_KEY, skiffAgentChoice, skiffAgentFolder, skiffAgentName, skiffAgentSession, skiffWatch, syncSkiffAgent } from "../app/skiffAgent";
 
@@ -177,7 +177,7 @@ function sidebarSig(): string {
 export function renderSidebar() {
   const side = $<HTMLElement>("sidebar-scroll");
   if (treeDrag.active) return;
-  renderWorkspaceBar();
+  renderWorkspaceStatus();
   syncSkiffAgent();
   openToFocused();
   const sig = sidebarSig();

@@ -1,23 +1,11 @@
-/* Workspaces (#154): the selector over the tree and the edit dialog. */
-#workspace-bar { flex-shrink: 0; border-bottom: 1px solid var(--rule); }
-.ws-pick {
-  height: var(--row); width: 100%;
-  display: flex; align-items: center; gap: calc(8 * var(--u)); padding: 0 calc(16 * var(--u));
-  border: 0; background: transparent; text-align: left; color: var(--text);
-  font-size: calc(13px * var(--zoom, 1)); font-weight: 600;
-}
-.ws-pick:hover { background: var(--bg-raised); }
-.ws-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ws-state { flex-shrink: 0; font-size: calc(11px * var(--zoom, 1)); font-weight: 500; color: var(--text-3); }
-.ws-state.edited { color: var(--state-waiting-text); }
+/* Workspaces (#154): the status bar item and the edit dialog. */
 /* The status bar's sign: the open workspace's name and its one mark. */
 #ws-status { min-width: 0; max-width: calc(200 * var(--u)); padding: 0; border: 0; background: none; font: inherit; color: var(--text-2); cursor: pointer; }
 #ws-status:hover .ws-status-name { color: var(--text); }
 .ws-status-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .ws-status-mark { flex-shrink: 0; color: var(--text-3); }
 .ws-status-mark.edited { color: var(--state-waiting-text); }
-.ws-pick .chev { margin-left: auto; flex-shrink: 0; color: var(--text-dim); }
-body.kbd :is(.ws-pick, #ws-status):focus-visible { outline: 1px solid var(--text-3); outline-offset: -1px; }
+body.kbd #ws-status:focus-visible { outline: 1px solid var(--text-3); outline-offset: -1px; }
 
 .ws-edit { width: calc(560 * var(--u)); max-height: calc(100vh - calc(64 * var(--u))); }
 .ws-edit-body { min-height: 0; overflow-y: auto; display: flex; flex-direction: column; border-bottom: 1px solid var(--rule); }

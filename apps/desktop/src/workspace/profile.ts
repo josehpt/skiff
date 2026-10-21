@@ -28,7 +28,6 @@ import { showError } from "../ui/alerts";
 import { ctxMenu } from "../ui/contextMenu";
 import { dialogFrame } from "../ui/dialogParts";
 import { button, h } from "../ui/dom";
-import { chevron } from "../ui/icons";
 import type { MenuEntry } from "../ui/menu";
 import { fleetKey, projectKey, treeSections, useTreeView } from "./tree";
 import { selectProject } from "./view";
@@ -364,7 +363,7 @@ function commitUntitled() {
   showView();
 }
 
-/** After a switch: the saved pick if it shows, else the first project that shows, else none. The keys go to the selector. */
+/** After a switch: the saved pick if it shows, else the first project that shows, else none. The keys go to the sidebar's current row. */
 function showView(focus = true) {
   const shown = treeSections().flatMap((s) => s.projects);
   const want = doc?.profile.selected ? shown.find((p) => trimPath(p.path) === trimPath(doc!.profile.selected!)) : undefined;
@@ -374,7 +373,7 @@ function showView(focus = true) {
     render();
   });
   announce(doc ? `Workspace ${workspaceName()}` : "All projects");
-  if (focus) requestAnimationFrame(() => selector()?.focus());
+  if (focus) requestAnimationFrame(() => home()?.focus());
 }
 
 async function read(path: string): Promise<Loaded> {
@@ -482,7 +481,7 @@ async function exclusive(f: () => Promise<boolean>): Promise<boolean> {
  */
 function leave(what: string, go: () => Promise<boolean>): Promise<boolean> {
   const back = document.activeElement as HTMLElement | null;
-  const restore = () => requestAnimationFrame(() => (back?.isConnected ? back : selector())?.focus());
+  const restore = () => requestAnimationFrame(() => (back?.isConnected ? back : home())?.focus());
   return exclusive(async () => {
     if (workspaceEdited()) {
       const where = doc!.path ?? "Untitled, not saved yet";
@@ -624,7 +623,7 @@ function keepCurrent() {
   doc.kept = true;
   doc.answered = true;
   changed();
-  requestAnimationFrame(() => selector()?.focus());
+  requestAnimationFrame(() => home()?.focus());
 }
 
 // ── Edit dialog ────────────────────────────────────────────────────────────
@@ -778,7 +777,7 @@ export function editWorkspace() {
 
   function close() {
     overlay.remove();
-    (back?.isConnected ? back : selector())?.focus();
+    (back?.isConnected ? back : home())?.focus();
   }
   function submit() {
     if (doc !== d || saving) return close();
@@ -882,33 +881,54 @@ function choose(o: { title: string; body: string; choices: { id: string; label: 
   });
 }
 
-// ── The bar ────────────────────────────────────────────────────────────────
+// ── Menus and the status bar ───────────────────────────────────────────────
 
-const selector = () => document.querySelector<HTMLButtonElement>("#workspace-bar .ws-pick");
+/** Where the keys go when what had them is gone: the sidebar's current row. */
+const home = () => document.querySelector<HTMLElement>('#sidebar-scroll [tabindex="0"]');
 
-function workspaceMenu(at: HTMLElement) {
-  const r = at.getBoundingClientRect();
-  const recent: MenuEntry[] = recents().map((path) => ({
+const recentEntries = (): MenuEntry[] =>
+  recents().map((path) => ({
     label: path === doc?.path ? `${fileName(path)} (open)` : fileName(path),
     run: () => void openWorkspace(path),
   }));
-  // The keys come back to the selector: on Esc, and before a pick runs, so its dialog returns them here.
-  const back = () => selector()?.focus();
-  const wrap = (es: MenuEntry[]): MenuEntry[] =>
-    es.map((e) => ("head" in e ? e : { ...e, run: e.run && (() => (back(), e.run!())), sub: e.sub && wrap(e.sub) }));
-  ctxMenu.open(r.left, r.bottom, doc?.path ?? workspaceName(), wrap(menuEntries(recent)), () => requestAnimationFrame(back));
+
+/** File › Open recent workspace…: the recent files, under the Projects head as Open closed project does. */
+export function recentWorkspacesMenu() {
+  const r = document.querySelector<HTMLElement>("#sidebar-scroll .tree-head:not(.fleet-head)")?.getBoundingClientRect();
+  const entries = recentEntries();
+  if (!entries.length) entries.push({ label: "No recent workspaces", disabled: true });
+  ctxMenu.open(r ? r.left + 24 : 80, r ? r.bottom : 80, "Recent workspaces", entries);
 }
 
-function menuEntries(recent: MenuEntry[]): MenuEntry[] {
+/** What the open workspace needs a look for, for the File menu: a disk change, and missing references. */
+export function workspaceNotice(): { disk: "changed" | "missing" | null; missing: number } {
+  return { disk: doc && doc.disk !== "ok" && !doc.answered ? doc.disk : null, missing: missing().length };
+}
+
+export const reloadWorkspace = () => void reload();
+export const keepWorkspace = () => keepCurrent();
+
+/** The status bar item's menu: the same workspace commands as the File menu. */
+function workspaceMenu(at: HTMLElement) {
+  const r = at.getBoundingClientRect();
+  // The keys come back to the item: on Esc, and before a pick runs, so its dialog returns them here.
+  const back = () => (at.isConnected && !at.hidden ? at : home())?.focus();
+  const wrap = (es: MenuEntry[]): MenuEntry[] =>
+    es.map((e) => ("head" in e ? e : { ...e, run: e.run && (() => (back(), e.run!())), sub: e.sub && wrap(e.sub) }));
+  ctxMenu.open(r.left, r.top, doc?.path ?? workspaceName(), wrap(menuEntries()), () => requestAnimationFrame(back));
+}
+
+function menuEntries(): MenuEntry[] {
   const on = !!doc;
-  const lost = missing().length;
+  const recent = recentEntries();
+  const n = workspaceNotice();
   const notice: MenuEntry[] = [];
-  if (doc && doc.disk !== "ok" && !doc.answered) {
-    notice.push({ head: doc.disk === "changed" ? "CHANGED ON DISK" : "FILE MISSING" });
-    if (doc.disk === "changed") notice.push({ label: "Reload from disk", run: () => void reload() });
-    notice.push({ label: "Keep current", run: keepCurrent });
+  if (n.disk) {
+    notice.push({ head: n.disk === "changed" ? "CHANGED ON DISK" : "FILE MISSING" });
+    if (n.disk === "changed") notice.push({ label: "Reload from disk", run: reloadWorkspace });
+    notice.push({ label: "Keep current", run: keepWorkspace });
   }
-  if (lost) notice.push({ icon: "tools-pencil", label: `Repair ${lost} missing ${lost === 1 ? "reference" : "references"}…`, run: editWorkspace });
+  if (n.missing) notice.push({ icon: "tools-pencil", label: `Repair ${n.missing} missing ${n.missing === 1 ? "reference" : "references"}…`, run: editWorkspace });
   if (notice.length) notice.push({ head: "WORKSPACE" });
   return [
     ...notice,
@@ -923,14 +943,12 @@ function menuEntries(recent: MenuEntry[]): MenuEntry[] {
   ];
 }
 
-let barSig = "";
-
 /** The one short mark beside the name: what needs a look first. */
-function barState(lost: number): { text: string; cls: string; say: string } | null {
+function markOf(lost: number): { text: string; cls: string; say: string } | null {
   if (saving) return { text: "Saving…", cls: "", say: "saving" };
   if (doc && doc.disk !== "ok" && !doc.answered) {
     const text = doc.disk === "changed" ? "Changed on disk" : "File missing";
-    return { text, cls: "edited", say: `${text.toLowerCase()}, open the menu to reload or keep it` };
+    return { text, cls: "edited", say: `${text.toLowerCase()}, File menu or this item to reload or keep it` };
   }
   if (workspaceEdited()) return { text: "Edited", cls: "edited", say: "edited" };
   if (lost) return { text: `${lost} missing`, cls: "", say: `${lost} missing ${lost === 1 ? "reference" : "references"}` };
@@ -938,58 +956,31 @@ function barState(lost: number): { text: string; cls: string; say: string } | nu
 }
 
 /**
- * The workspace selector over the tree: one row, the name and one mark. Runs
- * on each render. Disk changes and missing references show as the mark; their
- * actions are in the selector's menu.
+ * The status bar's sign that a workspace is open: its name and one mark.
+ * Hidden in All projects. A click opens the workspace menu. Runs on each render.
  */
-export function renderWorkspaceBar() {
-  const side = document.getElementById("sidebar");
-  if (!side) return;
-  let bar = document.getElementById("workspace-bar");
-  if (!bar) {
-    bar = h("div", "");
-    bar.id = "workspace-bar";
+export function renderWorkspaceStatus() {
+  if (!document.getElementById("ws-live")) {
     const live = h("div", "visually-hidden");
     live.id = "ws-live";
     live.setAttribute("role", "status");
     live.setAttribute("aria-live", "polite");
-    side.prepend(bar, live);
+    document.body.append(live);
   }
-  const lost = missing();
-  const state = barState(lost.length);
-  renderWorkspaceStatus(state);
-  const sig = JSON.stringify([doc?.path ?? null, workspaceName(), state, lost]);
-  if (sig === barSig) return;
-  barSig = sig;
-  const had = bar.contains(document.activeElement);
-
-  const pick = h("button", "ws-pick");
-  pick.type = "button";
-  pick.setAttribute("aria-haspopup", "menu");
-  pick.setAttribute("aria-label", `Workspace: ${workspaceName()}${state ? `, ${state.say}` : ""}${doc?.path ? `, ${doc.path}` : ""}`);
-  const why = lost.map((m) => `${m.kind === "project" ? m.ref : `fleet ${m.ref}`}: ${m.why}`);
-  pick.title = [doc?.path ?? (doc ? "Untitled, not saved yet" : "Every project shows. Open or make a workspace to show some."), ...why].join("\n");
-  pick.append(h("span", "ws-name", workspaceName()));
-  if (state?.text) pick.append(h("span", `ws-state ${state.cls}`.trim(), state.text));
-  pick.append(chevron(true));
-  pick.addEventListener("click", () => workspaceMenu(pick));
-  bar.replaceChildren(pick);
-  if (had) pick.focus();
-}
-
-/** The status bar's sign that a workspace is open: its name and mark. Hidden in All projects. A click opens the selector's menu. */
-function renderWorkspaceStatus(state: ReturnType<typeof barState>) {
   const el = document.getElementById("ws-status");
   if (!el) return;
   el.hidden = !doc;
   if (!doc) return;
+  const lost = missing();
+  const state = markOf(lost.length);
   const name = workspaceName();
-  const sig = JSON.stringify([name, state?.text, state?.cls]);
+  const why = lost.map((m) => `${m.kind === "project" ? m.ref : `fleet ${m.ref}`}: ${m.why}`);
+  const sig = JSON.stringify([name, doc.path, state, why]);
   if (el.dataset.sig === sig) return;
   el.dataset.sig = sig;
   el.replaceChildren(h("span", "ws-status-name", name));
   if (state?.text) el.append(h("span", `ws-status-mark ${state.cls}`.trim(), state.text));
-  el.title = doc.path ?? "Untitled, not saved yet";
+  el.title = [doc.path ?? "Untitled, not saved yet", ...why].join("\n");
   el.setAttribute("aria-label", `Workspace: ${name}${state ? `, ${state.say}` : ""}`);
   if (!el.dataset.wired) {
     el.dataset.wired = "1";

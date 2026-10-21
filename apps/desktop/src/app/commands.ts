@@ -27,7 +27,10 @@ import { accent, activeGroupObj, currentProject, currentWorktree, inShownGroup, 
 import { sessionThemeMenu } from "../appearance/themes";
 import { modeKeyBlocked } from "./modes";
 import { ledgerFolded, ledgerShown } from "../workspace/ledger";
-import { closeWorkspace, editWorkspace, ledgerAllWork, newWorkspace, openWorkspace, saveWorkspace, saveWorkspaceAs, setLedgerAllWork, workspaceOpen } from "../workspace/profile";
+import {
+  closeWorkspace, editWorkspace, keepWorkspace, ledgerAllWork, newWorkspace, openWorkspace, recentWorkspacesMenu, reloadWorkspace,
+  saveWorkspace, saveWorkspaceAs, setLedgerAllWork, workspaceNotice, workspaceOpen,
+} from "../workspace/profile";
 import { refocusTerminal, revealSession, selectWorktree } from "../workspace/view";
 
 interface Cmd {
@@ -47,6 +50,7 @@ function commands(): Cmd[] {
   const g = activeGroupObj();
   const k = (a: Action) => keyLabel(a);
   const act = (a: Action) => () => runAction(a);
+  const ws = workspaceNotice();
   return [
     { section: "File", label: "New session…", key: k("new-session"), action: "new-session", run: act("new-session"), off: !currentWorktree() },
     { section: "File", label: "New worktree…", key: k("new-worktree"), action: "new-worktree", run: act("new-worktree"), off: !currentProject() },
@@ -57,10 +61,15 @@ function commands(): Cmd[] {
     { section: "File", label: "Remove project…", key: "", run: () => withProject(removeProject), off: !currentProject() },
     { section: "File", label: "New workspace…", key: "", run: newWorkspace },
     { section: "File", label: "Open workspace…", key: "", run: () => void openWorkspace() },
+    { section: "File", label: "Open recent workspace…", key: "", run: recentWorkspacesMenu },
     { section: "File", label: "Edit workspace…", key: "", run: editWorkspace, off: !workspaceOpen() },
     { section: "File", label: "Save workspace", key: "", run: saveWorkspace, off: !workspaceOpen() },
     { section: "File", label: "Save workspace as…", key: "", run: saveWorkspaceAs, off: !workspaceOpen() },
     { section: "File", label: "Close workspace", key: "", run: closeWorkspace, off: !workspaceOpen() },
+    // While the file changed on disk or names something that is gone: the way to answer it.
+    { section: "File", label: "Reload workspace from disk", key: "", run: reloadWorkspace, off: ws.disk !== "changed" },
+    { section: "File", label: "Keep current workspace", key: "", run: keepWorkspace, off: !ws.disk },
+    { section: "File", label: "Repair missing references…", key: "", run: editWorkspace, off: !ws.missing },
     { section: "File", label: "Settings", key: k("settings"), action: "settings", run: act("settings") },
     { section: "File", label: "Quit", key: k("quit"), action: "quit", run: act("quit") },
     // In Settings, they act on the text field with the keys.

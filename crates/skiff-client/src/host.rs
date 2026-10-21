@@ -1,4 +1,4 @@
-//! Host contract client, with a narrow in-process local status adapter in M1a.
+//! Host contract client, with in-process local sources for M1a–M1e.
 use std::{
     collections::HashMap,
     future::Future,
@@ -23,12 +23,21 @@ use crate::transport::Transport;
 
 mod inventory;
 pub mod local;
+mod terminal;
 mod updates;
+
+pub use skiff_host_api::TerminalFrame;
+use terminal::OutputInner;
+pub use terminal::{OutputGap, OutputStream, TerminalOutput, TerminalSource};
 
 /// The one in-process M1a operation; no concrete socket/process type in the seam.
 /// ScreenSource adds only the M1b text snapshot; other families stay on wire.
 pub trait StatusSource: Send + Sync {
     fn status(&self) -> Pin<Box<dyn Future<Output = Result<Response, Error>> + Send + '_>>;
+    /// True once the underlying connection is known to be gone. No round trip.
+    fn is_lost(&self) -> bool {
+        false
+    }
 }
 
 /// One read-only text snapshot, independent of socket/core session types.
@@ -53,7 +62,9 @@ pub trait UpdateSource: Send + Sync {
 
 /// One receiver of an UpdateSource, in the source's order.
 pub trait UpdateStream: Send {
-    fn recv(&mut self) -> Pin<Box<dyn Future<Output = Result<SessionUpdate, UpdateGap>> + Send + '_>>;
+    fn recv(
+        &mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<SessionUpdate, UpdateGap>> + Send + '_>>;
 }
 
 /// Why a session-update receiver returned no update.
@@ -85,8 +96,16 @@ impl SessionUpdates {
                 match rx.recv().await {
                     Ok(Event::SessionUpdate { update }) => return Ok(*update),
                     // Other families have their own receivers.
-                    Ok(Event::Snapshot { .. } | Event::Output { .. } | Event::SessionChanged { .. }) => {}
-                    Err(broadcast::error::RecvError::Lagged(n)) => return Err(UpdateGap::Lagged(n)),
+                    Ok(
+                        Event::Snapshot { .. }
+                        | Event::Output { .. }
+                        | Event::SessionChanged { .. }
+                        | Event::TerminalSnapshot { .. }
+                        | Event::TerminalOutput { .. },
+                    ) => {}
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        return Err(UpdateGap::Lagged(n))
+                    }
                     Err(broadcast::error::RecvError::Closed) => return Err(UpdateGap::Closed),
                 }
             },
@@ -105,14 +124,27 @@ impl SessionUpdates {
     }
 }
 
+/// The in-process sources one local adapter offers. Each optional source
+/// lets the adapter advertise exactly its own capability.
+pub struct LocalSources {
+    pub status: Arc<dyn StatusSource>,
+    pub screen: Option<Arc<dyn ScreenSource>>,
+    pub inventory: Option<Arc<dyn InventorySource>>,
+    pub updates: Option<Arc<dyn UpdateSource>>,
+    pub terminal: Option<Arc<dyn TerminalSource>>,
+}
+
 enum Backend {
     Wire(Engine),
-    LocalReadOnly {
+    Local {
         source: Arc<dyn StatusSource>,
         screen: Option<Arc<dyn ScreenSource>>,
         inventory: Option<Arc<dyn InventorySource>>,
         updates: Option<Arc<dyn UpdateSource>>,
+        terminal: Option<Arc<dyn TerminalSource>>,
         read_slots: tokio::sync::Semaphore,
+        /// Attach/detach/resize: bounded, apart from reads and status.
+        terminal_slots: tokio::sync::Semaphore,
         closed: watch::Sender<bool>,
         slots: tokio::sync::Semaphore,
     },
@@ -165,7 +197,8 @@ impl Drop for Pending {
 
 struct Engine {
     state: Arc<State>,
-    tx: mpsc::Sender<(u64, Vec<u8>)>,
+    /// `(id, cancellable, frame)`. Input is not cancellable: it has no waiter.
+    tx: mpsc::Sender<(u64, bool, Vec<u8>)>,
     next: AtomicU64,
     tasks: Vec<JoinHandle<()>>,
     timeout: Duration,
@@ -191,7 +224,7 @@ impl Engine {
             }),
             closed,
         });
-        let (tx, mut rx) = mpsc::channel::<(u64, Vec<u8>)>(MAX_PENDING);
+        let (tx, mut rx) = mpsc::channel::<(u64, bool, Vec<u8>)>(MAX_PENDING);
         let writer_state = state.clone();
         let mut writer_closed = state.closed.subscribe();
         let writer = tokio::spawn(async move {
@@ -200,10 +233,12 @@ impl Engine {
                     _ = writer_closed.changed() => break,
                     frame = rx.recv() => frame,
                 };
-                let Some((id, line)) = frame else { break };
+                let Some((id, cancellable, line)) = frame else {
+                    break;
+                };
 
                 // Cancellation can prevent a queued request, never retract an in-flight write.
-                if !writer_state.inner.lock().unwrap().pending.contains_key(&id) {
+                if cancellable && !writer_state.inner.lock().unwrap().pending.contains_key(&id) {
                     continue;
                 }
                 let written = tokio::select! {
@@ -306,7 +341,7 @@ impl Engine {
         };
         let result = tokio::time::timeout(self.timeout, async {
             self.tx
-                .send((id, line))
+                .send((id, true, line))
                 .await
                 .map_err(|_| Error::TransportLost)?;
             rx.await.map_err(|_| Error::TransportLost)?
@@ -321,6 +356,33 @@ impl Engine {
             return Err(error);
         }
         Ok(result)
+    }
+
+    /// Queues one frame whose reply nobody waits for, behind earlier frames.
+    /// A full write queue refuses it; it is never retried.
+    fn send_now(&self, request: Request, max_frame: usize) -> Result<(), Error> {
+        let id = self
+            .next
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .map_err(|_| Error::HostBusy)?;
+        let mut line = serde_json::to_vec(&Envelope { id, request }).map_err(|e| {
+            Error::MalformedContract {
+                message: e.to_string(),
+            }
+        })?;
+        line.push(b'\n');
+        if line.len() > max_frame {
+            return Err(Error::MalformedContract {
+                message: "request exceeds frame limit".into(),
+            });
+        }
+        if let Some(error) = &self.state.inner.lock().unwrap().failure {
+            return Err(error.clone());
+        }
+        self.tx.try_send((id, false, line)).map_err(|e| match e {
+            mpsc::error::TrySendError::Full(_) => Error::HostBusy,
+            mpsc::error::TrySendError::Closed(_) => Error::TransportLost,
+        })
     }
 }
 
@@ -382,7 +444,17 @@ impl HostConnection {
         hello: Hello,
         previous: Option<&Hello>,
     ) -> Result<Self, Error> {
-        Self::local_readonly(source, None, None, None, hello, previous)
+        Self::local(
+            LocalSources {
+                status: source,
+                screen: None,
+                inventory: None,
+                updates: None,
+                terminal: None,
+            },
+            hello,
+            previous,
+        )
     }
 
     /// M1b adds only session_screen; broad sessions@1 stays unavailable locally.
@@ -392,7 +464,17 @@ impl HostConnection {
         hello: Hello,
         previous: Option<&Hello>,
     ) -> Result<Self, Error> {
-        Self::local_readonly(source, Some(screen), None, None, hello, previous)
+        Self::local(
+            LocalSources {
+                status: source,
+                screen: Some(screen),
+                inventory: None,
+                updates: None,
+                terminal: None,
+            },
+            hello,
+            previous,
+        )
     }
 
     /// M1c adds only the lossless read-only inventory, not sessions@1.
@@ -403,7 +485,17 @@ impl HostConnection {
         hello: Hello,
         previous: Option<&Hello>,
     ) -> Result<Self, Error> {
-        Self::local_readonly(source, Some(screen), Some(inventory), None, hello, previous)
+        Self::local(
+            LocalSources {
+                status: source,
+                screen: Some(screen),
+                inventory: Some(inventory),
+                updates: None,
+                terminal: None,
+            },
+            hello,
+            previous,
+        )
     }
 
     /// M1d adds only the read-only session-update stream; no output, input,
@@ -416,30 +508,41 @@ impl HostConnection {
         hello: Hello,
         previous: Option<&Hello>,
     ) -> Result<Self, Error> {
-        Self::local_readonly(
-            source,
-            Some(screen),
-            Some(inventory),
-            Some(updates),
+        Self::local(
+            LocalSources {
+                status: source,
+                screen: Some(screen),
+                inventory: Some(inventory),
+                updates: Some(updates),
+                terminal: None,
+            },
             hello,
             previous,
         )
     }
 
-    fn local_readonly(
-        source: Arc<dyn StatusSource>,
-        screen: Option<Arc<dyn ScreenSource>>,
-        inventory: Option<Arc<dyn InventorySource>>,
-        updates: Option<Arc<dyn UpdateSource>>,
+    /// An in-process local adapter. It may advertise only the capabilities
+    /// its sources serve; M1e adds `session_terminal@1` with a TerminalSource.
+    /// Still never `sessions@1`: no create/kill/rename lifecycle here.
+    pub fn local(
+        sources: LocalSources,
         hello: Hello,
         previous: Option<&Hello>,
     ) -> Result<Self, Error> {
+        let LocalSources {
+            status: source,
+            screen,
+            inventory,
+            updates,
+            terminal,
+        } = sources;
         hello.validate()?;
         if hello.capabilities.iter().any(|c| {
             c.name != skiff_host_api::CONNECTION_STATUS
                 && !(screen.is_some() && c.name == skiff_host_api::SESSION_SCREEN)
                 && !(inventory.is_some() && c.name == skiff_host_api::SESSION_INVENTORY)
                 && !(updates.is_some() && c.name == skiff_host_api::SESSION_UPDATES)
+                && !(terminal.is_some() && c.name == skiff_host_api::SESSION_TERMINAL)
         }) {
             return Err(Error::MalformedContract {
                 message: "local adapter cannot advertise capabilities without a source".into(),
@@ -450,12 +553,14 @@ impl HostConnection {
         // Reserve one slot for status while Mission control fans out reads.
         let read_slots = tokio::sync::Semaphore::new(limit.saturating_sub(1).max(1));
         Self::negotiated(
-            Backend::LocalReadOnly {
+            Backend::Local {
                 source,
                 screen,
                 inventory,
                 updates,
+                terminal,
                 read_slots,
+                terminal_slots: tokio::sync::Semaphore::new(limit),
                 closed: watch::channel(false).0,
                 slots,
             },
@@ -489,11 +594,13 @@ impl HostConnection {
                     )
                     .await
             }
-            Backend::LocalReadOnly {
+            Backend::Local {
                 source,
                 screen,
                 inventory,
+                terminal,
                 read_slots,
+                terminal_slots,
                 closed,
                 slots,
                 ..
@@ -542,6 +649,45 @@ impl HostConnection {
                             inventory.inventory().await
                         })
                     }
+                    Request::TerminalAttach { .. }
+                    | Request::TerminalDetach { .. }
+                    | Request::TerminalResize { .. }
+                    | Request::TerminalInput { .. } => {
+                        let terminal =
+                            terminal
+                                .as_ref()
+                                .ok_or_else(|| Error::UnsupportedCapability {
+                                    capability: capability.clone(),
+                                })?;
+                        let request = &request;
+                        Box::pin(async move {
+                            let _slot = terminal_slots
+                                .acquire()
+                                .await
+                                .map_err(|_| Error::TransportLost)?;
+                            match request {
+                                Request::TerminalAttach { session } => {
+                                    terminal.attach(session.clone()).await
+                                }
+                                Request::TerminalDetach { session } => {
+                                    terminal.detach(session.clone()).await
+                                }
+                                Request::TerminalResize {
+                                    session,
+                                    cols,
+                                    rows,
+                                } => terminal.resize(session.clone(), *cols, *rows).await,
+                                Request::TerminalInput {
+                                    session,
+                                    data,
+                                    paste,
+                                } => terminal
+                                    .input(session, data.clone(), *paste)
+                                    .map(|()| Response::Ok),
+                                _ => unreachable!(),
+                            }
+                        })
+                    }
                     _ => return Err(Error::UnsupportedCapability { capability }),
                 };
                 let reply = tokio::select! {
@@ -570,7 +716,7 @@ impl HostConnection {
                     .map(|events| events.subscribe())
                     .ok_or_else(|| s.failure.clone().unwrap_or(Error::TransportLost))
             }
-            Backend::LocalReadOnly { .. } => Err(Error::UnsupportedCapability {
+            Backend::Local { .. } => Err(Error::UnsupportedCapability {
                 capability: skiff_host_api::Capability::sessions(),
             }),
         }
@@ -589,10 +735,14 @@ impl HostConnection {
                     .map(|events| SessionUpdates(UpdatesInner::Wire(events.subscribe())))
                     .ok_or_else(|| s.failure.clone().unwrap_or(Error::TransportLost))
             }
-            Backend::LocalReadOnly { updates, closed, .. } => {
-                let updates = updates.as_ref().ok_or_else(|| Error::UnsupportedCapability {
-                    capability: Capability::session_updates(),
-                })?;
+            Backend::Local {
+                updates, closed, ..
+            } => {
+                let updates = updates
+                    .as_ref()
+                    .ok_or_else(|| Error::UnsupportedCapability {
+                        capability: Capability::session_updates(),
+                    })?;
                 let closed = closed.subscribe();
                 if *closed.borrow() {
                     return Err(Error::TransportLost);
@@ -605,6 +755,85 @@ impl HostConnection {
         }
     }
 
+    /// The receiver for one session's terminal frames from now on. Take it
+    /// before requesting `terminal_attach`: the snapshot can precede the
+    /// reply. On the local adapter it replaces an earlier receiver for the
+    /// same session. Requires `session_terminal@1`; never falls back.
+    pub fn terminal_output(&self, session: &str) -> Result<TerminalOutput, Error> {
+        self.hello.require(&Capability::session_terminal())?;
+        match &self.backend {
+            Backend::Wire(engine) => {
+                let s = engine.state.inner.lock().unwrap();
+                s.events
+                    .as_ref()
+                    .map(|events| {
+                        TerminalOutput(OutputInner::Wire {
+                            session: session.into(),
+                            events: events.subscribe(),
+                        })
+                    })
+                    .ok_or_else(|| s.failure.clone().unwrap_or(Error::TransportLost))
+            }
+            Backend::Local {
+                terminal, closed, ..
+            } => {
+                let terminal = terminal
+                    .as_ref()
+                    .ok_or_else(|| Error::UnsupportedCapability {
+                        capability: Capability::session_terminal(),
+                    })?;
+                let closed = closed.subscribe();
+                if *closed.borrow() {
+                    return Err(Error::TransportLost);
+                }
+                Ok(TerminalOutput(OutputInner::Local {
+                    stream: terminal.output(session),
+                    closed,
+                }))
+            }
+        }
+    }
+
+    /// Queues terminal input without waiting for a reply or a lock held
+    /// across I/O, so calls from one thread stay in order. An error means
+    /// this input was not sent; it is never queued for a later retry.
+    /// Requires `session_terminal@1`; never falls back.
+    pub fn terminal_input(&self, session: &str, data: Vec<u8>, paste: bool) -> Result<(), Error> {
+        self.hello.require(&Capability::session_terminal())?;
+        match &self.backend {
+            Backend::Wire(engine) => engine.send_now(
+                Request::TerminalInput {
+                    session: session.into(),
+                    data,
+                    paste,
+                },
+                self.hello.limits.max_frame_bytes.min(MAX_FRAME),
+            ),
+            Backend::Local {
+                terminal, closed, ..
+            } => {
+                let terminal = terminal
+                    .as_ref()
+                    .ok_or_else(|| Error::UnsupportedCapability {
+                        capability: Capability::session_terminal(),
+                    })?;
+                if *closed.borrow() {
+                    return Err(Error::TransportLost);
+                }
+                terminal.input(session, data, paste)
+            }
+        }
+    }
+
+    /// True once this connection failed, was disconnected, or its local
+    /// source lost its transport. No round trip.
+    pub fn is_closed(&self) -> bool {
+        match &self.backend {
+            Backend::Wire(engine) => engine.state.inner.lock().unwrap().failure.is_some(),
+            Backend::Local { source, closed, .. } => *closed.borrow() || source.is_lost(),
+        }
+    }
+
     pub fn disconnect(&self) {
         match &self.backend {
             Backend::Wire(engine) => {
@@ -613,7 +842,7 @@ impl HostConnection {
                     task.abort();
                 }
             }
-            Backend::LocalReadOnly { closed, .. } => {
+            Backend::Local { closed, .. } => {
                 closed.send_replace(true);
             }
         }

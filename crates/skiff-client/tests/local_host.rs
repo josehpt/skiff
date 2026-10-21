@@ -159,9 +159,19 @@ async fn selected_endpoint_is_the_only_status_source_and_keeps_legacy_wire_and_c
             Capability::connection_status(),
             Capability::session_screen(),
             Capability::session_inventory(),
-            Capability::session_updates()
+            Capability::session_updates(),
+            Capability::session_terminal()
         ]
     );
+    // Endpoint-local lifecycle permission comes from the selected endpoint.
+    assert!(host.process_control().is_some());
+    let ssh = Endpoint::Ssh {
+        hostname: "h".into(),
+        account: "a".into(),
+        port: 22,
+        socket: "/s".into(),
+    };
+    assert!(skiff_client::host::local::ProcessControl::for_endpoint(&ssh).is_none());
     let mut peer = BufReader::new(peer.unwrap().0);
     // Activation performs no wire Hello or extra Ping.
     let mut line = String::new();

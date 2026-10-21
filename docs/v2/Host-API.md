@@ -1,4 +1,4 @@
-# Host API — M0 contract and local M1a–M1d seams
+# Host API — M0 contract and local M1a–M1e seams
 
 Tracking: [M0 #156](https://github.com/solutionscay/skiff/issues/156),
 [epic #155](https://github.com/solutionscay/skiff/issues/155).
@@ -18,7 +18,8 @@ push to the separate wiki repository.
 - **Capability**: `{ name, version }`, a feature's major contract. `sessions@1`
   is the M0 operation family; M1a adds `connection_status@1` and M1b adds
   read-only `session_screen@1`; M1c adds `session_inventory@1`; M1d adds read-only
-  `session_updates@1` events. Unknown names/majors are retained as metadata
+  `session_updates@1` events; M1e adds `session_terminal@1` (attach, output,
+  input, resize, detach of existing sessions). Unknown names/majors are retained as metadata
   and ignored unless an operation requires them.
 
 The ownership rule is: if data would differ on another Host, it must eventually
@@ -156,7 +157,7 @@ through callers/re-exports; Rust module names and root/ancestor references are
 conservatively tracked without symbol resolution. Imports of the new Host
 contract/client seam are allowed.
 
-The temporary baseline inventories 78 existing adapters/callers plus both desktop
+The temporary baseline inventories 77 existing adapters/callers plus both desktop
 dependency manifests with exact SHA256 content and purpose labels. New dependency
 aliases/providers also require review. It is deliberately conservative: even
 adding a call through an existing alias changes the whole file's fingerprint and
@@ -423,10 +424,98 @@ desktop entry-point fixture checks `updates_now` on the same status/screen/inven
 connection and its closure when the owner is dropped.
 
 Next excluded boundary: terminal output/snapshot streaming (`subscribe_output`,
-lag/resubscribe flow control) and all mutation/lifecycle actions remain on the
-legacy Client and need their own scoped contracts. No SSH/remote transport,
+lag/resubscribe flow control; moved in M1e below) and all mutation/lifecycle
+actions remain on the legacy Client and need their own scoped contracts. No SSH/remote transport,
 picker, Host service, authoritative Hello, data migration or projects/files/
 ledger/Git conversion is part of M1d.
+
+## M1e: the session terminal through the selected Host
+
+The existing desktop terminal path now reaches skiffd only through the selected
+local `HostConnection`: `subscribe_output` (attach, snapshot, output, lag and
+resubscribe), `unsubscribe_output`, `pty_resize`, and every keystroke/paste from
+`pty_write` via the input bridge, including held input released after reload
+or first connect. `App::live` now holds the selected HostConnection, not a raw
+Client. The streaming loop, flow control (`BEHIND_HIGH`/`BEHIND_LOW`, acks,
+64 KiB pieces), page channel bytes, echo JSON for the latency trace, Tauri
+command names/arguments and UI source are unchanged. Session lifecycle and
+mutations (create, kill, rename, theme, seen, coordinator), Skipper, config,
+ledger and Git remain on the legacy Client.
+
+Additive API-major-1 contract (`skiff-host-api::terminal`):
+
+- Capability `session_terminal@1`, independent of `sessions@1`; it grants no
+  create/kill/rename or inventory. M0 `write`/`resize`/`subscribe`/`unsubscribe`
+  and `snapshot`/`output` stay `sessions@1` and unchanged.
+- Requests, each answered `ok`: `terminal_attach { session }` (subscribe; a
+  snapshot precedes later output and can arrive before the reply),
+  `terminal_detach { session }`, `terminal_resize { session, cols, rows }`,
+  `terminal_input { session, data, paste=false }` (base64 bytes).
+- Events: `terminal_snapshot { session, data, cols, rows }` and
+  `terminal_output { session, data, echo? }`; `echo { wrote, read }` is optional
+  diagnostic metadata. `Event::into_terminal()` yields `TerminalFrame`.
+- `Endpoint::is_local()` names the only endpoint kind the app may manage.
+
+`HostConnection::terminal_output(session)` returns a receiver; take it before
+attach. `terminal_input` is synchronous: it queues without waiting for a reply,
+so calls from one thread keep order, and an error means this input was not
+sent. Both check the capability first and never fall back to a raw Client.
+`TerminalOutput::recv` reports `OutputGap::Lagged` (frames dropped: clear,
+attach again, skip output until the new snapshot; nothing replayed) and
+`OutputGap::Closed`. `HostConnection::is_closed()` is a no-round-trip liveness
+check; the local adapter asks its source.
+
+Local adapter: `LegacyTerminal` over the same selected `Arc<Client>` sends
+exactly the legacy frames (`subscribe`, `unsubscribe`, `resize`, `write`, ids
+from the same counter) and uses the existing per-session output queue (4096
+chunks, lag flag, receiver replaced per session, closed on unsubscribe/EOF).
+Input keeps the unbounded legacy queue so a keystroke never waits. Attach,
+detach and resize have their own 64-slot lane within the 20-second budget, apart
+from reads and the status reservation. Local receivers also close when the
+selected owner is dropped (reconnect, restart, reload). Legacy error text is
+kept by `legacy_attach/detach/resize/input`.
+
+Wire backend: attach/detach/resize are ordinary correlated requests. Input is
+written in call order on the bounded 64-frame write queue, is not cancellable
+and has no waiter; a full queue refuses it with `host_busy` rather than queueing
+for retry. Terminal events share the 256-event receiver bound; a slow receiver
+reports Lagged. Whether input on a slow remote link should block, drop or turn
+input off is an M2 decision (epic §4: input off while disconnected).
+
+Reconnect and no replay: the desktop's existing policy is unchanged. Input typed
+while a reload runs or before a connection exists is held (never sent, so never
+uncertain) and released once onto the new connection only for sessions proven
+to be the same child; anything already queued on a lost connection is gone, and
+nothing is resent. After a lost connection, the page resubscribes and draws from
+a fresh snapshot. Local continuity is always conservatively NewInstance (see
+below), so every reconnect takes fresh subscriptions and snapshots.
+
+Endpoint-local lifecycle guards: `ProcessControl` can only be made from a local
+`Endpoint` (`LocalSelection::process_control`, `SelectedLocalHost::process_control`).
+Daemon spawn in connect, SIGTERM/SIGKILL in compatibility replacement and in
+restart, and the reload path now require it; an SSH descriptor never yields one.
+CLI link reconciliation (`cli_path::sync`) and Skipper watcher reconciliation
+(`skiff_agent::ensure_watch`) are not reached by the terminal boundary and are
+not guarded yet; M2 must guard them before any remote endpoint exists.
+
+Authoritative identity prerequisite: the local Hello is still synthesized by the
+adapter (bootstrap host id file, adapter-generation instance id). skiffd has no
+authoritative instance/generation in its Ping reply, so SameInstance can never be
+proven locally, and a forwarded socket's peer credentials must never stand in for
+it. Before any remote terminal (M2), a Host service or skiffd must send a real
+Hello with a durable host id and a start/reload generation; this slice does not
+fabricate one.
+
+Tests: golden `m1e.json` (requests, events, echo extrema, legacy frame map),
+fake capability/source gating, ordering, lag/clear, disconnect/drop/lost-source
+closure and no replay; negotiated-transport gating, session filtering, input
+order without waiting, ignored input replies, lag and disconnect; a selected
+private socket comparing exact legacy frames for attach/input/paste/resize/
+detach on one Client, a 5000-chunk flood reporting lag once, clear and EOF;
+the desktop entry point for terminal attach/output/echo/input/resize/detach on
+the same status/screen/inventory/updates connection; and the existing real
+skiffd reload fixture (`held_input_survives_a_reload`) now typing through the
+Host input path.
 
 ## M0 demo and handoff
 
@@ -437,8 +526,9 @@ performs the identical call. Test-only paired streams/private sockets prove the
 old Ping JSON, protocol 27, ordered raw input and snapshot/output bytes still work.
 Existing config/ledger fixture tests cover their unchanged on-disk contracts.
 
-Remaining M1 work includes routing beyond these read seams, capability-driven surfaces, endpoint-local
-lifecycle guards, persistence/Hello rollout and the session/data-plane topology.
+Remaining M1 work after M1e: session lifecycle/mutation routing, capability-driven
+UI surfaces, CLI-link and watcher guards, authoritative Hello/persistence rollout
+and the measured session/data-plane topology decision.
 M2–M6 own transport, services and data APIs. This document intentionally does not
 implement SSH, a host process, host selection, migrations or data-location changes.
 

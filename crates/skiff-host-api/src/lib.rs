@@ -5,8 +5,10 @@ use std::{collections::BTreeMap, fmt};
 use serde::{Deserialize, Serialize};
 
 pub mod inventory;
+pub mod terminal;
 pub mod updates;
 pub use inventory::InventorySession;
+pub use terminal::{EchoTimes, TerminalFrame};
 pub use updates::SessionUpdate;
 
 pub const API_MAJOR: u32 = 1;
@@ -15,6 +17,7 @@ pub const CONNECTION_STATUS: &str = "connection_status";
 pub const SESSION_SCREEN: &str = "session_screen";
 pub const SESSION_INVENTORY: &str = "session_inventory";
 pub const SESSION_UPDATES: &str = "session_updates";
+pub const SESSION_TERMINAL: &str = "session_terminal";
 
 macro_rules! identity {
     ($name:ident) => {
@@ -68,6 +71,16 @@ pub enum Endpoint {
         socket: String,
     },
 }
+impl Endpoint {
+    /// Only a local endpoint may let the app start, signal, reload or link
+    /// processes on its machine. Every other endpoint is reached, never managed.
+    pub fn is_local(&self) -> bool {
+        match self {
+            Self::Local { .. } => true,
+            Self::Ssh { .. } => false,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Capability {
@@ -76,6 +89,14 @@ pub struct Capability {
     pub version: u32,
 }
 impl Capability {
+    /// Attach/output, input, resize and detach of existing sessions; grants
+    /// no create, kill, rename or inventory operation.
+    pub fn session_terminal() -> Self {
+        Self {
+            name: SESSION_TERMINAL.into(),
+            version: 1,
+        }
+    }
     /// Read-only non-output session events; grants no request or output.
     pub fn session_updates() -> Self {
         Self {
@@ -249,6 +270,28 @@ pub enum Request {
     Unsubscribe {
         session: String,
     },
+    /// (Re)subscribe: a `terminal_snapshot` precedes later output and can
+    /// arrive before this reply. Take the output receiver first.
+    TerminalAttach {
+        session: String,
+    },
+    TerminalDetach {
+        session: String,
+    },
+    TerminalResize {
+        session: String,
+        cols: u16,
+        rows: u16,
+    },
+    /// Ordered keystrokes or a paste. Sent without waiting for its reply;
+    /// never replayed after loss.
+    TerminalInput {
+        session: String,
+        #[serde(with = "bytes")]
+        data: Vec<u8>,
+        #[serde(default)]
+        paste: bool,
+    },
 }
 impl Request {
     pub fn capability(&self) -> Option<Capability> {
@@ -257,7 +300,15 @@ impl Request {
             Self::ConnectionStatus => Some(Capability::connection_status()),
             Self::SessionInventory => Some(Capability::session_inventory()),
             Self::SessionScreen { .. } => Some(Capability::session_screen()),
-            _ => Some(Capability::sessions()),
+            Self::TerminalAttach { .. }
+            | Self::TerminalDetach { .. }
+            | Self::TerminalResize { .. }
+            | Self::TerminalInput { .. } => Some(Capability::session_terminal()),
+            Self::ListSessions
+            | Self::Write { .. }
+            | Self::Resize { .. }
+            | Self::Subscribe { .. }
+            | Self::Unsubscribe { .. } => Some(Capability::sessions()),
         }
     }
     pub fn accepts(&self, reply: &Response) -> bool {
@@ -316,12 +367,49 @@ pub enum Event {
     SessionUpdate {
         update: Box<SessionUpdate>,
     },
+    TerminalSnapshot {
+        session: String,
+        #[serde(with = "bytes")]
+        data: Vec<u8>,
+        cols: u16,
+        rows: u16,
+    },
+    TerminalOutput {
+        session: String,
+        #[serde(with = "bytes")]
+        data: Vec<u8>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        echo: Option<EchoTimes>,
+    },
 }
 impl Event {
+    /// A terminal event's session and frame; None for any other family.
+    pub fn into_terminal(self) -> Option<(String, TerminalFrame)> {
+        match self {
+            Self::TerminalSnapshot {
+                session,
+                data,
+                cols,
+                rows,
+            } => Some((session, TerminalFrame::Snapshot { data, cols, rows })),
+            Self::TerminalOutput {
+                session,
+                data,
+                echo,
+            } => Some((session, TerminalFrame::Output { data, echo })),
+            Self::Snapshot { .. }
+            | Self::Output { .. }
+            | Self::SessionChanged { .. }
+            | Self::SessionUpdate { .. } => None,
+        }
+    }
     /// The capability whose negotiation makes this event family meaningful.
     pub fn capability(&self) -> Capability {
         match self {
             Self::SessionUpdate { .. } => Capability::session_updates(),
+            Self::TerminalSnapshot { .. } | Self::TerminalOutput { .. } => {
+                Capability::session_terminal()
+            }
             Self::Snapshot { .. } | Self::Output { .. } | Self::SessionChanged { .. } => {
                 Capability::sessions()
             }

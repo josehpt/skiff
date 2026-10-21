@@ -491,25 +491,194 @@ async fn m1d_updates_are_gated_ordered_and_closed_on_the_negotiated_transport() 
     let mut updates = connection.session_updates().unwrap();
     let fixture: serde_json::Value =
         serde_json::from_str(include_str!("../../skiff-host-api/tests/fixtures/m1d.json")).unwrap();
-    let messages: Vec<Message> =
-        serde_json::from_value(fixture["messages"].clone()).unwrap();
+    let messages: Vec<Message> = serde_json::from_value(fixture["messages"].clone()).unwrap();
     // Output belongs to another receiver and is not a session update.
     peer.send(Message::Event {
-        event: Event::Output { session: "a".into(), data: vec![0xff] },
+        event: Event::Output {
+            session: "a".into(),
+            data: vec![0xff],
+        },
     })
     .await;
     for message in &messages {
         peer.send(message.clone()).await;
     }
     for message in messages {
-        let Message::Event { event: Event::SessionUpdate { update } } = message else { unreachable!() };
+        let Message::Event {
+            event: Event::SessionUpdate { update },
+        } = message
+        else {
+            unreachable!()
+        };
         assert_eq!(updates.recv().await, Ok(*update));
     }
     // A malformed frame fails the connection explicitly; the stream ends.
     peer.wr.write_all(b"{\"type\":\"event\",\"event\":{\"event\":\"session_update\",\"update\":{\"kind\":\"future\"}}}\n").await.unwrap();
-    assert_eq!(updates.recv().await, Err(skiff_client::host::UpdateGap::Closed));
+    assert_eq!(
+        updates.recv().await,
+        Err(skiff_client::host::UpdateGap::Closed)
+    );
     assert!(matches!(
         connection.session_updates(),
         Err(Error::MalformedContract { .. })
     ));
+}
+
+#[tokio::test]
+async fn m1e_terminal_is_gated_ordered_and_lag_reporting_on_the_negotiated_transport() {
+    use skiff_client::host::{OutputGap, TerminalFrame};
+    // sessions@1 alone does not grant the terminal family; nothing is sent.
+    let (connection, mut peer) = connect(hello(), None).await;
+    let connection = connection.unwrap();
+    assert!(matches!(
+        connection.terminal_output("s1"),
+        Err(Error::UnsupportedCapability { .. })
+    ));
+    assert!(matches!(
+        connection.terminal_input("s1", b"x".to_vec(), false),
+        Err(Error::UnsupportedCapability { .. })
+    ));
+    assert!(matches!(
+        connection
+            .request(Request::TerminalAttach {
+                session: "s1".into()
+            })
+            .await,
+        Err(Error::UnsupportedCapability { .. })
+    ));
+    let mut line = String::new();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), peer.rd.read_line(&mut line))
+            .await
+            .is_err()
+    );
+
+    let mut h = hello();
+    h.capabilities = vec![Capability::session_terminal()];
+    let (connection, mut peer) = connect(h, None).await;
+    let connection = connection.unwrap();
+    let mut output = connection.terminal_output("s1").unwrap();
+    let (attached, ()) = tokio::join!(
+        connection.request(Request::TerminalAttach {
+            session: "s1".into()
+        }),
+        async {
+            let ask = peer.request().await;
+            assert_eq!(
+                ask.request,
+                Request::TerminalAttach {
+                    session: "s1".into()
+                }
+            );
+            // Snapshot before the reply; other sessions and families are skipped.
+            for event in [
+                Event::TerminalSnapshot {
+                    session: "s1".into(),
+                    data: vec![0, 255],
+                    cols: 80,
+                    rows: 24,
+                },
+                Event::TerminalOutput {
+                    session: "s2".into(),
+                    data: b"other".to_vec(),
+                    echo: None,
+                },
+                Event::Output {
+                    session: "s1".into(),
+                    data: b"m0".to_vec(),
+                },
+                Event::TerminalOutput {
+                    session: "s1".into(),
+                    data: vec![10, 13],
+                    echo: Some(EchoTimes { wrote: 1, read: 2 }),
+                },
+            ] {
+                peer.send(Message::Event { event }).await;
+            }
+            peer.reply(ask.id, Ok(Response::Ok)).await;
+        }
+    );
+    assert_eq!(attached, Ok(Response::Ok));
+    assert_eq!(
+        output.recv().await,
+        Ok(TerminalFrame::Snapshot {
+            data: vec![0, 255],
+            cols: 80,
+            rows: 24
+        })
+    );
+    assert_eq!(
+        output.recv().await,
+        Ok(TerminalFrame::Output {
+            data: vec![10, 13],
+            echo: Some(EchoTimes { wrote: 1, read: 2 })
+        })
+    );
+    // Input is queued without waiting for replies, in call order, on the same id sequence.
+    for i in 0..3u8 {
+        connection.terminal_input("s1", vec![i], i == 2).unwrap();
+    }
+    let mut ids = Vec::new();
+    for i in 0..3u8 {
+        let ask = peer.request().await;
+        assert_eq!(
+            ask.request,
+            Request::TerminalInput {
+                session: "s1".into(),
+                data: vec![i],
+                paste: i == 2
+            }
+        );
+        ids.push(ask.id);
+    }
+    assert!(ids.windows(2).all(|w| w[1] == w[0] + 1));
+    // A late or failed input reply has no waiter and changes nothing.
+    peer.reply(
+        ids[0],
+        Err(Error::OperationFailed {
+            message: "gone".into(),
+        }),
+    )
+    .await;
+    let (resized, ()) = tokio::join!(
+        connection.request(Request::TerminalResize {
+            session: "s1".into(),
+            cols: 100,
+            rows: 30
+        }),
+        async {
+            let ask = peer.request().await;
+            assert!(ask.id > ids[2]);
+            peer.reply(ask.id, Ok(Response::Ok)).await;
+        }
+    );
+    assert_eq!(resized, Ok(Response::Ok));
+    // A bounded receiver that falls behind reports lag; clear drops the backlog.
+    for _ in 0..300 {
+        peer.send(Message::Event {
+            event: Event::TerminalOutput {
+                session: "s1".into(),
+                data: b"x".to_vec(),
+                echo: None,
+            },
+        })
+        .await;
+    }
+    let ping = connection.request(Request::TerminalDetach {
+        session: "s9".into(),
+    });
+    let (_, ()) = tokio::join!(ping, async {
+        let ask = peer.request().await;
+        peer.reply(ask.id, Ok(Response::Ok)).await;
+    });
+    assert_eq!(output.recv().await, Err(OutputGap::Lagged));
+    output.clear();
+    // Disconnect ends the receiver and refuses input; nothing is replayed.
+    connection.disconnect();
+    assert_eq!(output.recv().await, Err(OutputGap::Closed));
+    assert!(connection.is_closed());
+    assert_eq!(
+        connection.terminal_input("s1", b"late".to_vec(), false),
+        Err(Error::TransportLost)
+    );
 }

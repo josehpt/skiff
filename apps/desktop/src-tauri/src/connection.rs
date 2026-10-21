@@ -1,6 +1,6 @@
 use std::{collections::HashMap, path::PathBuf, process::Stdio, sync::{atomic::{AtomicBool, Ordering}, Arc}, time::Duration};
 use serde::Serialize;
-use skiff_client::{Client, host::local::{LocalSelection, SelectedLocalHost, connection_status}};
+use skiff_client::{Client, host::{HostConnection, local::{LocalSelection, ProcessControl, SelectedLocalHost, connection_status}}};
 use skiff_core::{socket::socket_path, session::SessionState};
 use tauri::{async_runtime::JoinHandle, State};
 use tokio::sync::Mutex;
@@ -12,8 +12,9 @@ pub(crate) struct App {
     /// One local selection for this runtime; no ambient endpoint re-selection
     /// on reconnect. Legacy paths only borrow its accepted Client.
     local: std::sync::OnceLock<LocalSelection>,
-    /// The same connection, for keystrokes, which must not wait on a lock.
-    pub(crate) live: std::sync::Mutex<Option<Arc<Client>>>,
+    /// The same selected Host connection, for keystrokes, which must not
+    /// wait on a lock.
+    pub(crate) live: std::sync::Mutex<Option<Arc<HostConnection>>>,
     pub(crate) subs: Mutex<HashMap<String, JoinHandle<()>>>,
     /// The task that streams events to the page.
     pub(crate) events: Mutex<Option<JoinHandle<()>>>,
@@ -94,7 +95,8 @@ pub(crate) fn daemon_binary() -> PathBuf {
     PathBuf::from("skiffd")
 }
 
-fn spawn_daemon() -> anyhow::Result<()> {
+/// Only for a local endpoint: `_local` proves it.
+fn spawn_daemon(_local: &ProcessControl) -> anyhow::Result<()> {
     let log = socket_path().with_extension("log");
     if let Some(dir) = log.parent() {
         std::fs::create_dir_all(dir)?;
@@ -141,6 +143,13 @@ pub(crate) async fn inventory_now(app: &App) -> Result<Vec<skiff_core::session::
     skiff_client::host::local::legacy_inventory(&host.connection()).await.map_err(err)
 }
 
+/// The M1e terminal plane: attach, output, input and resize of the same
+/// selected owner. The caller keeps no Client of its own.
+pub(crate) async fn terminal_now(app: &App) -> Result<Arc<HostConnection>, String> {
+    let (host, _) = ensure_host(app).await?;
+    Ok(host.connection())
+}
+
 /// The one M1d event path: page events from the same selected owner. The
 /// receiver starts now, before the caller's next inventory read, as before.
 pub(crate) async fn updates_now(app: &App) -> Result<skiff_client::host::local::LegacyUpdates, String> {
@@ -151,12 +160,14 @@ pub(crate) async fn updates_now(app: &App) -> Result<skiff_client::host::local::
 async fn ensure_host(app: &App) -> Result<(Arc<SelectedLocalHost>, bool), String> {
     let mut guard = app.host.lock().await;
     if let Some(host) = guard.as_ref() {
-        if !host.client().is_closed() {
+        if !host.connection().is_closed() {
             return Ok((host.clone(), false));
         }
     }
     *guard = None;
     let path = app.local().socket();
+    // Starting a daemon is endpoint-local lifecycle. Without it this only connects.
+    let control = app.local().process_control();
     let mut spawned = false;
     let mut replaced = false;
     let mut last = String::new();
@@ -170,8 +181,10 @@ async fn ensure_host(app: &App) -> Result<(Arc<SelectedLocalHost>, bool), String
                     return Err(why);
                 }
                 if !spawned {
-                    spawn_daemon().map_err(|e| format!("start skiffd: {e:#}"))?;
-                    spawned = true;
+                    if let Some(control) = &control {
+                        spawn_daemon(control).map_err(|e| format!("start skiffd: {e:#}"))?;
+                        spawned = true;
+                    }
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
@@ -181,7 +194,7 @@ async fn ensure_host(app: &App) -> Result<(Arc<SelectedLocalHost>, bool), String
             Check::Use => {
                 *app.failed.lock().unwrap() = None;
                 let host = Arc::new(c.activate().await.map_err(err)?);
-                *app.live.lock().unwrap() = Some(host.client());
+                *app.live.lock().unwrap() = Some(host.connection());
                 *guard = Some(host.clone());
                 return Ok((host, spawned));
             }
@@ -269,8 +282,9 @@ pub(crate) async fn check_daemon(app: &App, c: &Client, may_replace: bool) -> Ch
     // Never a downgrade: a newer daemon keeps running, whatever its protocol.
     let stale = !order.is_gt() && (!same_protocol || order.is_lt() || other_build);
     // Never SIGKILL here: a daemon that does not stop keeps running as it is.
-    if let (true, true, Some(0), Some(pid)) = (may_replace, stale, live, c.daemon_pid) {
-        if stop_daemon(pid, false).await {
+    let control = app.local().process_control();
+    if let (true, true, Some(0), Some(pid), Some(control)) = (may_replace, stale, live, c.daemon_pid, control) {
+        if stop_daemon(&control, pid, false).await {
             *app.replaced.lock().await = Some(version);
             return Check::Replaced;
         }
@@ -327,7 +341,7 @@ pub(crate) use skiff_core::compare_versions;
 /// user asked for passes, then SIGKILL and up to 2 s more: a hung daemon may
 /// ignore SIGTERM. True once the process is gone: a new daemon refuses to
 /// start while the old one still holds the socket.
-async fn stop_daemon(pid: i32, escalate: bool) -> bool {
+async fn stop_daemon(_local: &ProcessControl, pid: i32, escalate: bool) -> bool {
     // SAFETY: kill and waitpid take plain integers and touch no memory of ours.
     let gone = || unsafe {
         // The app may have started it: reap the zombie, which kill(0) still sees.
@@ -355,6 +369,8 @@ async fn stop_daemon(pid: i32, escalate: bool) -> bool {
 pub(crate) async fn restart_daemon(app: State<'_, App>) -> Result<DaemonStatus, String> {
     {
         let mut guard = app.host.lock().await;
+        // A peer pid is the local socket's peer: signal it only for a local endpoint.
+        let control = app.local().process_control().ok_or("skiffd on this Host is not managed by this app")?;
         let pid = match guard.as_ref() {
             Some(host) => host.client().daemon_pid,
             None => app.local().connect().await.ok().and_then(|c| c.client().daemon_pid),
@@ -362,7 +378,7 @@ pub(crate) async fn restart_daemon(app: State<'_, App>) -> Result<DaemonStatus, 
         *guard = None;
         *app.live.lock().unwrap() = None;
         if let Some(pid) = pid {
-            if !stop_daemon(pid, true).await {
+            if !stop_daemon(&control, pid, true).await {
                 return Err(format!("skiffd (pid {pid}) did not stop"));
             }
         }
@@ -419,7 +435,7 @@ pub(crate) async fn status_now(app: &App) -> DaemonStatus {
 
 #[cfg(test)]
 mod tests {
-    use super::{compare_versions, stop_daemon};
+    use super::{compare_versions, stop_daemon, App, ProcessControl};
     use std::cmp::Ordering::*;
 
     #[tokio::test]
@@ -482,8 +498,41 @@ mod tests {
                 let mut bytes = serde_json::to_vec(&event).unwrap(); bytes.push(b'\n');
                 stream.get_mut().write_all(&bytes).await.unwrap();
             }
-            // Keep the one connection alive through the reuse assertions.
+            // M1e: the terminal plane sends exactly the legacy frames.
+            let legacy = |id: u64, request: skiff_core::protocol::Request| serde_json::to_value(skiff_core::protocol::Envelope { id, request }).unwrap();
             let mut line = String::new();
+            stream.read_line(&mut line).await.unwrap();
+            assert_eq!(serde_json::from_str::<serde_json::Value>(&line).unwrap(), legacy(8, skiff_core::protocol::Request::Subscribe { session: "t1".into() }));
+            // The snapshot and output precede the reply, as skiffd may send them.
+            for frame in [
+                serde_json::json!({"event":"snapshot","session":"t1","data":"AP8KDQ==","cols":80,"rows":24}),
+                serde_json::json!({"event":"output","session":"other","data":"eA=="}),
+                serde_json::json!({"event":"output","session":"t1","data":"bHMK","echo":{"wrote":1,"read":2}}),
+                serde_json::json!({"id":8,"type":"ok"}),
+            ] {
+                let mut bytes = serde_json::to_vec(&frame).unwrap(); bytes.push(b'\n');
+                stream.get_mut().write_all(&bytes).await.unwrap();
+            }
+            line.clear();
+            stream.read_line(&mut line).await.unwrap();
+            assert_eq!(serde_json::from_str::<serde_json::Value>(&line).unwrap(), legacy(9, skiff_core::protocol::Request::Write { session: "t1".into(), data: vec![0, 255, b'\n'], paste: false }));
+            line.clear();
+            stream.read_line(&mut line).await.unwrap();
+            assert_eq!(serde_json::from_str::<serde_json::Value>(&line).unwrap(), legacy(10, skiff_core::protocol::Request::Write { session: "t1".into(), data: b"ls\n".to_vec(), paste: false }));
+            for (id, request, reply) in [
+                (11, skiff_core::protocol::Request::Resize { session: "t1".into(), cols: 100, rows: 30 }, serde_json::json!({"type":"ok"})),
+                (12, skiff_core::protocol::Request::Resize { session: "gone".into(), cols: 1, rows: 1 }, serde_json::json!({"type":"error","message":"no such session"})),
+                (13, skiff_core::protocol::Request::Unsubscribe { session: "t1".into() }, serde_json::json!({"type":"ok"})),
+            ] {
+                line.clear();
+                stream.read_line(&mut line).await.unwrap();
+                assert_eq!(serde_json::from_str::<serde_json::Value>(&line).unwrap(), legacy(id, request));
+                let mut reply = reply; reply["id"] = id.into();
+                let mut bytes = serde_json::to_vec(&reply).unwrap(); bytes.push(b'\n');
+                stream.get_mut().write_all(&bytes).await.unwrap();
+            }
+            // Keep the one connection alive through the reuse assertions.
+            line.clear();
             stream.read_line(&mut line).await.ok();
         });
         let first = status_now(&app).await;
@@ -496,7 +545,8 @@ mod tests {
         let mut updates = updates_now(&app).await.unwrap();
         let (client, spawned) = ensure_client(&app).await.unwrap();
         assert!(!spawned && Arc::ptr_eq(&owner.client(), &client));
-        assert!(Arc::ptr_eq(&app.live.lock().unwrap().clone().unwrap(), &client));
+        let live = app.live.lock().unwrap().clone().unwrap();
+        assert!(Arc::ptr_eq(&live, &owner.connection()));
         let second = status_now(&app).await;
         assert_eq!(second.version, first.version);
         assert_eq!(screen_now(&app, "snapshot", 2).await.unwrap(), vec!["", "λ  "]);
@@ -509,15 +559,43 @@ mod tests {
         for want in &page_events {
             assert_eq!(serde_json::to_value(updates.recv().await.unwrap()).unwrap(), *want);
         }
+        // M1e: attach/output/input/resize/detach on the same selected owner.
+        let terminal = terminal_now(&app).await.unwrap();
+        assert!(Arc::ptr_eq(&terminal, &live));
+        let mut output = skiff_client::host::local::legacy_output(&terminal, "t1").unwrap();
+        skiff_client::host::local::legacy_attach(&terminal, "t1").await.unwrap();
+        use skiff_client::host::TerminalFrame;
+        assert_eq!(output.recv().await, Ok(TerminalFrame::Snapshot { data: vec![0, 255, 10, 13], cols: 80, rows: 24 }));
+        let Ok(TerminalFrame::Output { data, echo: Some(echo) }) = output.recv().await else { panic!("no output") };
+        assert_eq!(data, b"ls\n");
+        // The latency trace reads the same JSON as before.
+        assert_eq!(serde_json::to_value(echo).unwrap(), serde_json::json!({"wrote":1,"read":2}));
+        // Input through the bridge, in order, with arbitrary bytes.
+        assert!(matches!(app.input.write(Some(&live), "t1", vec![0, 255, b'\n']).unwrap(), crate::input::Sent::Done));
+        assert!(matches!(app.input.write(Some(&live), "t1", b"ls\n".to_vec()).unwrap(), crate::input::Sent::Done));
+        skiff_client::host::local::legacy_resize(&terminal, "t1", 100, 30).await.unwrap();
+        assert_eq!(skiff_client::host::local::legacy_resize(&terminal, "gone", 1, 1).await.unwrap_err().to_string(), "no such session");
+        skiff_client::host::local::legacy_detach(&terminal, "t1").await.unwrap();
+        // Detach closes the receiver first, as unsubscribe did.
+        assert_eq!(output.recv().await, Err(skiff_client::host::OutputGap::Closed));
+        let mut reattached = skiff_client::host::local::legacy_output(&terminal, "t1").unwrap();
+        drop(terminal);
+        drop(live);
         // Dropping the selected owner, as reconnect/restart/reload do, ends it.
         drop(owner);
         drop(client);
         *app.host.lock().await = None;
         assert!(updates.recv().await.is_none());
+        assert_eq!(reattached.recv().await, Err(skiff_client::host::OutputGap::Closed));
+        *app.live.lock().unwrap() = None;
         assert_eq!(std::fs::read_to_string(config).unwrap(), "# existing config\n");
         assert_eq!(std::fs::read(ledger).unwrap(), b"existing ledger fixture");
         peer.abort();
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn local_control() -> ProcessControl {
+        App::default().local().process_control().unwrap()
     }
 
     #[test]
@@ -539,7 +617,7 @@ mod tests {
         // Let the shell set its trap first.
         std::thread::sleep(std::time::Duration::from_millis(200));
         let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
-        assert!(rt.block_on(stop_daemon(child.id() as i32, true)));
+        assert!(rt.block_on(stop_daemon(&local_control(), child.id() as i32, true)));
     }
 
     /// The automatic stop sends SIGTERM only. A process that ignores it
@@ -552,7 +630,7 @@ mod tests {
             .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(200));
         let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
-        let stopped = rt.block_on(stop_daemon(child.id() as i32, false));
+        let stopped = rt.block_on(stop_daemon(&local_control(), child.id() as i32, false));
         let running = child.try_wait().unwrap().is_none();
         let _ = child.kill();
         let _ = child.wait();

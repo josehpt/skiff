@@ -188,11 +188,17 @@ async fn run(app: &App, plan: &Plan) -> Outcome {
     let mut guard = app.host.lock().await;
     // A reload that ends before the request keeps the restart of #27.
     let keep = |why: &str, live: Option<usize>| restart_warning(&plan.from, plan.protocol, live, Some(why));
-    let Some(old) = guard.as_ref().map(|host| host.client()).filter(|c| !c.is_closed()) else {
+    // Reload is endpoint-local lifecycle: only a local endpoint may run it.
+    if guard.as_ref().is_some_and(|host| host.process_control().is_none()) {
+        return Outcome { error: Some("skiffd on this Host is not managed by this app".into()), ..Default::default() };
+    }
+    let Some(old_host) = guard.as_ref().cloned().filter(|host| !host.connection().is_closed()) else {
         let why = "skiffd closed the connection before the reload";
         *app.warning.lock().await = Some(keep(why, None));
         return Outcome { error: Some(why.into()), ..Default::default() };
     };
+    let old = old_host.client();
+    let old_terminal = old_host.connection();
     // Input from here on waits. Input sent before is on this connection,
     // ahead of the reload request, and skiffd drains it into the PTYs.
     app.input.close_gate();
@@ -202,7 +208,7 @@ async fn run(app: &App, plan: &Plan) -> Outcome {
             (listed(&l), naming(&l))
         }
         Err(e) => {
-            let lost = app.input.open_gate(Some(&old), |_| true);
+            let lost = app.input.open_gate(Some(&old_terminal), |_| true);
             let why = format!("skiffd did not list its sessions: {e:#}");
             *app.warning.lock().await = Some(keep(&why, None));
             return Outcome { error: Some(why), lost, ..Default::default() };
@@ -228,7 +234,7 @@ async fn run(app: &App, plan: &Plan) -> Outcome {
             // input goes to it, for the sessions that still run.
             let why = format!("{e:#}");
             let now = old.list_sessions().await.map(|l| listed(&l)).unwrap_or_default();
-            let lost = name(app.input.open_gate(Some(&old), |id| same(&before, &now, id)));
+            let lost = name(app.input.open_gate(Some(&old_terminal), |id| same(&before, &now, id)));
             *app.warning.lock().await = Some(restart_warning(&plan.from, plan.protocol, Some(live), Some(&why)));
             return Outcome { error: Some(format!("skiffd {} did not reload: {why}", plan.from)), lost, ..Default::default() };
         }
@@ -239,6 +245,8 @@ async fn run(app: &App, plan: &Plan) -> Outcome {
     *guard = None;
     *app.live.lock().unwrap() = None;
     drop(old);
+    drop(old_terminal);
+    drop(old_host);
 
     let (c, info) = match reconnect(app, plan.pid).await {
         Ok(found) => found,
@@ -276,8 +284,9 @@ async fn run(app: &App, plan: &Plan) -> Outcome {
     if let Some(task) = app.events.lock().await.take() {
         task.abort();
     }
+    let terminal = host.connection();
     *guard = Some(host);
-    *app.live.lock().unwrap() = Some(c.clone());
+    *app.live.lock().unwrap() = Some(terminal.clone());
 
     let mut error = None;
     let mut proven = true;
@@ -309,7 +318,7 @@ async fn run(app: &App, plan: &Plan) -> Outcome {
         false => Vec::new(),
     };
     missing.sort();
-    let lost = name(app.input.open_gate(Some(&c), |id| proven && same(&before, &after, id)));
+    let lost = name(app.input.open_gate(Some(&terminal), |id| proven && same(&before, &after, id)));
     // Sets the warning for the daemon as it is now. No second reload.
     check_daemon(app, &c, false).await;
     if error.is_none() && !missing.is_empty() {
@@ -463,9 +472,10 @@ mod tests {
             assert!(out.reconnected);
             assert!(out.lost.is_empty(), "lost {:?}", out.lost);
             // Input typed after the reload goes straight on.
-            let c = app.live.lock().unwrap().clone().unwrap();
+            let c = app.host.lock().await.as_ref().unwrap().client();
             assert_eq!(c.daemon_info().await.unwrap().pid, Some(pid));
-            let _ = app.input.write(Some(&c), &s.id, b"echo DONE >> out\n".to_vec());
+            let live = app.live.lock().unwrap().clone().unwrap();
+            let _ = app.input.write(Some(&live), &s.id, b"echo DONE >> out\n".to_vec());
             let file = dir.join("out");
             let until = Instant::now() + Duration::from_secs(10);
             let text = loop {
@@ -602,7 +612,7 @@ mod tests {
             let status = serde_json::to_value(status_now(&app).await).unwrap();
             assert_eq!((&status["version"], &status["reload"]), (&"0.0.1".into(), &true.into()), "{status}");
             assert!(status["warning"].is_null(), "{status}");
-            let c = app.live.lock().unwrap().clone().unwrap();
+            let c = app.host.lock().await.as_ref().unwrap().client();
             let pid = c.daemon_info().await.unwrap().pid.unwrap();
             let agent = c
                 .coordinator(skiff_client::Coordinator {
@@ -681,7 +691,7 @@ os.execv("/bin/cat", ["skiff", "watch"])
             let status = serde_json::to_value(&r.status).unwrap();
             assert_eq!((&status["version"], &status["replaced"], &status["reload"]), (&skiff_core::VERSION.into(), &"0.0.1".into(), &false.into()), "{status}");
             assert!(status["warning"].is_null(), "{status}");
-            let c = app.live.lock().unwrap().clone().unwrap();
+            let c = app.host.lock().await.as_ref().unwrap().client();
             assert_eq!(c.daemon_info().await.unwrap().pid, Some(pid));
             let after = c.list_sessions().await.unwrap();
             let ids = |l: &[SessionInfo]| l.iter().map(|s| (s.id.clone(), s.pid)).collect::<Vec<_>>();
@@ -725,7 +735,7 @@ os.execv("/bin/cat", ["skiff", "watch"])
             assert!(matches!(crate::cli_path::reconcile(&[bin.as_path()], &skiff, false).unwrap(), crate::cli_path::Linked::Current(_)));
             assert_eq!(crate::skiff_agent::ensure_watch(&next, skiff.clone(), agent.id.clone()).await, Ok(false));
             assert_eq!(skipper::watch_status(&socket).unwrap().holder.map(|h| h.pid), Some(holder.pid));
-            let same = next.live.lock().unwrap().clone().unwrap();
+            let same = next.host.lock().await.as_ref().unwrap().client();
             assert_eq!(same.daemon_info().await.unwrap().pid, Some(pid));
 
             assert_eq!(rows(), before_rows);

@@ -1,5 +1,5 @@
-//! M1a–M1d local connection ownership and read-only status, screen, inventory and
-//! session updates. No Host service and no new skiffd messages.
+//! M1a–M1e local connection ownership: status, screen, inventory, session
+//! updates and the session terminal. No Host service and no new skiffd messages.
 use std::{
     collections::BTreeMap,
     fs::{self, OpenOptions},
@@ -17,8 +17,9 @@ use skiff_host_api::{
 use uuid::Uuid;
 
 use super::{
-    HostConnection, InventorySource, ScreenSource, SessionUpdates, StatusSource, UpdateGap,
-    UpdateSource, UpdateStream,
+    HostConnection, InventorySource, LocalSources, OutputGap, OutputStream, ScreenSource,
+    SessionUpdates, StatusSource, TerminalOutput, TerminalSource, UpdateGap, UpdateSource,
+    UpdateStream,
 };
 use crate::Client;
 
@@ -48,6 +49,12 @@ impl LocalSelection {
         Endpoint::Local {
             socket: self.0.socket.to_string_lossy().into_owned(),
         }
+    }
+
+    /// Permission to start, signal or reload this endpoint's daemon, from
+    /// the endpoint itself. See [`ProcessControl`].
+    pub fn process_control(&self) -> Option<ProcessControl> {
+        ProcessControl::for_endpoint(&self.endpoint())
     }
 
     /// No identity write or new handshake before existing compatibility policy
@@ -94,6 +101,7 @@ impl PendingLocalConnection {
                 Capability::session_screen(),
                 Capability::session_inventory(),
                 Capability::session_updates(),
+                Capability::session_terminal(),
             ],
             limits: Limits {
                 max_frame_bytes: 8 * 1024 * 1024,
@@ -103,11 +111,14 @@ impl PendingLocalConnection {
         let connection = {
             let mut previous = self.selection.0.previous.lock().unwrap();
             let source = Arc::new(LegacyReadOnly(self.client.clone()));
-            let connection = HostConnection::local_updates(
-                source.clone(),
-                source.clone(),
-                source.clone(),
-                source,
+            let connection = HostConnection::local(
+                LocalSources {
+                    status: source.clone(),
+                    screen: Some(source.clone()),
+                    inventory: Some(source.clone()),
+                    updates: Some(source),
+                    terminal: Some(Arc::new(LegacyTerminal(self.client.clone()))),
+                },
                 hello,
                 previous.as_ref(),
             )?;
@@ -139,6 +150,9 @@ impl SelectedLocalHost {
     pub fn endpoint(&self) -> Endpoint {
         self.selection.endpoint()
     }
+    pub fn process_control(&self) -> Option<ProcessControl> {
+        self.selection.process_control()
+    }
 }
 impl Drop for SelectedLocalHost {
     fn drop(&mut self) {
@@ -146,8 +160,25 @@ impl Drop for SelectedLocalHost {
     }
 }
 
+/// Proof that the selected endpoint is local, so the app may start, signal,
+/// reload or replace its daemon, link its CLI or manage its watcher. Only
+/// [`Self::for_endpoint`] makes one, and it refuses every non-local endpoint:
+/// a remote Host is reached, never managed. This is endpoint policy, not
+/// daemon identity: peer credentials still only name the local socket's peer.
+#[derive(Debug, Clone)]
+pub struct ProcessControl(());
+impl ProcessControl {
+    pub fn for_endpoint(endpoint: &Endpoint) -> Option<Self> {
+        endpoint.is_local().then_some(Self(()))
+    }
+}
+
 struct LegacyReadOnly(Arc<Client>);
 impl StatusSource for LegacyReadOnly {
+    fn is_lost(&self) -> bool {
+        self.0.is_closed()
+    }
+
     fn status(
         &self,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, Error>> + Send + '_>>
@@ -349,6 +380,176 @@ pub async fn legacy_screen(
         }
         .into()),
     }
+}
+
+/// The M1e terminal plane: the very same skiffd frames the desktop sent
+/// before (subscribe, unsubscribe, resize, write), on the selected Client,
+/// and its per-session output queue with lag marking. No Host envelope.
+struct LegacyTerminal(Arc<Client>);
+impl LegacyTerminal {
+    async fn expect_ok(&self, request: skiff_core::protocol::Request) -> Result<Response, Error> {
+        match self.0.request_decoded(request).await {
+            Ok(skiff_core::protocol::Response::Ok) => Ok(Response::Ok),
+            Ok(skiff_core::protocol::Response::Error { message }) => {
+                Err(Error::OperationFailed { message })
+            }
+            Ok(other) => Err(Error::MalformedContract {
+                message: format!("unexpected reply: {other:?}"),
+            }),
+            Err(e) => Err(legacy_transport_error(&self.0, e)),
+        }
+    }
+}
+type Op<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, Error>> + Send + 'a>>;
+impl TerminalSource for LegacyTerminal {
+    fn output(&self, session: &str) -> Box<dyn OutputStream> {
+        Box::new(LegacyOutput(self.0.output(session)))
+    }
+    fn attach(&self, session: String) -> Op<'_> {
+        Box::pin(self.expect_ok(skiff_core::protocol::Request::Subscribe { session }))
+    }
+    fn detach(&self, session: String) -> Op<'_> {
+        // As Client::unsubscribe: the receiver closes before the request.
+        self.0.outputs.lock().unwrap().remove(&session);
+        Box::pin(self.expect_ok(skiff_core::protocol::Request::Unsubscribe { session }))
+    }
+    fn resize(&self, session: String, cols: u16, rows: u16) -> Op<'_> {
+        Box::pin(self.expect_ok(skiff_core::protocol::Request::Resize {
+            session,
+            cols,
+            rows,
+        }))
+    }
+    fn input(&self, session: &str, data: Vec<u8>, paste: bool) -> Result<(), Error> {
+        // The unbounded legacy queue: a keystroke never waits, in call order.
+        self.0
+            .input_now(session, data, paste)
+            .map_err(|_| Error::TransportLost)
+    }
+}
+
+struct LegacyOutput(crate::Output);
+impl OutputStream for LegacyOutput {
+    fn recv(
+        &mut self,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<skiff_host_api::TerminalFrame, OutputGap>>
+                + Send
+                + '_,
+        >,
+    > {
+        Box::pin(async {
+            use skiff_core::protocol::Event;
+            use skiff_host_api::{EchoTimes, TerminalFrame};
+            use tokio::sync::broadcast::error::RecvError;
+            loop {
+                match self.0.recv().await {
+                    Ok(Event::Snapshot {
+                        data, cols, rows, ..
+                    }) => return Ok(TerminalFrame::Snapshot { data, cols, rows }),
+                    Ok(Event::Output { data, echo, .. }) => {
+                        return Ok(TerminalFrame::Output {
+                            data,
+                            echo: echo.map(|e| EchoTimes {
+                                wrote: e.wrote,
+                                read: e.read,
+                            }),
+                        })
+                    }
+                    // The Client routes only output and snapshots here.
+                    Ok(_) => {}
+                    Err(RecvError::Lagged(_)) => return Err(OutputGap::Lagged),
+                    Err(RecvError::Closed) => return Err(OutputGap::Closed),
+                }
+            }
+        })
+    }
+    fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
+fn legacy_transport_error(client: &Client, e: anyhow::Error) -> Error {
+    if e.downcast_ref::<crate::ReplyTimeout>().is_some() {
+        Error::TimedOut
+    } else if e.downcast_ref::<crate::ReplyDecodeError>().is_some() {
+        Error::MalformedContract {
+            message: e.to_string(),
+        }
+    } else if client.is_closed() {
+        Error::TransportLost
+    } else {
+        Error::MalformedContract {
+            message: format!("{e:#}"),
+        }
+    }
+}
+
+/// Temporary desktop compatibility projection of the terminal family: typed
+/// Host requests, with the existing Tauri error text. Capability/version
+/// failures propagate explicitly, never via a raw Client fallback.
+pub async fn legacy_attach(connection: &HostConnection, session: &str) -> anyhow::Result<()> {
+    legacy_terminal_request(
+        connection,
+        Request::TerminalAttach {
+            session: session.into(),
+        },
+    )
+    .await
+}
+pub async fn legacy_detach(connection: &HostConnection, session: &str) -> anyhow::Result<()> {
+    legacy_terminal_request(
+        connection,
+        Request::TerminalDetach {
+            session: session.into(),
+        },
+    )
+    .await
+}
+pub async fn legacy_resize(
+    connection: &HostConnection,
+    session: &str,
+    cols: u16,
+    rows: u16,
+) -> anyhow::Result<()> {
+    legacy_terminal_request(
+        connection,
+        Request::TerminalResize {
+            session: session.into(),
+            cols,
+            rows,
+        },
+    )
+    .await
+}
+async fn legacy_terminal_request(
+    connection: &HostConnection,
+    request: Request,
+) -> anyhow::Result<()> {
+    match connection
+        .request(request)
+        .await
+        .map_err(legacy_read_error)?
+    {
+        Response::Ok => Ok(()),
+        other => Err(anyhow::anyhow!("unexpected reply: {other:?}")),
+    }
+}
+/// Keystrokes and pastes, queued without a wait; the old write_now text on loss.
+pub fn legacy_input(
+    connection: &HostConnection,
+    session: &str,
+    data: Vec<u8>,
+) -> anyhow::Result<()> {
+    connection
+        .terminal_input(session, data, false)
+        .map_err(legacy_read_error)
+}
+/// The session's terminal receiver; take it before [`legacy_attach`].
+pub fn legacy_output(connection: &HostConnection, session: &str) -> anyhow::Result<TerminalOutput> {
+    Ok(connection.terminal_output(session)?)
 }
 
 /// Additive bootstrap metadata beside config, never edits config/daemon state.

@@ -27,7 +27,7 @@ pub(crate) fn pty_write(handle: AppHandle, app: State<'_, App>, session: String,
         Sent::Connect => {
             tauri::async_runtime::spawn(async move {
                 let app = handle.state::<App>();
-                let c = ensure_client(&app).await.ok().map(|(c, _)| c);
+                let c = crate::connection::terminal_now(&app).await.ok();
                 app.input.connected(c.as_deref());
             });
         }
@@ -42,8 +42,8 @@ pub(crate) async fn pty_resize(
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    let (c, _) = ensure_client(&app).await?;
-    c.resize(&session, cols, rows).await.map_err(err)
+    let c = crate::connection::terminal_now(&app).await?;
+    skiff_client::host::local::legacy_resize(&c, &session, cols, rows).await.map_err(err)
 }
 
 #[tauri::command]

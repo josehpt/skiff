@@ -179,11 +179,14 @@ fn m1d_session_updates_have_an_explicit_capability_envelope_and_golden_shape() {
     for value in fixture["messages"].as_array().unwrap() {
         let message: Message = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(&message).unwrap(), *value);
-        let Message::Event { event } = message else { panic!("not an event") };
+        let Message::Event { event } = message else {
+            panic!("not an event")
+        };
         assert_eq!(event.capability(), Capability::session_updates());
     }
     // M0 event families keep their capability; unknown kinds and states fail.
-    let m0: Event = serde_json::from_value(json!({"event":"output","session":"s","data":""})).unwrap();
+    let m0: Event =
+        serde_json::from_value(json!({"event":"output","session":"s","data":""})).unwrap();
     assert_eq!(m0.capability(), Capability::sessions());
     for update in [
         json!({"kind":"future_update","session":"a"}),
@@ -194,4 +197,82 @@ fn m1d_session_updates_have_an_explicit_capability_envelope_and_golden_shape() {
         let event = json!({"event":"session_update","update":update});
         assert!(serde_json::from_value::<Event>(event).is_err());
     }
+}
+
+#[test]
+fn m1e_session_terminal_has_its_own_capability_and_lossless_golden_shape() {
+    let fixture: Value = serde_json::from_str(include_str!("fixtures/m1e.json")).unwrap();
+    assert_eq!(
+        serde_json::to_value(Capability::session_terminal()).unwrap(),
+        fixture["capability"]
+    );
+    for value in fixture["requests"].as_array().unwrap() {
+        let request: Request = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&request).unwrap(), *value);
+        assert_eq!(request.capability(), Some(Capability::session_terminal()));
+        // Every terminal request is acknowledged with Ok, never another reply.
+        assert!(request.accepts(&Response::Ok));
+        assert!(!request.accepts(&Response::SessionScreen { lines: vec![] }));
+    }
+    let input: Request = serde_json::from_value(fixture["requests"][3].clone()).unwrap();
+    assert!(
+        matches!(input, Request::TerminalInput { data, paste: false, .. } if data == [0, 255, 10, 13, 27])
+    );
+    // `paste` defaults to false, as M0 Write does.
+    let typed: Request =
+        serde_json::from_value(json!({"cmd":"terminal_input","session":"s","data":"eA=="}))
+            .unwrap();
+    assert!(matches!(typed, Request::TerminalInput { paste: false, .. }));
+    for value in fixture["messages"].as_array().unwrap() {
+        let message: Message = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&message).unwrap(), *value);
+        if let Message::Event { event } = message {
+            assert_eq!(event.capability(), Capability::session_terminal());
+            assert!(event.into_terminal().is_some_and(|(s, _)| s == "s1"));
+        }
+    }
+    let output: Event = serde_json::from_value(fixture["messages"][3]["event"].clone()).unwrap();
+    assert_eq!(
+        output.into_terminal(),
+        Some((
+            "s1".into(),
+            TerminalFrame::Output {
+                data: b"ls\n".to_vec(),
+                echo: Some(EchoTimes {
+                    wrote: u64::MAX,
+                    read: 0
+                })
+            }
+        ))
+    );
+    // M0 families keep sessions@1 and are not terminal frames; bad bytes fail.
+    let m0: Event =
+        serde_json::from_value(json!({"event":"output","session":"s","data":""})).unwrap();
+    assert_eq!(m0.capability(), Capability::sessions());
+    assert!(m0.into_terminal().is_none());
+    let m0: Request = serde_json::from_value(json!({"cmd":"subscribe","session":"s"})).unwrap();
+    assert_eq!(m0.capability(), Some(Capability::sessions()));
+    for bad in [
+        json!({"event":"terminal_output","session":"s","data":"not base64!"}),
+        json!({"event":"terminal_snapshot","session":"s","data":"","cols":-1,"rows":0}),
+        json!({"event":"terminal_snapshot","session":"s","data":""}),
+    ] {
+        assert!(serde_json::from_value::<Event>(bad).is_err());
+    }
+    assert!(serde_json::from_value::<Request>(
+        json!({"cmd":"terminal_resize","session":"s","cols":65536,"rows":1})
+    )
+    .is_err());
+    // Only a local endpoint may be managed (spawn, signal, reload, link).
+    assert!(Endpoint::Local {
+        socket: "/s".into()
+    }
+    .is_local());
+    assert!(!Endpoint::Ssh {
+        hostname: "h".into(),
+        account: "a".into(),
+        port: 22,
+        socket: "/s".into()
+    }
+    .is_local());
 }

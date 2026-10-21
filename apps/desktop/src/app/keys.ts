@@ -172,7 +172,7 @@ export const describeText = (what: string) => what.replaceAll("{skiff-agent}", s
 
 /** What each action does, for the shortcut sheet. Grouped as the menu bar is. */
 export const DESCRIBE: [string, Action, string][] = [
-  ["File", "new-session", "New session in the highlighted worktree, as its + does"],
+  ["File", "new-session", "New session in the highlighted worktree, as its + does. On a remote Host, in a folder on that Host"],
   ["File", "new-worktree", "New worktree"],
   ["File", "add-project", "Add project"],
   ["File", "settings", "Settings"],

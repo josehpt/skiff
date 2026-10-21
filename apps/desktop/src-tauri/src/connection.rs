@@ -804,7 +804,7 @@ mod tests {
         let mut reattached = skiff_client::host::local::legacy_output(&terminal, "t1").unwrap();
         // M1g: lifecycle and groups on the same selected owner, and the
         // capabilities the page reads.
-        assert_eq!(capability_names(&terminal), ["connection_status@1", "session_screen@1", "session_inventory@1", "session_updates@1", "session_terminal@1", "session_lifecycle@1", "session_groups@1"]);
+        assert_eq!(capability_names(&terminal), ["connection_status@1", "session_screen@1", "session_inventory@1", "session_updates@1", "session_terminal@1", "session_lifecycle@1", "session_groups@1", "session_agents@1"]);
         let made = skiff_client::host::local::legacy_create(&terminal, serde_json::from_value(serde_json::json!({"label":"sh","cwd":"/srv/λ","cols":90,"rows":20})).unwrap()).await.unwrap();
         assert_eq!(made.id, "made");
         assert_eq!(skiff_client::host::local::legacy_kill(&terminal, "gone").await.unwrap_err().to_string(), "no such session");

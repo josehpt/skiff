@@ -1,4 +1,4 @@
-# Host API — M0 contract, local M1a–M1g seams and M2 remote terminals
+# Host API — M0 contract, local M1a–M1g seams, M2 remote terminals and M3 remote lifecycle
 
 Tracking: [M0 #156](https://github.com/solutionscay/skiff/issues/156),
 [epic #155](https://github.com/solutionscay/skiff/issues/155).
@@ -768,7 +768,7 @@ boundary baseline, assigned to later milestones. None of them is a Host API.
 | Files and previews | `list_dir`, `preview_file`, `read_image`, `open_file`, `open_path`, `reveal_file`, `inspect_folder`, `files_projects` | M5 |
 | Ledger | `ledger_rows`, `ledger::watch` | M6 |
 | Skipper and its folder, task types, watcher | `get_skiff_agent`, `set_skiff_agent`, `open_skiff_agent` (coordinator), `start_skiff_watch`, `skiff_watch_log`, `preview_skiff_folder`, `change_skiff_folder` (except its kill) | M6 |
-| Agent list and commands | `list_agents`, `list_agent_sessions`, `set_agents`, `set_agent_command` (skiffd-served, legacy Client) | not assigned in #155; propose M3 with remote session creation |
+| Agent settings and the resume list | `list_agent_sessions`, `set_agents`, `set_agent_command` (skiffd-served, legacy Client). `list_agents` moved behind `session_agents@1` in M3 | later |
 | Endpoint-local lifecycle and diagnostics | `daemon_status` compatibility checks, `restart_daemon`, `reload_daemon`, `trace_set` | local only, token-guarded |
 
 Client-owned surfaces (appearance, keys, menus, theme files, clipboard,
@@ -912,9 +912,8 @@ OpenSSH stream-local forward to the remote skiffd socket.
 ### What a remote Host shows
 
 - **Capabilities:** a remote Host gets status, screen, inventory, updates and
-  terminal. It does not get `session_lifecycle` or `session_groups`: create,
-  end, rename, theme, seen and groups are M3. The M1g capability gates hide
-  those actions. Remote work starts from that Host's own `skiff` CLI.
+  terminal. Since M3 it also gets lifecycle, groups and agents when its
+  skiffd speaks this app's protocol (see M3).
 - **Local data:** projects, Git, files and local openers, the ledger, Skipper,
   agents, `projects.toml` and daemon lifecycle are refused in Rust by one gate
   (`LOCAL_ONLY` in `lib.rs`, checked against the selection). A test fails if a
@@ -949,10 +948,8 @@ OpenSSH stream-local forward to the remote skiffd socket.
 
 ### Agent list: M3
 
-The agent list (`list_agents`, `list_agent_sessions`, agent command settings)
-moves with **M3, remote session lifecycle**. It exists to start and resume
-sessions, which M2 does not do remotely. In M2 its commands are local-only, and
-the remote CLI starts work.
+The agent list moved with M3 (below). Agent settings and the resume list stay
+local-only.
 
 ### Demo
 
@@ -1017,12 +1014,151 @@ the remote CLI starts work.
 
 - No manual run on two machines yet: the Termius side-by-side, the Wi-Fi drop
   and the laptop sleep in the M2 "done when". CI has not run (not pushed).
-- Remote session create, rename, end and groups, and the agent list: M3.
-  Resize contention with other clients: M3.
+- Remote session create, rename, end and groups, the agent list and resize
+  contention: done in M3 (below).
 - The picker has no "test connection" step. Errors show when the Host is picked.
 - Remote URL activation is unchanged (it opens only after a click, as before).
   The security review before M2 ships to anyone is still open.
 - Latency was not measured over a real link (M1f topology follow-up).
+
+## M3: remote session lifecycle (#159)
+
+### What a remote Host now does
+
+- **Lifecycle and groups** go through the same M1g `session_lifecycle@1` and
+  `session_groups@1` paths and the same legacy skiffd frames as on This Mac:
+  `create_session`, `rename_session`, `kill`, `set_session_theme`, `seen`,
+  `list_groups`, `save_group`, `delete_group`. Nothing new runs on the Host.
+- **Create in a folder on the Host.** `SessionSpec.cwd` is a path on the Host,
+  sent as typed; `null` is the Host account's home, chosen there. The app
+  never resolves, expands or checks it against this Mac. "New session…" on a
+  remote Host (its key, the menu bar, the palette, the welcome screen) opens a
+  folder menu:
+  - the folders the Host reported, from its sessions and groups, with the
+    highlighted or focused session's folder first
+  - Home folder
+  - Type a folder…: an absolute path on the Host, or empty for its home. `~`
+    and relative paths are refused, because skiffd does not expand them.
+
+  Each folder opens Shell, then the Host's agents. Split and the group start
+  menus already used the session's or group's own folder.
+- **Rename, theme and seen** act on the remote session.
+- **End** asks first, as on This Mac. End, Kill all, Remove and Close keep
+  their confirmations. A shell that exits is removed from the list without a
+  question, as before; it has no process left.
+
+### The agent list: `session_agents@1`
+
+- A narrow, read-only family:
+  - `agent_list` answers `agents { agents: [HostAgent] }`
+  - `HostAgent` is `{ id, command, default_command, custom, installed, enabled }`,
+    a lossless mapping of skiffd's `AgentInfo`
+  - golden fixture: `tests/fixtures/m3.json`
+- The local adapter sends skiffd's existing `list_agents` frame. skiffd
+  answers from **its own account**: its PATH (the login shell's), and its
+  `projects.toml` `[agents]`. For a remote Host that is the remote account,
+  never this Mac's config.
+- The `list_agents` Tauri command now goes through the selected Host and is no
+  longer local-only. The page loads `S.agents` with
+  `hostInvoke("session_agents", "list_agents")`, so a remote Host's start
+  menus offer its own agents and its own command lines.
+- **Still local-only:** `list_agent_sessions` (the resume list runs a command
+  that the page names), `set_agents`, `set_agent_command`, `rename_agent`,
+  `remove_agent` and `restore_agents`. On a remote Host, Settings › Agents
+  lists that Host's agents read-only and says to change them on that Host.
+
+### Capabilities say what the endpoint can do
+
+- **This Mac:** every family, as before. The app reloads or replaces a skiffd
+  that speaks another protocol.
+- **A remote Host:** status, screen, inventory, updates and terminal always.
+  `session_lifecycle`, `session_groups` and `session_agents` only when its
+  `pong` reports this app's `PROTOCOL`. The app never changes a remote skiffd,
+  and these mutations are the legacy frames that `PROTOCOL` versions. On
+  another protocol they are not advertised, the page hides their actions, and
+  a direct call is refused before any frame. The welcome screen says why.
+- **Peek tools are refused remotely**, though the local adapter starts them.
+  A peek shows a file of this Mac. A remote `session_create` with
+  `peek: true` is a `permission` error with no frame.
+
+### No replay
+
+- Each mutation is written once. A lost or timed-out reply is an error
+  (`transport_lost` or `timed_out`), and the mutation may have run.
+- Nothing retries it: not the adapter, not the reconnect, not the page's
+  recovery loop (that loop re-reads state; it sends no mutation).
+- A later request is the person's new action, and it goes once.
+
+### Resize contention (several attached clients)
+
+This is the existing policy. It is now written down and tested over a real
+forward:
+
+- A session has **one PTY size**. skiffd applies resizes in the order it
+  receives them, from any client. **The last one applied is the size** for
+  every attached client.
+- skiffd sends every connection a `session_updated` event with each new size.
+- **Nobody re-asserts.**
+  - The app does not answer another client's size with its own. `ptySized`
+    forgets the size it sent, and the app sends a size again only when one
+    of its own panes changes size (a fit after a drag, show or zoom).
+  - `skiff attach` (Termius) sizes the pane on attach and on SIGWINCH. On
+    detach it gives the pane back its earlier size, unless another client
+    sized it meanwhile.
+- Two resizes at the same time: whichever skiffd applies last wins, and every
+  client sees that one. No client loops.
+
+### Guards kept
+
+- **Identity and trust:** M2's pin, `identity_changed` and strict ssh options
+  are unchanged. A mutation needs an accepted connection like any request.
+- **Local lifecycle tokens:** unchanged. A remote Host never gets
+  `ProcessControl`.
+- **Remote paths never reach a local opener.** Session and group folders on a
+  remote Host go only into session specs and group saves. `open_path`,
+  `open_file`, `reveal_file`, `preview_file`, `read_image`, `list_dir`,
+  `open_diff` and `git_changes` stay in `LOCAL_ONLY`. Rust refuses them while
+  a remote Host is shown, and a test keeps them listed. Every menu item that
+  names a folder to an opener uses a local project or the Skipper folder,
+  which a remote Host does not load.
+
+### Tests
+
+- **Contract** (`skiff-host-api/tests/contract.rs`): `m3.json` round trip; the
+  agent list's own capability and one reply kind; refused malformed rows.
+- **Selected local socket** (`session_lifecycle.rs`): the agent list sends the
+  legacy `list_agents` frame; same result and error text as the legacy Client.
+- **Fake ssh** (`ssh_forward.rs`):
+  - a compatible remote Host serves create (Host cwd as typed, and `null` for
+    home), rename, kill, groups and its own agents, over the exact frames
+  - a remote Host on PROTOCOL−1 or +1 gets none of the three families; each
+    call is refused with no frame
+  - a remote peek create is refused with no frame
+  - a create whose reply is lost is written once and never resent after the
+    reconnect
+- **Real SSH** (`ssh_remote.rs`, private skiffd and loopback sshd):
+  - the agent list is the Host config's own
+  - a session starts in a Host folder and runs there (`pwd`)
+  - rename, group save (the Host's CLI sees it), list and delete, and end
+  - the last-applied resize is the size for the app over the forward and a
+    Host-side client; the app hears the foreign size; nothing re-asserts
+- **Desktop:** the capability list includes `session_agents@1`;
+  `list_agents` is a Host command, and the agent settings and the resume
+  list stay local-only.
+- **Page:** `remoteLaunch.test.ts` (Host folders once each, the asked folder
+  first; typed folders absolute or empty; the Host's agent starts in the Host
+  folder; Cancel starts nothing) and `hostCaps.test.ts` (`session_agents`
+  gating, no call without it).
+
+### Not yet (M3 acceptance gaps)
+
+- No manual run on two machines. CI has not run, because nothing is pushed.
+  M2's own manual and CI acceptance is still open on #158.
+- The resume list and agent settings on a remote Host.
+- A folder browser on the Host: folders are the reported ones, home, or
+  typed. Browsing needs the M5 files API.
+- A remote skiffd on another protocol gets no lifecycle. That Host's own
+  `skiff` CLI is the way to start work there.
 
 ## M0 demo and handoff
 

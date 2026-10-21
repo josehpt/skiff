@@ -7,6 +7,8 @@ import { currentRow, cycleRegion, fromProject, listItems, stepList, toMainWorktr
 
 import { endEntry, killGroup, newWorktree, projectMenu, projectRun, splitMenu, ungroup } from "../workspace/menus";
 import { ctxMenu } from "../ui/contextMenu";
+import { isRemote } from "./hosts";
+import { openRemoteNewSession } from "../workspace/remoteLaunch";
 import { addProject, launchMenu, settings } from "./panels";
 
 import { renameListItem, startRename, startSessionRename } from "../workspace/rename";
@@ -36,6 +38,13 @@ function openNewSession() {
   ctxMenu.close(false);
   // The highlighted row's worktree, as its + would; else the focused one.
   const row = currentRow();
+  // A remote Host has no worktrees yet: a folder on that Host, the
+  // highlighted session's first, else the focused one's.
+  if (isRemote()) {
+    const near = sessions.get(row?.dataset.session ?? "") ?? (S.focused ? sessions.get(S.focused) : undefined);
+    const b = (row ?? $("sidebar-scroll")).getBoundingClientRect();
+    return openRemoteNewSession(b.left + 24, row ? b.bottom : b.top + 24, near?.cwd);
+  }
   const rowPlus = row?.closest("#sidebar-scroll .wt")?.querySelector<HTMLElement>(".wt-plus");
   if (rowPlus) return rowPlus.click();
   const at = currentWorktree();

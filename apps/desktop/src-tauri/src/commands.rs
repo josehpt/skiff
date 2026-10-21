@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use skiff_core::{group::Group, project::AgentInfo, session::{SessionInfo, SessionSpec}};
 use tauri::{AppHandle, Manager, State};
-use skiff_client::host::local::{legacy_create, legacy_delete_group, legacy_groups, legacy_kill, legacy_rename, legacy_save_group, legacy_seen, legacy_set_theme};
+use skiff_client::host::local::{legacy_agents, legacy_create, legacy_delete_group, legacy_groups, legacy_kill, legacy_rename, legacy_save_group, legacy_seen, legacy_set_theme};
 use crate::{connection::{App, ensure_client, err}, input::Sent};
 
 #[tauri::command]
@@ -371,10 +371,12 @@ fn reveal(path: &std::path::Path) -> anyhow::Result<()> {
     }
 }
 
+/// The selected Host's agents, from its own account: its PATH and settings,
+/// never this Mac's for a remote Host (`session_agents@1`).
 #[tauri::command]
 pub(crate) async fn list_agents(app: State<'_, App>) -> Result<Vec<AgentInfo>, String> {
-    let (c, _) = ensure_client(&app).await?;
-    c.list_agents().await.map_err(err)
+    let c = crate::connection::host_now(&app).await?;
+    legacy_agents(&c).await.map_err(err)
 }
 
 #[tauri::command]

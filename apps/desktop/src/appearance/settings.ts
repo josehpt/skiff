@@ -11,6 +11,8 @@ import type { SkiffAgentSettings } from "../app/skiffAgent";
 import { type SkiffAgentEdit, skiffAgentSection, taskTypesSection } from "./skiffAgentSettings";
 import { changeSkiffFolder } from "./skiffFolderDialog";
 import { rowTable, tableState } from "./rowTable";
+import { hostName, isRemote } from "../app/hosts";
+import { hostInvoke } from "../app/hostCaps";
 
 /**
  * Settings over the sidebar and terminal: agents, appearance, and Open with.
@@ -60,7 +62,7 @@ export function createSettings(onAgents: (a: AgentInfo[]) => void, onClose: () =
       onAgents(agents);
     } catch (e) {
       error = String(e);
-      agents = await invoke<AgentInfo[]>("list_agents").catch(() => agents);
+      agents = await hostInvoke<AgentInfo[]>("session_agents", "list_agents").catch(() => agents);
     } finally {
       saving = false;
       render();
@@ -142,6 +144,14 @@ export function createSettings(onAgents: (a: AgentInfo[]) => void, onClose: () =
     const title = h("div", "set-h", "Agents");
     title.id = "set-h-agents";
     intro.append(title);
+    // A remote Host's agents are its own: listed here, changed on that Host.
+    if (isRemote()) {
+      const rows = agents.map((a) => h("div", "set-note mono", `${a.id}: ${a.command} (${a.installed ? (a.enabled ? "on" : "off") : "not on PATH"})`));
+      main.append(intro, h("div", "set-note", `The agents on ${hostName()}, from its PATH and its projects.toml. Change them on that Host.`), ...(rows.length ? rows : [h("div", "set-note", "No agents.")]));
+      if (error) main.appendChild(h("div", "set-error", error));
+      root.replaceChildren(nav, main, closeButton());
+      return;
+    }
     // Only a removed default can come back.
     if (DEFAULT_AGENTS.some((d) => !agents.some((a) => a.id === d))) {
       intro.classList.add("set-head-row");
@@ -572,7 +582,7 @@ export function createSettings(onAgents: (a: AgentInfo[]) => void, onClose: () =
       openSet = await invoke<OpenSettings>("open_settings").catch(() => null);
       menuSet = await invoke<MenuLayout>("menu_layout").catch(() => null);
       agentSet = await invoke<SkiffAgentSettings>("get_skiff_agent").catch(() => null);
-      agents = await invoke<AgentInfo[]>("list_agents").catch((e) => {
+      agents = await hostInvoke<AgentInfo[]>("session_agents", "list_agents").catch((e) => {
         error = String(e);
         return [];
       });

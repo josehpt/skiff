@@ -227,6 +227,9 @@ export async function loadProjects() {
   const seq = ++projectsSeq;
   // A remote Host's projects are not reachable yet (M4): show its sessions
   // only, never this Mac's projects under its name.
+  // The agents are the selected Host's own, from its account: a remote
+  // Host's never come from this Mac.
+  if (!S.agents.length) S.agents = await hostInvoke<AgentInfo[]>("session_agents", "list_agents").catch(() => []);
   if (isRemote()) {
     S.projects = [];
     S.closedProjects = [];
@@ -234,7 +237,6 @@ export async function loadProjects() {
     if (S.selectedProject !== OTHER) S.selectedProject = null;
     return;
   }
-  if (!S.agents.length) S.agents = await invoke<AgentInfo[]>("list_agents").catch(() => []);
   let list: Project[] | null = null;
   let err: string | null = null;
   const started = performance.now();

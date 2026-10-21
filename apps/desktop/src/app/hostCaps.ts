@@ -10,7 +10,8 @@ export type HostCap =
   | "session_updates"
   | "session_terminal"
   | "session_lifecycle"
-  | "session_groups";
+  | "session_groups"
+  | "session_agents";
 
 /** The major of each capability that this page speaks. */
 const MAJOR: Record<HostCap, number> = {
@@ -20,6 +21,7 @@ const MAJOR: Record<HostCap, number> = {
   session_terminal: 1,
   session_lifecycle: 1,
   session_groups: 1,
+  session_agents: 1,
 };
 
 /** What each capability offers, for the refusal. */
@@ -30,6 +32,7 @@ const OFFERS: Record<HostCap, string> = {
   session_terminal: "terminals",
   session_lifecycle: "new, ended or renamed sessions",
   session_groups: "groups",
+  session_agents: "an agent list",
 };
 
 /** `name@major` of the selected Host. `null` until the first answer. */

@@ -62,3 +62,15 @@ test("a reload asks again: a Host that stops offering a capability loses its sur
   await mod.loadHostCaps();
   assert.equal(mod.hostCan("session_groups"), false);
 });
+
+test("M3: the agent list has its own capability; without it nothing is asked", async () => {
+  const { mod, calls } = caps([...LOCAL, "session_agents@1"]);
+  assert.equal(await mod.hostInvoke("session_agents", "list_agents"), "list_agents done");
+  const old = caps(["session_terminal@1", "session_inventory@1"]);
+  await old.mod.loadHostCaps();
+  old.calls.length = 0;
+  assert.equal(old.mod.hostCan("session_agents"), false);
+  await assert.rejects(old.mod.hostInvoke("session_agents", "list_agents"), /This Host does not offer an agent list\./);
+  assert.deepEqual(old.calls, []);
+  assert.ok(calls.some(([c]) => c === "list_agents"));
+});

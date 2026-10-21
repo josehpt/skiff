@@ -16,6 +16,8 @@ import { openClosedProject } from "./projectClose";
 
 import { S } from "../app/state";
 import { hostName, isRemote } from "../app/hosts";
+import { hostCan } from "../app/hostCaps";
+import { openRemoteNewSession } from "./remoteLaunch";
 import { accent, currentProject, launchChoices, shownIds } from "../app/stateQueries";
 
 let welcomeSig = "";
@@ -26,7 +28,7 @@ export function renderWelcome() {
   const p = currentProject();
   const w = p?.worktrees.find((x) => x.is_main) ?? p?.worktrees[0];
   // Same content: keep the element, and the focus and hover on its buttons.
-  const sig = JSON.stringify([S.projects.length, S.closedProjects.map((x) => x.name), !!S.projectsError, p?.name, p?.color, w?.path, S.justAdded === p?.name, !!S.focused, shownIds().length, launchChoices().map((a) => a?.id)]);
+  const sig = JSON.stringify([S.projects.length, S.closedProjects.map((x) => x.name), !!S.projectsError, p?.name, p?.color, w?.path, S.justAdded === p?.name, !!S.focused, shownIds().length, launchChoices().map((a) => a?.id), hostCan("session_lifecycle")]);
   if (sig === welcomeSig && (!welcomeBox || welcomeBox.isConnected)) return;
   welcomeSig = sig;
   host.querySelector(".empty")?.remove();
@@ -36,10 +38,17 @@ export function renderWelcome() {
   if (isRemote()) {
     // A remote Host: its sessions, and work starts from its own CLI (M2).
     if (S.focused || shownIds().length) return;
-    box.append(
-      h("div", "welcome-title", `Sessions on ${hostName()}`),
-      h("div", "welcome-text", `Pick a session in the list. To start work, run skiff on ${hostName()}, for example: skiff new --agent claude.`),
-    );
+    const text = `Pick a session in the list, or start one in a folder on ${hostName()}. Its agents are the ones installed there.`;
+    box.append(h("div", "welcome-title", `Sessions on ${hostName()}`), h("div", "welcome-text", text));
+    if (hostCan("session_lifecycle")) {
+      const start = button("welcome-primary", "New session…", () => {
+        const b = start.getBoundingClientRect();
+        openRemoteNewSession(b.left, b.bottom);
+      });
+      box.append(start);
+    } else {
+      box.append(h("div", "welcome-hint", `${hostName()} does not offer new sessions: its Skiff speaks another version. Run skiff there to start work.`));
+    }
   } else if (S.projects.length === 0 && S.closedProjects.length && !S.projectsError) {
     // Every project is closed: open one again, or add another.
     const actions = h("div", "welcome-actions");

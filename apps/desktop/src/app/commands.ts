@@ -10,6 +10,7 @@ import { createSwitcher, type SwitchItem } from "../ui/switcher";
 
 import { invoke } from "@tauri-apps/api/core";
 import { hostCan } from "./hostCaps";
+import { isRemote } from "./hosts";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "../platform/os";
 
@@ -49,7 +50,7 @@ function commands(): Cmd[] {
   const k = (a: Action) => keyLabel(a);
   const act = (a: Action) => () => runAction(a);
   return [
-    { section: "File", label: "New session…", key: k("new-session"), action: "new-session", run: act("new-session"), off: !currentWorktree() || !hostCan("session_lifecycle") },
+    { section: "File", label: "New session…", key: k("new-session"), action: "new-session", run: act("new-session"), off: (!currentWorktree() && !isRemote()) || !hostCan("session_lifecycle") },
     { section: "File", label: "New worktree…", key: k("new-worktree"), action: "new-worktree", run: act("new-worktree"), off: !currentProject() },
     { section: "File", label: "Add project…", key: k("add-project"), action: "add-project", run: act("add-project") },
     { section: "File", label: "Open closed project…", key: "", run: openClosedMenu, off: !S.closedProjects.length },

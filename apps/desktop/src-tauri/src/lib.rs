@@ -46,7 +46,7 @@ fn disable_dmabuf_where_broken() {
 
 /// Commands that read or change this Mac's host-owned data or processes:
 /// projects, worktrees, Git, files and local openers, the ledger, Skipper,
-/// agents and daemon lifecycle. While a remote Host is selected they are
+/// agent settings and the resume list, and daemon lifecycle. While a remote Host is selected they are
 /// refused here, in one place, so a page bug cannot show this Mac's data
 /// under a remote Host's name. M4–M6 move them behind Host APIs.
 const LOCAL_ONLY: &[&str] = &[
@@ -58,7 +58,7 @@ const LOCAL_ONLY: &[&str] = &[
     "set_project_changes", "set_project_files", "project_themes", "set_project_theme", "reorder_projects",
     "read_image", "list_dir", "git_changes", "open_diff", "preview_file", "open_file", "reveal_file", "open_path",
     "files_projects", "hidden_changes_projects",
-    "list_agents", "list_agent_sessions", "set_agents", "set_agent_command", "rename_agent", "remove_agent",
+    "list_agent_sessions", "set_agents", "set_agent_command", "rename_agent", "remove_agent",
     "restore_agents", "config_path", "open_config", "install_cli", "restart_daemon", "reload_daemon",
 ];
 
@@ -254,17 +254,17 @@ mod tests {
         }
         // Session and terminal commands go through the selected Host, and are
         // gated by its capabilities instead.
-        for host in ["list_sessions", "subscribe_events", "subscribe_output", "pty_write", "pty_resize", "session_screen", "create_session", "kill_session", "list_groups", "daemon_status", "host_capabilities", "list_hosts", "select_host"] {
+        for host in ["list_sessions", "subscribe_events", "subscribe_output", "pty_write", "pty_resize", "session_screen", "create_session", "kill_session", "rename_session", "list_groups", "save_group", "delete_group", "list_agents", "daemon_status", "host_capabilities", "list_hosts", "select_host"] {
             assert!(!super::LOCAL_ONLY.contains(&host), "{host}");
         }
         // Every opener and data family of this Mac is listed.
-        for local in ["open_path", "open_file", "reveal_file", "open_diff", "preview_file", "read_image", "list_dir", "list_projects", "git_changes", "ledger_rows", "get_skiff_agent", "open_skiff_agent", "start_skiff_watch", "restart_daemon", "reload_daemon", "install_cli"] {
+        for local in ["open_path", "open_file", "reveal_file", "open_diff", "preview_file", "read_image", "list_dir", "list_projects", "git_changes", "ledger_rows", "get_skiff_agent", "open_skiff_agent", "start_skiff_watch", "restart_daemon", "reload_daemon", "install_cli", "list_agent_sessions", "set_agents", "set_agent_command"] {
             assert!(super::LOCAL_ONLY.contains(&local), "{local}");
         }
         // A command added later must be placed on one side or the other.
         let allowed = ["set_menu", "quit_app", "guard_quit", "menu_layout", "set_menu_layout", "set_window_dark", "clipboard_write", "clipboard_read",
             "daemon_status", "host_capabilities", "list_hosts", "add_host", "remove_host", "select_host", "set_host_clipboard", "host_clipboard", "accept_host_identity",
-            "list_sessions", "create_session", "pty_write", "pty_resize", "session_seen", "kill_session", "rename_session", "set_session_theme",
+            "list_sessions", "create_session", "pty_write", "pty_resize", "session_seen", "kill_session", "rename_session", "set_session_theme", "list_agents",
             "open_settings", "set_open", "set_open_peek", "open_url", "list_themes", "import_themes", "open_theme_folder", "get_appearance",
             "memory_usage", "get_keys", "trace_info", "trace_write", "trace_set", "system_load", "set_appearance", "set_font_size", "set_mission_filter",
             "list_groups", "session_screen", "save_group", "delete_group", "subscribe_output", "ack_output", "unsubscribe_output", "subscribe_events",

@@ -727,7 +727,7 @@
       "local provider: apps/desktop/src/ui/contextMenu.ts",
       "local provider: apps/desktop/src/workspace/view.ts"
     ],
-    "sha256": "bdee2b9e4479cc72cc83b895b9460755dd4d474be5ab483b9ccc981ceb2788d3"
+    "sha256": "31e5198524cfab70cf6e102622e521d764d36c0d3552d4b829804d5e73421eb2"
   },
   "apps/desktop/src/workspace/rename.ts": {
     "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",

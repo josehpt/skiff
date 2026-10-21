@@ -18,7 +18,7 @@ function launch(o: { sessions?: { id: string; cwd: string }[]; groups?: { cwd?: 
       "../ui/dom": { h: () => ({ setAttribute() {}, value: "" }) },
       "../ui/alerts": { showError(e: unknown) { throw e; } },
       "../app/daemon": { newSession: async (...args: unknown[]) => void started.push(args) },
-      "../app/hosts": { hostName: () => "devbox" },
+      "../app/hosts": { hostName: () => "devbox", hostConnected: () => true },
       "../app/state": { S: { groups: o.groups ?? [] }, sessions: new Map((o.sessions ?? []).map((s) => [s.id, s])) },
       "../app/stateQueries": { launchChoices: () => choices, launchDigit: (i: number) => String(i + 1) },
       "../appearance/agentIcon": { launchIcon: () => ({}) },

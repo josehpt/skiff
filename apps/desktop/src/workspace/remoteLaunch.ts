@@ -12,7 +12,7 @@ import { actionDialog } from "../ui/dialogParts";
 import { h } from "../ui/dom";
 import { showError } from "../ui/alerts";
 import { newSession } from "../app/daemon";
-import { hostName } from "../app/hosts";
+import { hostConnected, hostName } from "../app/hosts";
 import { S, sessions } from "../app/state";
 import { launchChoices, launchDigit } from "../app/stateQueries";
 import { launchIcon } from "../appearance/agentIcon";
@@ -42,8 +42,19 @@ function startEntries(cwd: string | null): MenuEntry[] {
     glyph: launchIcon(a),
     label: a?.id ?? "Shell",
     hint: launchDigit(i),
-    run: () => void newSession(cwd, a?.command ?? null, a?.id ?? "", a ? "agent" : "shell").catch(showError),
+    run: () => start(cwd, a?.id ?? null),
   }));
+}
+
+/** A menu can stay open across a lost link, and the Host may list other
+ *  agents once it is back. So the pick is read again when it runs: the
+ *  agent's command as the Host lists it now, or nothing. */
+function start(cwd: string | null, id: string | null) {
+  const host = hostName();
+  if (!hostConnected()) return showError(`${host} is not connected. Try again once it is back.`);
+  const a = id === null ? null : launchChoices().find((c) => c?.id === id);
+  if (a === undefined) return showError(`${host} no longer offers ${id}. Open New session again.`);
+  void newSession(cwd, a?.command ?? null, a?.id ?? "", a ? "agent" : "shell").catch(showError);
 }
 
 /** The folder menu. `near`: the highlighted or focused session's folder, listed first. */

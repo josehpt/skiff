@@ -52,7 +52,107 @@ function recovery() {
     { window: { addEventListener() {} }, document: { hasFocus: () => true }, Promise, Map, Set, console },
     "",
   );
-  return { mod, S, host, calls, created, agentsDuringConnect: () => agentsDuringConnect };
+  return { mod, S, sessions, host, calls, created, agentsDuringConnect: () => agentsDuringConnect };
+}
+
+/** A remote New session menu opened before the link dropped, on the real
+ *  daemon, stateQueries and remoteLaunch modules. `link.up` is the shown
+ *  Host's link as hosts.ts reports it; `errors` holds what the page showed. */
+function openMenu(r: ReturnType<typeof recovery>) {
+  const link = { up: true };
+  const errors: string[] = [];
+  const queries = moduleFromSource(
+    "../src/app/stateQueries.ts",
+    { "./state": { S: r.S, sessions: r.sessions } },
+    { Map, Set },
+    "",
+  );
+  const menus: any[][] = [];
+  const launch = moduleFromSource(
+    "../src/workspace/remoteLaunch.ts",
+    {
+      "../ui/contextMenu": { ctxMenu: { open: (_x: number, _y: number, _t: string, entries: any[]) => menus.push(entries) } },
+      "../ui/alerts": { showError: (e: unknown) => void errors.push(String(e)) },
+      "../app/daemon": r.mod,
+      "../app/hosts": { hostName: () => "devbox", hostConnected: () => link.up },
+      "../app/state": { S: r.S, sessions: r.sessions },
+      "../app/stateQueries": queries,
+      "../appearance/agentIcon": { launchIcon: () => ({}) },
+    },
+    { Set, Map, Promise },
+    "",
+  );
+  launch.openRemoteNewSession(0, 0);
+  // Home folder › Shell, agent: the callbacks the open menu keeps.
+  const [shell, agent] = menus[0].at(-2).sub;
+  assert.equal(agent.label, "agent");
+  return { link, errors, shell, agent };
+}
+
+/** The link drops and recovery runs, as hosts.ts drives it. */
+async function dropAndRecover(r: ReturnType<typeof recovery>, link: { up: boolean }) {
+  link.up = false;
+  await r.mod.reconnectRemote();
+  link.up = true;
+}
+
+test("a launch menu left open across a recovery starts the command the Host lists now", async () => {
+  const r = recovery();
+  const m = openMenu(r);
+  await dropAndRecover(r, m.link);
+  m.agent.run();
+  m.shell.run();
+  await flush();
+  assert.deepEqual(m.errors, []);
+  assert.equal(r.created[0].command, "agent");
+  assert.deepEqual([...r.created[0].args], ["--new"]);
+  assert.equal(r.created[1].role, "shell");
+  assert.equal(r.created[1].command, null);
+});
+
+test("a launch menu left open starts nothing while the link is down", async () => {
+  const r = recovery();
+  const m = openMenu(r);
+  m.link.up = false;
+  m.agent.run();
+  m.shell.run();
+  await flush();
+  assert.deepEqual(r.created, []);
+  assert.equal(m.errors.length, 2);
+  assert.match(m.errors[0], /devbox is not connected/);
+});
+
+test("a launch menu left open starts nothing after a failed recovery", async () => {
+  const r = recovery();
+  const m = openMenu(r);
+  r.host.fail = "list_agents";
+  m.link.up = false;
+  await assert.rejects(r.mod.reconnectRemote(), /list_agents failed/);
+  m.agent.run();
+  await flush();
+  assert.equal(r.created.length, 0);
+  // Even with the link marked up, no agent from before is left to start.
+  m.link.up = true;
+  m.agent.run();
+  await flush();
+  assert.equal(r.created.length, 0);
+  assert.match(m.errors.at(-1)!, /devbox no longer offers agent/);
+});
+
+for (const [what, change] of [
+  ["removed", (agents: any[]) => agents.splice(0)],
+  ["turned off", (agents: any[]) => (agents[0].enabled = false)],
+] as const) {
+  test(`a launch menu left open does not start an agent the Host has ${what}`, async () => {
+    const r = recovery();
+    const m = openMenu(r);
+    change(r.host.agents);
+    await dropAndRecover(r, m.link);
+    m.agent.run();
+    await flush();
+    assert.deepEqual(r.created, []);
+    assert.match(m.errors[0], /devbox no longer offers agent/);
+  });
 }
 
 test("a reconnect reads the Host's agents again, and a launch runs the new command", async () => {

@@ -77,8 +77,7 @@ pub(crate) async fn session_seen(app: State<'_, App>, session: String) -> Result
 /// Mission control's text for one session (#88).
 #[tauri::command]
 pub(crate) async fn session_screen(app: State<'_, App>, session: String, rows: u16) -> Result<Vec<String>, String> {
-    let (c, _) = ensure_client(&app).await?;
-    c.screen(&session, rows).await.map_err(err)
+    crate::connection::screen_now(&app, &session, rows).await
 }
 
 #[tauri::command]

@@ -1,4 +1,4 @@
-# Host API — M0 contract and M1a local status seam
+# Host API — M0 contract and local M1a/M1b seams
 
 Tracking: [M0 #156](https://github.com/solutionscay/skiff/issues/156),
 [epic #155](https://github.com/solutionscay/skiff/issues/155).
@@ -16,7 +16,8 @@ push to the separate wiki repository.
 - **Selected Host**: the one Host whose data a future app window presents.
   Selection is not implemented in M0. No cross-Host aggregation is implied.
 - **Capability**: `{ name, version }`, a feature's major contract. `sessions@1`
-  is the M0 operation family; M1a adds `connection_status@1`. Unknown names/majors are retained as metadata
+  is the M0 operation family; M1a adds `connection_status@1` and M1b adds
+  read-only `session_screen@1`. Unknown names/majors are retained as metadata
   and ignored unless an operation requires them.
 
 The ownership rule is: if data would differ on another Host, it must eventually
@@ -40,8 +41,8 @@ input/output queues, lag recovery and terminal framing are unchanged.
 `skiff-client::host::HostConnection` is an opt-in M0 interface over Transport.
 It has no concrete socket or process-ownership type in its public API. It
 negotiates Hello, gates typed requests, correlates replies, offers an event
-receiver, and can disconnect. The CLI and daemon do not use it. M1a integrates only desktop connection status
-through the local adapter described below.
+receiver, and can disconnect. The CLI and daemon do not use it. M1a integrates desktop connection status; M1b adds one text snapshot
+through the same local adapter, as described below.
 A local UnixStream fixture and a fake duplex stream exercise the same interface.
 M0 fixtures wrote no identity/config file; M1a provisions local bootstrap
 identity as described below, without changing the legacy daemon protocol.
@@ -190,9 +191,9 @@ requests `connection_status@1` through `HostConnection`; the in-process local
 `StatusSource` delegates to `Client::hello()` on that same selected client. No
 Host envelope or Hello is sent to legacy skiffd. No listener, proxy, Host service,
 worker process or extra round trip is added. The command's JSON shape, timeout,
-warning logic and visible GUI flow stay unchanged. Session operations and event
-streams are deliberately not advertised by this adapter: they still use the
-legacy client until a later slice. Missing/wrong capability major and unknown API
+warning logic and visible GUI flow stay unchanged. The broad session plane and event
+streams are deliberately not advertised by this adapter. M1b below adds one
+independent read; other session calls still use the legacy client. Missing/wrong capability major and unknown API
 major are typed errors before source dispatch, never fallback to another client.
 Local status requests have a 20-second limit, at most 64 in flight, cancellation
 by dropping the future, and disconnect wakes pending calls without replay.
@@ -228,6 +229,71 @@ checks) through the selected connection, with endpoint-local lifecycle guards an
 authoritative Hello rollout designed before any remote endpoint. No SSH, host
 picker, skiff-host service, migrations, data relocation or broad data conversion is
 part of M1a. Per-surface capability UI and session event routing remain excluded.
+
+## M1b: one read-only session text snapshot
+
+The chosen operation is the existing Mission control `session_screen` command,
+not session inventory. Inventory would require expanding the M0 session projection
+to preserve the GUI's full SessionInfo; the text snapshot already returns only
+`Vec<String>`. No UI source, screen rendering, command arguments or JSON result
+shape changes. The desktop command calls `connection::screen_now`, obtains the
+same selected owner via `ensure_host`, and requests the snapshot through that
+owner's HostConnection. Its status and screen sources capture the very same
+legacy `Arc<Client>`, created only by the fixed LocalSelection.
+
+Additive API-major-1 contract:
+
+- Capability: `session_screen@1`, independent of broad `sessions@1`.
+- Request: `{ cmd: "session_screen", session, rows }` (`rows: u16`).
+- Reply: `{ kind: "session_screen", lines: string[] }`.
+- `operation_failed { message }`: an opaque legacy service rejection, with no
+  invented not-found/permission classification. This error is only added for
+  the new capability. Existing M0/M1a shapes/versions remain unchanged.
+
+The in-process source sends exactly the existing `{ id, cmd: "screen", session,
+rows }` to skiffd on the selected Client. The daemon's existing text extraction,
+line order, empty lines, Unicode and whitespace are passed through unmodified;
+zero and maximum u16 row counts are forwarded without client-side clamping.
+No Host envelope, extra handshake, subscription, connection or request is added
+to skiffd's wire protocol. Session inventory remains on its existing path.
+
+Version/capability validation occurs before source dispatch; unknown API major,
+missing capability and wrong capability major fail explicitly, without fallback.
+The local adapter advertises only status plus this read-only capability, never
+`sessions@1`. Mutations/lifecycle and event subscriptions stay unsupported by the
+local Host contract. Both the local fake and negotiated transport test the new
+request/reply family.
+
+The temporary `legacy_screen` compatibility projection gives the existing Tauri
+caller exactly its old error text: service messages (including older-daemon
+"unknown variant" replies), unexpected reply diagnostics, connection closed and
+the existing 20-second timeout text. Internally, stalls are typed TimedOut,
+disconnect is TransportLost, malformed replies are MalformedContract and opaque
+service rejections are OperationFailed. It never retries via a raw Client.
+
+Mission control fans out reads for every visible tile. Snapshot requests wait
+for a Host slot within their existing 20-second budget rather than acquiring a
+slot with a new HostBusy failure on boards above 64 tiles. Drop/cancellation
+releases a slot; disconnect wakes active and queued reads without replay. One
+slot is reserved for status on the production 64-slot connection so a full board
+cannot exhaust the status refresh quota. M1a status admission behavior is
+retained. Raw terminal I/O and subscriptions
+remain untouched.
+
+Evidence: golden M1b types, fake gating/error/cancellation/deadline and 65-read
+fanout fixtures, negotiated-transport coverage, and a private selected-socket
+fixture comparing legacy and Host requests/results/errors on the exact same
+Client. The desktop entry-point fixture checks both returned text and the
+older-daemon error on the same accepted status connection. Existing M0/M1a and
+bootstrap regression fixtures stay enabled in CI.
+
+Next excluded boundary: session inventory would need a deliberately scoped
+lossless schema for the GUI's current session metadata before routing it through
+the Host. Terminal snapshots/events, mutation/lifecycle and endpoint lifecycle
+policy require their own increments. No SSH/remote transport, picker, service,
+projects/files/ledger/Git movement, migrations or broad GUI conversion is part
+of M1b. Bootstrap identity remains local adapter identity as described in M1a;
+this slice does not turn legacy skiffd into an authoritative Host service.
 
 ## M0 demo and handoff
 

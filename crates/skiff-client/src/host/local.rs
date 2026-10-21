@@ -1,4 +1,4 @@
-//! M1a local connection ownership. No Host service and no new skiffd messages.
+//! M1a/M1b local connection ownership and read-only screen snapshots. No Host service and no new skiffd messages.
 use std::{
     collections::BTreeMap,
     fs::{self, OpenOptions},
@@ -15,7 +15,7 @@ use skiff_host_api::{
 };
 use uuid::Uuid;
 
-use super::{HostConnection, StatusSource};
+use super::{HostConnection, ScreenSource, StatusSource};
 use crate::Client;
 
 struct Selection {
@@ -85,7 +85,10 @@ impl PendingLocalConnection {
                 env!("CARGO_PKG_VERSION").into(),
             )]),
             api_major: API_MAJOR,
-            capabilities: vec![Capability::connection_status()],
+            capabilities: vec![
+                Capability::connection_status(),
+                Capability::session_screen(),
+            ],
             limits: Limits {
                 max_frame_bytes: 8 * 1024 * 1024,
                 max_in_flight: 64,
@@ -93,8 +96,9 @@ impl PendingLocalConnection {
         };
         let connection = {
             let mut previous = self.selection.0.previous.lock().unwrap();
-            let source = Arc::new(LegacyStatus(self.client.clone()));
-            let connection = HostConnection::local_status(source, hello, previous.as_ref())?;
+            let source = Arc::new(LegacyReadOnly(self.client.clone()));
+            let connection =
+                HostConnection::local_screen(source.clone(), source, hello, previous.as_ref())?;
             *previous = Some(connection.hello().clone());
             Arc::new(connection)
         };
@@ -130,8 +134,8 @@ impl Drop for SelectedLocalHost {
     }
 }
 
-struct LegacyStatus(Arc<Client>);
-impl StatusSource for LegacyStatus {
+struct LegacyReadOnly(Arc<Client>);
+impl StatusSource for LegacyReadOnly {
     fn status(
         &self,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, Error>> + Send + '_>>
@@ -146,6 +150,71 @@ impl StatusSource for LegacyStatus {
                 }),
             }
         })
+    }
+}
+
+impl ScreenSource for LegacyReadOnly {
+    fn screen(
+        &self,
+        session: String,
+        rows: u16,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, Error>> + Send + '_>>
+    {
+        Box::pin(async move {
+            // Preserve the legacy request/reply mapping exactly; no new Host
+            // envelope is sent to skiffd and no terminal subscription is taken.
+            match self
+                .0
+                .request(skiff_core::protocol::Request::Screen { session, rows })
+                .await
+            {
+                Ok(skiff_core::protocol::Response::Screen { lines }) => {
+                    Ok(Response::SessionScreen { lines })
+                }
+                Ok(skiff_core::protocol::Response::Error { message }) => {
+                    Err(Error::OperationFailed { message })
+                }
+                Ok(other) => Err(Error::MalformedContract {
+                    message: format!("unexpected reply: {other:?}"),
+                }),
+                Err(e) if e.downcast_ref::<crate::ReplyTimeout>().is_some() => Err(Error::TimedOut),
+                Err(_) if self.0.is_closed() => Err(Error::TransportLost),
+                Err(e) => Err(Error::MalformedContract {
+                    message: format!("{e:#}"),
+                }),
+            }
+        })
+    }
+}
+
+/// Temporary desktop compatibility projection. The Host request remains typed;
+/// only its existing Tauri caller receives the unchanged legacy error text.
+/// Capability/version failures propagate explicitly, never via legacy fallback.
+pub async fn legacy_screen(
+    connection: &HostConnection,
+    session: &str,
+    rows: u16,
+) -> anyhow::Result<Vec<String>> {
+    let reply = connection
+        .request(Request::SessionScreen {
+            session: session.into(),
+            rows,
+        })
+        .await
+        .map_err(|error| match error {
+            Error::OperationFailed { message } | Error::MalformedContract { message } => {
+                anyhow::Error::msg(message)
+            }
+            Error::TimedOut => crate::ReplyTimeout(std::time::Duration::from_secs(20)).into(),
+            Error::TransportLost => anyhow::Error::msg("skiffd connection closed"),
+            other => other.into(),
+        })?;
+    match reply {
+        Response::SessionScreen { lines } => Ok(lines),
+        _ => Err(Error::MalformedContract {
+            message: "expected session screen".into(),
+        }
+        .into()),
     }
 }
 

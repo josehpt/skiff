@@ -14,4 +14,4 @@ jobs:
       - run: python -m unittest discover -s scripts/host-boundary -p 'test_*.py'
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test -p skiff-host-api -p skiff-client --test contract --test host_contract --test local_contract --test local_host
+      - run: cargo test -p skiff-host-api -p skiff-client --test contract --test host_contract --test local_contract --test local_host --test session_screen

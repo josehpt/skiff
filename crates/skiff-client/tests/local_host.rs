@@ -155,7 +155,10 @@ async fn selected_endpoint_is_the_only_status_source_and_keeps_legacy_wire_and_c
     assert_eq!(host.connection().continuity(), Continuity::FirstConnection);
     assert_eq!(
         host.connection().hello().capabilities,
-        vec![Capability::connection_status()]
+        vec![
+            Capability::connection_status(),
+            Capability::session_screen()
+        ]
     );
     let mut peer = BufReader::new(peer.unwrap().0);
     // Activation performs no wire Hello or extra Ping.

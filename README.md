@@ -94,7 +94,7 @@ limit. Theme files contain color values, so a large collection needs little spac
 ## Layout
 
 ```
-crates/skiff-host-api V2 Host contract types only (M0/M1a; no I/O)
+crates/skiff-host-api V2 Host contract types only (M0/M1a/M1b; no I/O)
 crates/skiff-core    session model, wire protocol, projects.toml config, git, themes
 crates/skiffd        daemon: owns every PTY, serves clients over a Unix socket
 crates/skiff-client  async client for the socket; Skiff agent setup shared by the app and the CLI
@@ -113,7 +113,7 @@ apps/desktop         Tauri v2 app, vanilla TypeScript + xterm.js
 
 ## Development
 
-The V2 M0 contract, M1a local status seam and import-boundary checks are documented in
+The V2 M0 contract, local M1a/M1b seams and import-boundary checks are documented in
 [Host API](docs/v2/Host-API.md). The current app keeps its local connection and data paths.
 
 See the [wiki Glossary](https://github.com/solutionscay/skiff/wiki/Glossary) for the terms

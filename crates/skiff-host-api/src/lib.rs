@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 pub const API_MAJOR: u32 = 1;
 pub const SESSIONS: &str = "sessions";
 pub const CONNECTION_STATUS: &str = "connection_status";
+pub const SESSION_SCREEN: &str = "session_screen";
 
 macro_rules! identity {
     ($name:ident) => {
@@ -68,6 +69,13 @@ pub struct Capability {
     pub version: u32,
 }
 impl Capability {
+    /// Read-only text snapshot; does not grant session lifecycle or events.
+    pub fn session_screen() -> Self {
+        Self {
+            name: SESSION_SCREEN.into(),
+            version: 1,
+        }
+    }
     pub fn connection_status() -> Self {
         Self {
             name: CONNECTION_STATUS.into(),
@@ -141,17 +149,38 @@ impl Hello {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "code", rename_all = "snake_case")]
 pub enum Error {
-    UnsupportedCapability { capability: Capability },
-    IncompatibleVersion { supported: u32, received: u32 },
-    MalformedContract { message: String },
-    NotFound { message: String },
-    Conflict { message: String },
-    Permission { message: String },
+    UnsupportedCapability {
+        capability: Capability,
+    },
+    IncompatibleVersion {
+        supported: u32,
+        received: u32,
+    },
+    MalformedContract {
+        message: String,
+    },
+    /// Legacy service rejection without a structured cause; never guess a
+    /// not-found/permission code from message text.
+    OperationFailed {
+        message: String,
+    },
+    NotFound {
+        message: String,
+    },
+    Conflict {
+        message: String,
+    },
+    Permission {
+        message: String,
+    },
     HostBusy,
     TransportLost,
     Cancelled,
     TimedOut,
-    IdentityChanged { expected: HostId, received: HostId },
+    IdentityChanged {
+        expected: HostId,
+        received: HostId,
+    },
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -175,6 +204,10 @@ pub struct Session {
 pub enum Request {
     Hello,
     ConnectionStatus,
+    SessionScreen {
+        session: String,
+        rows: u16,
+    },
     ListSessions,
     Write {
         session: String,
@@ -200,6 +233,7 @@ impl Request {
         match self {
             Self::Hello => None,
             Self::ConnectionStatus => Some(Capability::connection_status()),
+            Self::SessionScreen { .. } => Some(Capability::session_screen()),
             _ => Some(Capability::sessions()),
         }
     }
@@ -209,9 +243,10 @@ impl Request {
             (Self::Hello, Response::Hello { .. })
                 | (Self::ListSessions, Response::Sessions { .. })
                 | (Self::ConnectionStatus, Response::ConnectionStatus { .. })
+                | (Self::SessionScreen { .. }, Response::SessionScreen { .. })
         ) || (!matches!(
             self,
-            Self::Hello | Self::ListSessions | Self::ConnectionStatus
+            Self::Hello | Self::ListSessions | Self::ConnectionStatus | Self::SessionScreen { .. }
         ) && matches!(reply, Response::Ok))
     }
 }
@@ -224,6 +259,7 @@ pub struct Envelope {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Response {
+    SessionScreen { lines: Vec<String> },
     ConnectionStatus { version: String, protocol: u32 },
     Hello { hello: Hello },
     Sessions { sessions: Vec<Session> },

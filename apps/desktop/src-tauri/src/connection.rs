@@ -129,6 +129,12 @@ pub(crate) async fn ensure_client(app: &App) -> Result<(Arc<Client>, bool), Stri
     Ok((host.client(), spawned))
 }
 
+/// The one M1b read path: same owner and legacy result, through HostConnection.
+pub(crate) async fn screen_now(app: &App, session: &str, rows: u16) -> Result<Vec<String>, String> {
+    let (host, _) = ensure_host(app).await?;
+    skiff_client::host::local::legacy_screen(&host.connection(), session, rows).await.map_err(err)
+}
+
 async fn ensure_host(app: &App) -> Result<(Arc<SelectedLocalHost>, bool), String> {
     let mut guard = app.host.lock().await;
     if let Some(host) = guard.as_ref() {
@@ -430,6 +436,17 @@ mod tests {
                 let mut bytes = serde_json::to_vec(&reply).unwrap(); bytes.push(b'\n');
                 stream.get_mut().write_all(&bytes).await.unwrap();
             }
+            for (id, response) in [
+                (4, serde_json::json!({"type":"screen","lines":["", "λ  "]})),
+                (5, serde_json::json!({"type":"error","message":"unknown variant `screen`"})),
+            ] {
+                let mut line = String::new();
+                stream.read_line(&mut line).await.unwrap();
+                assert_eq!(serde_json::from_str::<serde_json::Value>(&line).unwrap(), serde_json::json!({"id":id,"cmd":"screen","session":"snapshot","rows":2}));
+                let mut response = response; response["id"] = id.into();
+                let mut bytes = serde_json::to_vec(&response).unwrap(); bytes.push(b'\n');
+                stream.get_mut().write_all(&bytes).await.unwrap();
+            }
             // Keep the one connection alive through the reuse assertions.
             let mut line = String::new();
             stream.read_line(&mut line).await.ok();
@@ -446,6 +463,8 @@ mod tests {
         assert!(Arc::ptr_eq(&app.live.lock().unwrap().clone().unwrap(), &client));
         let second = status_now(&app).await;
         assert_eq!(second.version, first.version);
+        assert_eq!(screen_now(&app, "snapshot", 2).await.unwrap(), vec!["", "λ  "]);
+        assert_eq!(screen_now(&app, "snapshot", 2).await.unwrap_err(), "unknown variant `screen`");
         assert!(Arc::ptr_eq(&owner, app.host.lock().await.as_ref().unwrap()));
         assert_eq!(std::fs::read_to_string(config).unwrap(), "# existing config\n");
         assert_eq!(std::fs::read(ledger).unwrap(), b"existing ledger fixture");

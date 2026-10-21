@@ -22,15 +22,26 @@ use crate::transport::Transport;
 pub mod local;
 
 /// The one in-process M1a operation; no concrete socket/process type in the seam.
-/// Other Host capabilities remain on the negotiated wire backend.
+/// ScreenSource adds only the M1b text snapshot; other families stay on wire.
 pub trait StatusSource: Send + Sync {
     fn status(&self) -> Pin<Box<dyn Future<Output = Result<Response, Error>> + Send + '_>>;
 }
 
+/// One read-only text snapshot, independent of socket/core session types.
+pub trait ScreenSource: Send + Sync {
+    fn screen(
+        &self,
+        session: String,
+        rows: u16,
+    ) -> Pin<Box<dyn Future<Output = Result<Response, Error>> + Send + '_>>;
+}
+
 enum Backend {
     Wire(Engine),
-    LocalStatus {
+    LocalReadOnly {
         source: Arc<dyn StatusSource>,
+        screen: Option<Arc<dyn ScreenSource>>,
+        screen_slots: tokio::sync::Semaphore,
         closed: watch::Sender<bool>,
         slots: tokio::sync::Semaphore,
     },
@@ -300,20 +311,43 @@ impl HostConnection {
         hello: Hello,
         previous: Option<&Hello>,
     ) -> Result<Self, Error> {
+        Self::local_readonly(source, None, hello, previous)
+    }
+
+    /// M1b adds only session_screen; broad sessions@1 stays unavailable locally.
+    pub fn local_screen(
+        source: Arc<dyn StatusSource>,
+        screen: Arc<dyn ScreenSource>,
+        hello: Hello,
+        previous: Option<&Hello>,
+    ) -> Result<Self, Error> {
+        Self::local_readonly(source, Some(screen), hello, previous)
+    }
+
+    fn local_readonly(
+        source: Arc<dyn StatusSource>,
+        screen: Option<Arc<dyn ScreenSource>>,
+        hello: Hello,
+        previous: Option<&Hello>,
+    ) -> Result<Self, Error> {
         hello.validate()?;
-        if hello
-            .capabilities
-            .iter()
-            .any(|c| c.name != skiff_host_api::CONNECTION_STATUS)
-        {
+        if hello.capabilities.iter().any(|c| {
+            c.name != skiff_host_api::CONNECTION_STATUS
+                && !(screen.is_some() && c.name == skiff_host_api::SESSION_SCREEN)
+        }) {
             return Err(Error::MalformedContract {
-                message: "local status adapter cannot advertise other capabilities".into(),
+                message: "local adapter cannot advertise capabilities without a source".into(),
             });
         }
-        let slots = tokio::sync::Semaphore::new(hello.limits.max_in_flight.min(MAX_PENDING));
+        let limit = hello.limits.max_in_flight.min(MAX_PENDING);
+        let slots = tokio::sync::Semaphore::new(limit);
+        // Reserve one slot for status while Mission control fans out reads.
+        let screen_slots = tokio::sync::Semaphore::new(limit.saturating_sub(1).max(1));
         Self::negotiated(
-            Backend::LocalStatus {
+            Backend::LocalReadOnly {
                 source,
+                screen,
+                screen_slots,
                 closed: watch::channel(false).0,
                 slots,
             },
@@ -347,8 +381,10 @@ impl HostConnection {
                     )
                     .await
             }
-            Backend::LocalStatus {
+            Backend::LocalReadOnly {
                 source,
+                screen,
+                screen_slots,
                 closed,
                 slots,
             } => {
@@ -356,14 +392,36 @@ impl HostConnection {
                 if *closing.borrow() {
                     return Err(Error::TransportLost);
                 }
-                if request != Request::ConnectionStatus {
-                    return Err(Error::UnsupportedCapability { capability });
-                }
-                let _slot = slots.try_acquire().map_err(|_| Error::HostBusy)?;
+                let operation: Pin<Box<dyn Future<Output = Reply> + Send + '_>> = match &request {
+                    Request::ConnectionStatus => Box::pin(async {
+                        let _slot = slots.try_acquire().map_err(|_| Error::HostBusy)?;
+                        source.status().await
+                    }),
+                    Request::SessionScreen { session, rows } => {
+                        let screen =
+                            screen
+                                .as_ref()
+                                .ok_or_else(|| Error::UnsupportedCapability {
+                                    capability: capability.clone(),
+                                })?;
+                        Box::pin(async move {
+                            // Mission control fans out every visible screen. Queue
+                            // inside the existing deadline instead of introducing
+                            // HostBusy errors for boards with more than 64 panes.
+                            let _read = screen_slots
+                                .acquire()
+                                .await
+                                .map_err(|_| Error::TransportLost)?;
+                            let _slot = slots.acquire().await.map_err(|_| Error::TransportLost)?;
+                            screen.screen(session.clone(), *rows).await
+                        })
+                    }
+                    _ => return Err(Error::UnsupportedCapability { capability }),
+                };
                 let reply = tokio::select! {
                     biased;
                     _ = closing.changed() => return Err(Error::TransportLost),
-                    reply = tokio::time::timeout(Duration::from_secs(20), source.status()) => reply.map_err(|_| Error::TimedOut)??,
+                    reply = tokio::time::timeout(Duration::from_secs(20), operation) => reply.map_err(|_| Error::TimedOut)??,
                 };
                 if !request.accepts(&reply) {
                     return Err(Error::MalformedContract {
@@ -386,7 +444,7 @@ impl HostConnection {
                     .map(|events| events.subscribe())
                     .ok_or_else(|| s.failure.clone().unwrap_or(Error::TransportLost))
             }
-            Backend::LocalStatus { .. } => Err(Error::UnsupportedCapability {
+            Backend::LocalReadOnly { .. } => Err(Error::UnsupportedCapability {
                 capability: skiff_host_api::Capability::sessions(),
             }),
         }
@@ -400,7 +458,7 @@ impl HostConnection {
                     task.abort();
                 }
             }
-            Backend::LocalStatus { closed, .. } => {
+            Backend::LocalReadOnly { closed, .. } => {
                 closed.send_replace(true);
             }
         }

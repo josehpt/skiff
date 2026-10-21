@@ -422,3 +422,36 @@ async fn m1a_connection_status_also_works_over_the_negotiated_transport() {
         Err(Error::UnsupportedCapability { .. })
     ));
 }
+
+#[tokio::test]
+async fn m1b_screen_works_over_transport_without_granting_sessions() {
+    let mut h = hello();
+    h.capabilities = vec![Capability::session_screen()];
+    let (connection, mut peer) = connect(h, None).await;
+    let connection = connection.unwrap();
+    let request = Request::SessionScreen {
+        session: "s".into(),
+        rows: 0,
+    };
+    let (reply, ()) = tokio::join!(connection.request(request.clone()), async {
+        let envelope = peer.request().await;
+        assert_eq!(envelope.request, request);
+        peer.reply(
+            envelope.id,
+            Ok(Response::SessionScreen {
+                lines: vec!["λ  ".into()],
+            }),
+        )
+        .await;
+    });
+    assert_eq!(
+        reply,
+        Ok(Response::SessionScreen {
+            lines: vec!["λ  ".into()]
+        })
+    );
+    assert!(matches!(
+        connection.request(Request::ListSessions).await,
+        Err(Error::UnsupportedCapability { .. })
+    ));
+}

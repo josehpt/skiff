@@ -35,7 +35,7 @@
       "fs",
       "skiff_core"
     ],
-    "sha256": "ef3686188f1cacae0d4424a75eacdacf3409ca8bdf56be523c9abee9ee58603a"
+    "sha256": "31e2f4c0a98a6eb83d0fe521ebe064ca8dab7428e9f28c8bfabd7b286e58c14d"
   },
   "apps/desktop/src-tauri/src/config.rs": {
     "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
@@ -48,7 +48,7 @@
     "sha256": "123053d74b960690cd9e8b06b04c691d94fc7be087ac61f61a438b4d85c5146b"
   },
   "apps/desktop/src-tauri/src/connection.rs": {
-    "ownership": "M1a selected-local Host connection owner; existing local lifecycle/legacy client adapter",
+    "ownership": "M1a/M1b selected-local Host owner; existing local lifecycle/legacy client adapter",
     "reasons": [
       "config",
       "env",
@@ -62,7 +62,7 @@
       "skiff_client",
       "skiff_core"
     ],
-    "sha256": "b0afcfb2957fd9f1ec3779fc75c7c253c4c23c19d1f56c7a4ad6608cf61a7c00"
+    "sha256": "ed2a1dd27616786f34b92a4f739a4f34b07b934595d63e2c2b82e114676acc3a"
   },
   "apps/desktop/src-tauri/src/diagnostics.rs": {
     "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",

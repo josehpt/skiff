@@ -531,13 +531,13 @@ export function renderLedger() {
   panel.hidden = !show;
   if (!show) {
     drawn = false;
-    keys = false;
+    setKeys(false);
     return;
   }
   panel.classList.toggle("folded", folded);
   if (folded && !folding) {
     drawn = false;
-    keys = false;
+    setKeys(false);
     renderRail(panel);
     return;
   }
@@ -590,8 +590,13 @@ export function renderLedger() {
 
 // ── Keys ────────────────────────────────────────────────────────────────────
 
-/** The keys are in the panel. */
+/** The keys are in the panel. The panel wears a frame in the pane-focus color meanwhile. */
 let keys = false;
+
+function setKeys(on: boolean) {
+  keys = on;
+  document.getElementById("ledger")?.classList.toggle("has-keys", on);
+}
 /** The lit row's uid. */
 let lit: string | null = null;
 
@@ -620,13 +625,13 @@ function step(dir: 1 | -1) {
 /** Ctrl+Shift+Right: the keys go to the panel. A folded panel opens first. */
 function enter() {
   if (folded) toggleLedger();
-  keys = true;
+  setKeys(true);
   light();
 }
 
 /** Ctrl+Shift+Left or Esc: the keys go back to Skipper's pane. */
 function leave() {
-  keys = false;
+  setKeys(false);
   for (const r of rowEls()) r.classList.remove("lit");
   const s = skiffAgentSession();
   if (s) panes.get(s.id)?.term.focus();
@@ -647,7 +652,7 @@ function rowKey(e: KeyboardEvent) {
 // The keys left the panel (a click, F6, a pane, an opened row): the light goes.
 document.addEventListener("focusin", (e) => {
   if (!keys || document.getElementById("ledger")?.contains(e.target as Node)) return;
-  keys = false;
+  setKeys(false);
   for (const r of rowEls()) r.classList.remove("lit");
 });
 

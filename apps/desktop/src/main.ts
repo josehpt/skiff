@@ -13,7 +13,7 @@ import { bySessionPriority } from "./workspace/model";
 import type { Appearance, DaemonStatus } from "./platform/types";
 import { invoke } from "@tauri-apps/api/core";
 import { switcher } from "./app/commands";
-import { hostOnline, loadProjects, reconnectRemote, refreshSessions, reloadDaemon, setDaemon, subscribeEvents, untilConnected } from "./app/daemon";
+import { followDataPlane, hostOnline, loadProjects, reconnectRemote, refreshSessions, reloadDaemon, setDaemon, subscribeEvents, untilConnected } from "./app/daemon";
 import { isRemote, loadHosts, setHostConnected, watchHostLink } from "./app/hosts";
 import { muteInput } from "./terminal/terminalRuntime";
 import { loadHostCaps } from "./app/hostCaps";
@@ -130,6 +130,8 @@ async function boot() {
   if (kbd) kbd.textContent = keyLabel("palette").replace(/\+/g, " ");
   const hint = document.querySelector("#open-switcher .spacer");
   if (hint) hint.textContent = "Commands, sessions, worktrees";
+  // Projects and Git come back on their own when skiff-host starts late or restarts.
+  followDataPlane();
   await loadGroups();
   restorePlace();
   await startWorkspaces();

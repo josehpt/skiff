@@ -37,6 +37,15 @@ button.file-preview-key:active:not(:disabled) { background-image: none; box-shad
 .file-preview-key-arrow { position: absolute; top: calc(8 * var(--u)); right: calc(12 * var(--u)); width: calc(16 * var(--u)); height: calc(16 * var(--u)); color: var(--pc); }
 .file-preview-label { color: var(--text-2); font-size: calc(13px * var(--zoom, 1)); }
 .file-preview-label b { color: var(--text); font-weight: 600; }
+/* A remote Host's diff: its git's plain text, drawn here. It scrolls with the arrow and page keys. */
+.diff-view-body { flex-grow: 1; min-height: 0; overflow: auto; padding: calc(8 * var(--u)) calc(16 * var(--u)); outline: none; }
+.diff-view-note { padding: calc(4 * var(--u)) 0; color: var(--text-2); font-size: calc(12px * var(--zoom, 1)); }
+.diff-view-error { color: var(--error); white-space: pre-wrap; }
+.diff-text { margin: calc(4 * var(--u)) 0 0; font: calc(13px * var(--zoom, 1)) / 1.4 var(--mono); color: var(--text); white-space: pre; tab-size: 4; }
+.diff-text .dl-file { color: var(--text); font-weight: 700; }
+.diff-text .dl-meta, .diff-text .dl-hunk { color: var(--text-3); }
+.diff-text .dl-add { color: var(--diff-add); }
+.diff-text .dl-del { color: var(--diff-del); }
 #main { --pc: var(--project-default); }
 #banner {
   height: var(--row); flex-shrink: 0;

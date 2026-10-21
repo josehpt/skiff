@@ -116,6 +116,20 @@ export interface Project {
   closed?: boolean;
   /** The fleet it sits in. Absent: under Projects, in no fleet. */
   fleet?: string | null;
+  /** `changes = false` in the Host's projects.toml: no Changes section. Absent: shown. */
+  changes?: boolean | null;
+}
+
+/** A diff as plain text from the selected Host's git (`git_diff@1`). */
+export interface HostDiff {
+  /** Unified diff text. Empty: no change. */
+  text: string;
+  /** Longer than the Host's limit: `text` is its start, cut at a line end. */
+  truncated: boolean;
+  /** A binary file: `text` holds git's note only. */
+  binary: boolean;
+  /** An untracked file, compared with an empty file. */
+  untracked: boolean;
 }
 
 export type DaemonEvent =

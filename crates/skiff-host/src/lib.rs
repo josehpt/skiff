@@ -1,6 +1,6 @@
 //! `skiff-host`: the Host's data-plane service (M4, first slice). It speaks
 //! the Host envelope on its own socket beside skiffd's and answers read-only
-//! projects and Git status from the Host's own config and git, through the
+//! projects, Git status and diff text from the Host's own config and git, through the
 //! same `skiff-core` code the app ran before. It holds no PTY and no session:
 //! restarting it never touches skiffd or a terminal (#62, M1f topology).
 //!
@@ -19,7 +19,7 @@ use std::{
 
 use skiff_core::{config::ProjectConfig, git, project};
 use skiff_host_api::{
-    Capability, ChangeStatus, Envelope, Error, Hello, Host, HostChange, HostId, HostProject,
+    Capability, ChangeStatus, Envelope, Error, Hello, Host, HostChange, HostDiff, HostId, HostProject,
     HostWorktree, InstanceId, Limits, Message, Request, Response, API_MAJOR,
 };
 use tokio::{
@@ -37,7 +37,7 @@ pub const MAX_IN_FLIGHT: usize = 16;
 
 /// What this service offers. Nothing here writes.
 pub fn capabilities() -> Vec<Capability> {
-    vec![Capability::projects(), Capability::git_status()]
+    vec![Capability::projects(), Capability::git_status(), Capability::git_diff()]
 }
 
 /// This run's Hello: the Host's durable id from the store beside the
@@ -260,6 +260,17 @@ pub async fn answer(request: Request, hello: &Hello) -> Result<Response, Error> 
                     .collect(),
             })
         }
+        Request::GitDiff { worktree, file } => {
+            // As for GitChanges: the folder held open before the check is
+            // the one git and the untracked read must still name.
+            let root = git::Root::open(Path::new(&worktree));
+            let worktree = known_worktree(&worktree)?;
+            if let Some(f) = file.as_deref().filter(|f| !git::is_relative_file(f)) {
+                return Err(Error::NotFound { message: format!("{f} is not a file path in this worktree") });
+            }
+            let diff = git::diff_in(&root.map_err(failed)?, &worktree, file.as_deref()).map_err(failed)?;
+            Ok(Response::Diff { diff: host_diff(diff) })
+        }
         _ => Err(Error::UnsupportedCapability { capability }),
     })
     .await
@@ -317,7 +328,12 @@ pub fn host_project(p: project::Project) -> HostProject {
         error: p.error,
         closed: p.closed,
         fleet: p.fleet,
+        changes: p.changes,
     }
+}
+
+pub fn host_diff(d: git::Diff) -> HostDiff {
+    HostDiff { text: d.text, truncated: d.truncated, binary: d.binary, untracked: d.untracked }
 }
 
 pub fn host_change(c: git::Change) -> HostChange {

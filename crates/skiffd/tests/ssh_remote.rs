@@ -546,6 +546,9 @@ async fn remote_projects_and_git_status_come_from_the_hosts_data_plane_over_a_re
     let changes = data::git_changes(&c, &worktree).await.unwrap();
     assert_eq!(changes.len(), 1);
     assert_eq!((changes[0].path.as_str(), changes[0].added, changes[0].removed), ("a.txt", Some(1), Some(0)));
+    // Its diff text comes from the Host's git over the same forward.
+    let diff = data::git_diff(&c, &worktree, Some("a.txt")).await.unwrap();
+    assert!(diff.text.contains("a/a.txt") && !diff.truncated && !diff.binary, "{diff:?}");
 
     // A terminal on the session plane, then the data plane stops on the Host.
     let spec = SessionSpec { cwd: Some(repo.clone()), cols: 80, rows: 24, ..Default::default() };

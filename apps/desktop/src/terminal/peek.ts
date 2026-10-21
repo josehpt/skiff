@@ -10,7 +10,8 @@
  *
  * A preview is a card (folder, an app that opens the file, or a placeholder),
  * a command in a terminal (a diff, a terminal tool), or a card with a command
- * over it. A command starts hidden, and what it does decides what shows:
+ * over it. A remote Host's diff is a card too: its git's text, drawn by
+ * diffView.ts, with no command on this Mac. A command starts hidden, and what it does decides what shows:
  * - It takes the terminal (raw input or the alternate screen), as `micro`,
  *   `less` or a pager does: a terminal tool. The peek shows. When the tool
  *   exits, the peek closes.
@@ -40,6 +41,10 @@ import { panes } from "./terminalState";
 import { fitShown } from "./terminal";
 import { FONT, TERM_THEME } from "./terminalRuntime";
 import { hostInvoke } from "../app/hostCaps";
+import { dataEpoch } from "../app/dataPlane";
+import { hostName } from "../app/hosts";
+import type { HostDiff } from "../platform/types";
+import { diffBody, diffState } from "./diffView";
 
 /** Where to find tools for a row that has none. */
 export const TOOLS_URL = "https://github.com/solutionscay/skiff/wiki/Open-with";
@@ -90,6 +95,8 @@ let active: Active | null = null;
 let gen = 0;
 /** The card over the panes. Under a shown command it is hidden. */
 let card: HTMLElement | null = null;
+/** The card's own action: the Enter keycap. Its Esc keycap is not one. */
+const cardAction = () => card?.querySelector<HTMLButtonElement>("button.file-preview-key") ?? null;
 /** The command of the active preview. */
 let open: Peek | null = null;
 /** File tools kept running off screen while another row is current. */
@@ -175,6 +182,11 @@ export function syncPreview() {
 function begin(mine: number, t: Preview, fresh = false) {
   if (t.kind === "folder") {
     showCard(mine, "folder", t.path, "Show in file manager", () => openPath(t.path));
+  } else if (t.kind === "host-diff" && t.wait && !fresh) {
+    const key = active!.key;
+    showCard(mine, "diff", `${t.wt}/${t.file ?? "All changes"}`, "Review all changes", () => startPreview(key, true, true));
+  } else if (t.kind === "host-diff") {
+    showHostDiff(mine, t);
   } else if (t.kind === "diff" && t.wait && !fresh) {
     // Landing on the row shows the card. Enter, or Review all changes, runs the diff.
     const key = active!.key;
@@ -215,7 +227,7 @@ export function giveKeys(): boolean {
   if (!active || active.closed) return false;
   active.keys = true;
   if (open?.shown) open.term.focus();
-  else if (card) (card.querySelector<HTMLButtonElement>("button") ?? card).focus();
+  else if (card) (card.querySelector<HTMLElement>(".diff-view-body") ?? cardAction() ?? card).focus();
   // A command still starting takes the keys when it shows.
   return !!(open || card);
 }
@@ -230,7 +242,7 @@ document.addEventListener("focusin", (e) => {
 /** Enter on the row or the card: the card's action runs; a tool or diff takes the keys. */
 export function enterPreview() {
   if (!active || active.closed) return;
-  const b = !open?.shown ? card?.querySelector<HTMLButtonElement>("button") : null;
+  const b = !open?.shown ? cardAction() : null;
   if (b) b.click();
   else giveKeys();
 }
@@ -265,7 +277,7 @@ export function openPath(path: string) {
 
 /** An Open that shows nothing here (an app, an error) leaves no empty preview behind: only a card with an action stays. */
 function settle(mine: number) {
-  if (!live(mine) || open || card?.querySelector("button")) return;
+  if (!live(mine) || open || cardAction()) return;
   active!.closed = true;
   clearCard();
   repaintPanes();
@@ -289,12 +301,12 @@ export function closePeek(hold = false) {
   } else drop(p, p.shown);
   // A diff leaves its card when it closes, so its row still owns the main area. Enter shows it again.
   const t = active && !active.closed ? rowActs(active.key)?.preview : undefined;
-  if (active && t?.kind === "diff" && !card?.querySelector("button")) {
+  if (active && t?.kind === "diff" && !cardAction()) {
     const key = active.key;
     showCard(active.gen, "diff", `${t.wt}/${t.file ?? "All changes"}`, t.file ? "Show diff" : "Review all changes", () => startPreview(key, true, true));
   }
   // A card with an action stays: the app opened from it runs on.
-  if (card?.querySelector("button")) {
+  if (card && cardAction()) {
     card.hidden = false;
     if (hadKeys || active?.keys) giveKeys();
     return;
@@ -355,15 +367,22 @@ function clearCard() {
   card = null;
 }
 
-function showCard(mine: number, kind: string, path: string, label?: string, act?: () => void) {
-  if (!live(mine)) return;
+/** A card's frame: its head, with the kind, the name, its folder and Esc. */
+function cardFrame(kind: string, path: string, cls = "peek file-preview"): HTMLElement {
   const name = path.split("/").pop() ?? path;
   const dir = path.slice(0, path.length - name.length - 1);
-  const el = h("div", "peek file-preview");
+  const el = h("div", cls);
   el.tabIndex = -1;
   el.setAttribute("aria-label", name);
   const head = h("div", "peek-head");
   head.append(h("span", "peek-kind", kind), h("span", "peek-title mono", name), h("span", "peek-where mono", dir), escButton());
+  el.append(head);
+  return el;
+}
+
+function showCard(mine: number, kind: string, path: string, label?: string, act?: () => void) {
+  if (!live(mine)) return;
+  const el = cardFrame(kind, path);
   const body = h("div", "file-preview-body");
   if (label && act) {
     // A keycap you can click, with the action under it: the hint and the button in one.
@@ -378,7 +397,12 @@ function showCard(mine: number, kind: string, path: string, label?: string, act?
     text.append(h("b", "", space < 0 ? label : label.slice(0, space)), space < 0 ? "" : label.slice(space));
     body.append(cap, text);
   }
-  el.append(head, body);
+  el.append(body);
+  mountCard(el);
+}
+
+/** Puts `el` up as the card, over the panes. */
+function mountCard(el: HTMLElement) {
   // Tab does nothing here. Space opens or closes the row, as on the row. Enter runs the button.
   el.addEventListener("keydown", (e) => {
     if (e.key === "Tab") e.preventDefault();
@@ -396,6 +420,45 @@ function showCard(mine: number, kind: string, path: string, label?: string, act?
   $("main").appendChild(el);
   if (open?.shown) el.hidden = true;
   else if (hadKeys || active?.keys) giveKeys();
+}
+
+type HostDiffPreview = Extract<Preview, { kind: "host-diff" }>;
+
+/**
+ * A remote Host's diff: the viewer shows at once, says it loads, then shows
+ * the Host's text or why there is none. A reply for a row the user left, or
+ * from an older data connection, shows nothing; the latter is asked again.
+ */
+function showHostDiff(mine: number, t: HostDiffPreview) {
+  if (!live(mine)) return;
+  const el = cardFrame("diff", `${t.wt}/${t.file ?? "All changes"}`, "peek diff-view");
+  el.append(diffState(`Loading the diff from ${hostName()}…`));
+  mountCard(el);
+  const at = dataEpoch();
+  const shows = () => live(mine) && card === el;
+  const fill = (body: HTMLElement) => {
+    const hadKeys = el.contains(document.activeElement);
+    el.querySelector(".diff-view-body")?.replaceWith(body);
+    if (hadKeys || active?.keys) body.focus();
+  };
+  hostInvoke<HostDiff>("git_diff", "git_diff", { path: t.wt, file: t.file ?? null })
+    .then((d) => {
+      if (!shows()) return;
+      if (at !== dataEpoch()) return showHostDiff(mine, t);
+      fill(diffBody(d, t.file));
+    })
+    .catch((e) => {
+      if (!shows()) return console.error(e);
+      if (at !== dataEpoch()) return showHostDiff(mine, t);
+      fill(diffState(`No diff: ${String(e)}`, true));
+    });
+}
+
+/** The data plane is back: a remote diff on screen is read again from it. */
+export function refreshHostDiff() {
+  if (!active || active.closed || !card?.classList.contains("diff-view")) return;
+  const t = rowActs(active.key)?.preview;
+  if (t?.kind === "host-diff") showHostDiff(active.gen, t);
 }
 
 // ── Commands ────────────────────────────────────────────────────────────────
@@ -496,7 +559,7 @@ function show(p: Peek) {
   p.el.classList.remove("pending");
   if (!p.exited) p.el.classList.add("busy");
   // A placeholder card goes. A card with an action waits under the command.
-  if (card?.querySelector("button")) card.hidden = true;
+  if (card && cardAction()) card.hidden = true;
   else clearCard();
   resized(p);
   if (active?.keys) p.term.focus();

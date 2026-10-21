@@ -13,7 +13,8 @@ export type HostCap =
   | "session_groups"
   | "session_agents"
   | "projects"
-  | "git_status";
+  | "git_status"
+  | "git_diff";
 
 /** The major of each capability that this page speaks. */
 const MAJOR: Record<HostCap, number> = {
@@ -26,6 +27,7 @@ const MAJOR: Record<HostCap, number> = {
   session_agents: 1,
   projects: 1,
   git_status: 1,
+  git_diff: 1,
 };
 
 /** What each capability offers, for the refusal. */
@@ -39,6 +41,7 @@ const OFFERS: Record<HostCap, string> = {
   session_agents: "an agent list",
   projects: "projects",
   git_status: "Git changes",
+  git_diff: "diffs",
 };
 
 /** `name@major` of the selected Host. `null` until the first answer. */

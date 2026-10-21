@@ -152,6 +152,8 @@ pub fn run() {
             commands::read_image,
             commands::list_dir,
             commands::git_changes,
+            commands::git_diff,
+            connection::data_plane_status,
             commands::open_diff,
             commands::open_settings,
             commands::set_open,
@@ -254,7 +256,7 @@ mod tests {
         }
         // Session and terminal commands go through the selected Host, and are
         // gated by its capabilities instead.
-        for host in ["list_sessions", "subscribe_events", "subscribe_output", "pty_write", "pty_resize", "session_screen", "create_session", "kill_session", "rename_session", "list_groups", "save_group", "delete_group", "list_agents", "daemon_status", "host_capabilities", "list_hosts", "select_host", "list_projects", "get_project", "git_changes"] {
+        for host in ["list_sessions", "subscribe_events", "subscribe_output", "pty_write", "pty_resize", "session_screen", "create_session", "kill_session", "rename_session", "list_groups", "save_group", "delete_group", "list_agents", "daemon_status", "host_capabilities", "list_hosts", "select_host", "list_projects", "get_project", "git_changes", "git_diff", "data_plane_status"] {
             assert!(!super::LOCAL_ONLY.contains(&host), "{host}");
         }
         // M4: project and Git status reads go to the selected Host's data
@@ -266,7 +268,7 @@ mod tests {
         // A command added later must be placed on one side or the other.
         let allowed = ["set_menu", "quit_app", "guard_quit", "menu_layout", "set_menu_layout", "set_window_dark", "clipboard_write", "clipboard_read",
             "daemon_status", "host_capabilities", "list_hosts", "add_host", "remove_host", "select_host", "set_host_clipboard", "host_clipboard", "accept_host_identity",
-            "list_sessions", "create_session", "pty_write", "pty_resize", "session_seen", "kill_session", "rename_session", "set_session_theme", "list_agents", "list_projects", "get_project", "git_changes",
+            "list_sessions", "create_session", "pty_write", "pty_resize", "session_seen", "kill_session", "rename_session", "set_session_theme", "list_agents", "list_projects", "get_project", "git_changes", "git_diff", "data_plane_status",
             "open_settings", "set_open", "set_open_peek", "open_url", "list_themes", "import_themes", "open_theme_folder", "get_appearance",
             "memory_usage", "get_keys", "trace_info", "trace_write", "trace_set", "system_load", "set_appearance", "set_font_size", "set_mission_filter",
             "list_groups", "session_screen", "save_group", "delete_group", "subscribe_output", "ack_output", "unsubscribe_output", "subscribe_events",

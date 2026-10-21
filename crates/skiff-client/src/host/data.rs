@@ -15,7 +15,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use skiff_host_api::{Error, Hello, HostChange, HostId, HostProject, Request, Response};
+use skiff_host_api::{Error, Hello, HostChange, HostDiff, HostId, HostProject, Request, Response};
 use tokio::net::UnixStream;
 
 use super::{
@@ -151,6 +151,15 @@ pub async fn project_get(c: &HostConnection, name: &str) -> Result<HostProject, 
 pub async fn git_changes(c: &HostConnection, worktree: &str) -> Result<Vec<HostChange>, Error> {
     match c.request(Request::GitChanges { worktree: worktree.into() }).await? {
         Response::Changes { changes } => Ok(changes),
+        _ => unreachable!("checked by Request::accepts"),
+    }
+}
+
+/// One changed file's diff text in `worktree`, or the whole worktree's.
+/// Both are paths on the Host.
+pub async fn git_diff(c: &HostConnection, worktree: &str, file: Option<&str>) -> Result<HostDiff, Error> {
+    match c.request(Request::GitDiff { worktree: worktree.into(), file: file.map(Into::into) }).await? {
+        Response::Diff { diff } => Ok(diff),
         _ => unreachable!("checked by Request::accepts"),
     }
 }

@@ -174,8 +174,15 @@ pub(crate) async fn list_dir(path: PathBuf) -> Result<Vec<skiff_core::files::Ent
 /// The changed files of one worktree, for the sidebar's Changes section.
 #[tauri::command]
 pub(crate) async fn git_changes(app: State<'_, App>, path: String) -> Result<Vec<skiff_host_api::HostChange>, String> {
-    let c = crate::connection::data_now(&app).await?;
-    skiff_client::host::data::git_changes(&c, &path).await.map_err(crate::connection::data_err)
+    crate::connection::data_read(&app, |c| async move { skiff_client::host::data::git_changes(&c, &path).await }).await
+}
+
+/// One changed file's diff text, or the whole worktree's, from the selected
+/// Host's git (`git_diff@1`), for the page's own viewer. `path` and `file`
+/// are the Host's: nothing here reads or opens them on this Mac.
+#[tauri::command]
+pub(crate) async fn git_diff(app: State<'_, App>, path: String, file: Option<String>) -> Result<skiff_host_api::HostDiff, String> {
+    crate::connection::data_read(&app, |c| async move { skiff_client::host::data::git_diff(&c, &path, file.as_deref()).await }).await
 }
 
 /// What happened to an open request.

@@ -47,6 +47,9 @@ pub struct Project {
     /// The fleet it sits in on the rail. Absent: on the rail by itself.
     #[serde(default)]
     pub fleet: Option<String>,
+    /// `changes = false`: the Changes section is hidden. Absent: shown.
+    #[serde(default)]
+    pub changes: Option<bool>,
 }
 
 impl Project {
@@ -75,6 +78,7 @@ impl Project {
             error,
             closed: p.closed,
             fleet: p.fleet.clone().filter(|f| !f.trim().is_empty()),
+            changes: p.changes,
         }
     }
 }

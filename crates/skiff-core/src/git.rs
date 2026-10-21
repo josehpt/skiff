@@ -8,6 +8,8 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::{atomic::{AtomicBool, Ordering}, mpsc, Arc, Mutex},
+    time::Duration,
 };
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -284,6 +286,218 @@ pub fn diff_script(dir: &Path, file: Option<&str>, command: Option<&str>) -> Str
     }
 }
 
+/// The most diff text [`diff_in`] answers with, in bytes.
+pub const DIFF_LIMIT: usize = 512 * 1024;
+/// How long one git run for [`diff_in`] may take before it is killed.
+const DIFF_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// A diff as plain text, for a viewer: never colored, never from an
+/// external diff tool or a textconv filter, never over [`DIFF_LIMIT`].
+#[derive(serde::Serialize, Debug, Clone, PartialEq, Eq, Default)]
+pub struct Diff {
+    /// Unified diff text. Empty: no change.
+    pub text: String,
+    /// The diff is longer than the limit: `text` is its start, cut at a line end.
+    pub truncated: bool,
+    /// The file is binary: `text` holds git's note only.
+    pub binary: bool,
+    /// The file is untracked: it is compared with an empty file.
+    pub untracked: bool,
+}
+
+/// `rel` is a path below a worktree: relative, with no `..`, `.` or root.
+pub fn is_relative_file(rel: &str) -> bool {
+    use std::path::Component;
+    let parts: Vec<_> = Path::new(rel).components().collect();
+    !parts.is_empty() && parts.iter().all(|c| matches!(c, Component::Normal(_)))
+}
+
+/// One changed file's diff against HEAD, or the whole worktree's, as
+/// [`changes_in`] reads it: git runs at `dir`, which must name `root` before
+/// and after, and an untracked file is read under `root` itself, never
+/// followed if it is a link, never opened if it is not a regular file. The
+/// whole-worktree diff leaves untracked files out, as `git diff` does.
+pub fn diff_in(root: &Root, dir: &Path, file: Option<&str>) -> Result<Diff> {
+    root.check(dir)?;
+    let diff = match file {
+        None => tracked_diff(dir, None)?,
+        Some(f) => {
+            if !is_relative_file(f) {
+                bail!("{f} is not a file path in this worktree");
+            }
+            // Literal: a `*` or `:` in a name is not a pattern.
+            let spec = format!(":(literal){f}");
+            let status = git(dir, &["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all", "--", &spec])?;
+            match status.split('\0').find(|r| r.len() > 3 && &r[3..] == f) {
+                None => Diff::default(),
+                Some(r) if r.starts_with("??") => untracked_diff(root, f)?,
+                Some(_) => tracked_diff(dir, Some(&spec))?,
+            }
+        }
+    };
+    // Swapped while git ran: its output may be another folder's.
+    root.check(dir)?;
+    Ok(diff)
+}
+
+fn tracked_diff(dir: &Path, spec: Option<&str>) -> Result<Diff> {
+    // No commit yet: everything is compared with the empty tree.
+    let base = match git(dir, &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]) {
+        Ok(head) => head,
+        Err(_) => git(dir, &["hash-object", "-t", "tree", "/dev/null"])?,
+    };
+    let base = base.trim();
+    let mut args = vec!["-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", base];
+    if let Some(spec) = spec {
+        args.extend(["--", spec]);
+    }
+    let (out, truncated) = git_bounded(dir, &args, DIFF_LIMIT)?;
+    let (text, truncated) = cap(out, truncated);
+    // Content lines start with ` `, `+` or `-`: this line is git's own.
+    let binary = spec.is_some() && text.lines().any(|l| l.starts_with("Binary files "));
+    Ok(Diff { text, truncated, binary, untracked: false })
+}
+
+/// A new file's diff, as `git diff --no-index /dev/null <file>` shows it,
+/// read under `root` with the same rules as its line count.
+fn untracked_diff(root: &Root, rel: &str) -> Result<Diff> {
+    use std::io::Read;
+    let not_shown = || anyhow!("{rel} is not a regular file or a link, so it is not shown");
+    let (mode, body, truncated) = match open_beneath(root, rel).ok_or_else(not_shown)? {
+        Beneath::Symlink(target) => ("120000", target, false),
+        Beneath::File(file) => {
+            let meta = file.metadata()?;
+            if !meta.is_file() {
+                return Err(not_shown());
+            }
+            #[cfg(unix)]
+            let exec = std::os::unix::fs::PermissionsExt::mode(&meta.permissions()) & 0o111 != 0;
+            #[cfg(not(unix))]
+            let exec = false;
+            let mut bytes = Vec::new();
+            file.take(DIFF_LIMIT as u64 + 1).read_to_end(&mut bytes)?;
+            let truncated = bytes.len() > DIFF_LIMIT;
+            bytes.truncate(DIFF_LIMIT);
+            (if exec { "100755" } else { "100644" }, bytes, truncated)
+        }
+    };
+    let mut text = format!("diff --git a/{rel} b/{rel}\nnew file mode {mode}\n");
+    // git's test: a NUL in the first 8000 bytes.
+    if body[..body.len().min(8000)].contains(&0) {
+        text += &format!("Binary files /dev/null and b/{rel} differ\n");
+        return Ok(Diff { text, truncated: false, binary: true, untracked: true });
+    }
+    let body = String::from_utf8_lossy(&body);
+    let lines: Vec<&str> = body.split_inclusive('\n').collect();
+    if !lines.is_empty() {
+        let count = if lines.len() == 1 { String::new() } else { format!(",{}", lines.len()) };
+        text += &format!("--- /dev/null\n+++ b/{rel}\n@@ -0,0 +1{count} @@\n");
+        for line in &lines {
+            text.push('+');
+            text.push_str(line);
+        }
+        if !body.ends_with('\n') && !truncated {
+            text += "\n\\ No newline at end of file\n";
+        }
+    }
+    let (text, cut) = cap(text.into_bytes(), truncated);
+    Ok(Diff { text, truncated: cut, binary: false, untracked: true })
+}
+
+/// At most [`DIFF_LIMIT`] bytes of text. Cut text ends at its last whole line.
+fn cap(mut out: Vec<u8>, truncated: bool) -> (String, bool) {
+    let truncated = truncated || out.len() > DIFF_LIMIT;
+    if truncated {
+        out.truncate(DIFF_LIMIT);
+        let end = out.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
+        out.truncate(end);
+    }
+    (String::from_utf8_lossy(&out).into_owned(), truncated)
+}
+
+/// Runs `git -C <dir> <args>` with [`bounded`] and [`DIFF_TIMEOUT`].
+fn git_bounded(dir: &Path, args: &[&str], limit: usize) -> Result<(Vec<u8>, bool)> {
+    let mut cmd = Command::new("git");
+    // A read: git takes no optional lock and writes no index.
+    cmd.arg("-C").arg(dir).args(args).env("GIT_OPTIONAL_LOCKS", "0");
+    bounded(cmd, limit, DIFF_TIMEOUT).map_err(|e| match e.downcast_ref::<Failed>() {
+        Some(Failed(err)) if err.is_empty() => anyhow!("git {} failed", args.join(" ")),
+        Some(Failed(err)) => anyhow!("{err}"),
+        None => e,
+    })
+}
+
+/// A command that exited with an error, and the start of what it printed there.
+#[derive(Debug)]
+struct Failed(String);
+impl std::fmt::Display for Failed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for Failed {}
+
+/// Runs `cmd` and keeps at most `limit` bytes of its output, and the start
+/// of its errors. More output, or a run past `timeout`, kills it. True: the
+/// output was cut.
+fn bounded(mut cmd: Command, limit: usize, timeout: Duration) -> Result<(Vec<u8>, bool)> {
+    use std::io::Read;
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("start the command")?;
+    let mut stdout = child.stdout.take().expect("piped stdout");
+    let mut stderr = child.stderr.take().expect("piped stderr");
+    // Drained to the end, so git never waits on a full pipe; the start is kept.
+    let errors = std::thread::spawn(move || {
+        let mut kept = Vec::new();
+        let _ = (&mut stderr).take(4096).read_to_end(&mut kept);
+        let _ = std::io::copy(&mut stderr, &mut std::io::sink());
+        kept
+    });
+    // The child stays unreaped until `try_wait` below, so a kill never
+    // reaches another process.
+    let child = Arc::new(Mutex::new(child));
+    let timed_out = Arc::new(AtomicBool::new(false));
+    let (done, finished) = mpsc::channel::<()>();
+    let watchdog = {
+        let (child, timed_out) = (child.clone(), timed_out.clone());
+        std::thread::spawn(move || {
+            if let Err(mpsc::RecvTimeoutError::Timeout) = finished.recv_timeout(timeout) {
+                timed_out.store(true, Ordering::SeqCst);
+                let _ = child.lock().unwrap().kill();
+            }
+        })
+    };
+    let mut out = Vec::new();
+    let read = (&mut stdout).take(limit as u64 + 1).read_to_end(&mut out);
+    let truncated = out.len() > limit;
+    out.truncate(limit);
+    drop(stdout);
+    if truncated {
+        let _ = child.lock().unwrap().kill();
+    }
+    let status = loop {
+        if let Some(status) = child.lock().unwrap().try_wait().context("wait for git")? {
+            break status;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let _ = done.send(());
+    let _ = watchdog.join();
+    let err = String::from_utf8_lossy(&errors.join().unwrap_or_default()).trim().to_string();
+    if timed_out.load(Ordering::SeqCst) {
+        bail!("git took longer than {}s", timeout.as_secs_f32());
+    }
+    read.context("read git output")?;
+    if !truncated && !status.success() {
+        return Err(Failed(err).into());
+    }
+    Ok((out, truncated))
+}
+
 /// Lines in a new file at `rel` under the worktree `root`, as `git diff`
 /// would count them. It never leaves the worktree and never blocks:
 /// - a symlink is one line, its target, as git shows it; it is not followed
@@ -295,7 +509,7 @@ fn count_lines(root: &Root, rel: &str) -> Option<u32> {
     use std::io::Read;
     let file = open_beneath(root, rel)?;
     let file = match file {
-        Beneath::Symlink => return Some(1),
+        Beneath::Symlink(_) => return Some(1),
         Beneath::File(f) => f,
     };
     let meta = file.metadata().ok()?;
@@ -314,8 +528,8 @@ fn count_lines(root: &Root, rel: &str) -> Option<u32> {
 
 enum Beneath {
     File(std::fs::File),
-    /// The last component is a symlink. It was not followed.
-    Symlink,
+    /// The last component is a symlink, with its target. It was not followed.
+    Symlink(Vec<u8>),
 }
 
 /// Opens `rel` under the open folder `root` one component at a time, each
@@ -354,8 +568,11 @@ fn open_beneath(root: &Root, rel: &str) -> Option<Beneath> {
                 match st.st_mode & libc::S_IFMT {
                     libc::S_IFREG => {}
                     libc::S_IFLNK => {
+                        let mut target = vec![0u8; 4096];
+                        let n = libc::readlinkat(fd, name.as_ptr(), target.as_mut_ptr().cast(), target.len());
                         libc::close(fd);
-                        return Some(Beneath::Symlink);
+                        target.truncate(n.max(0) as usize);
+                        return Some(Beneath::Symlink(target));
                     }
                     _ => {
                         libc::close(fd);
@@ -382,7 +599,8 @@ fn open_beneath(root: &Root, rel: &str) -> Option<Beneath> {
     let path = root.path.join(rel);
     let meta = std::fs::symlink_metadata(&path).ok()?;
     if meta.file_type().is_symlink() {
-        return Some(Beneath::Symlink);
+        let target = std::fs::read_link(&path).map(|t| t.to_string_lossy().into_owned().into_bytes()).unwrap_or_default();
+        return Some(Beneath::Symlink(target));
     }
     meta.is_file().then(|| std::fs::File::open(path).ok().map(Beneath::File)).flatten()
 }
@@ -559,6 +777,123 @@ mod tests {
         assert!(swapped.is_err_and(|e| e.contains("replaced")));
         assert!(other_folder.is_err_and(|e| e.contains("replaced")));
         assert!(file.is_err());
+    }
+
+    /// M4 diff text for a viewer: git's own text for a tracked file, a new
+    /// file read under the held root, explicit binary, untracked and cut
+    /// states, and nothing read outside the worktree or through a FIFO.
+    #[cfg(unix)]
+    #[test]
+    fn diff_text_is_bounded_plain_and_stays_in_the_worktree() {
+        use std::os::unix::fs::symlink;
+        let base = std::env::temp_dir().join(format!("skiff-difftext-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        struct Gone(PathBuf);
+        impl Drop for Gone {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _gone = Gone(base.clone());
+        let (root, outside) = (base.join("repo"), base.join("outside"));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let run = |args: &[&str]| assert!(Command::new("git").arg("-C").arg(&root).args(args).status().unwrap().success());
+        run(&["init", "-q"]);
+        // No commit yet: an added file is compared with the empty tree.
+        std::fs::write(root.join("a.txt"), "1\n2\n").unwrap();
+        run(&["add", "a.txt"]);
+        let held = Root::open(&root).unwrap();
+        let unborn = diff_in(&held, &root, Some("a.txt")).unwrap();
+        assert!(unborn.text.contains("+1\n+2\n") && !unborn.untracked, "{unborn:?}");
+        run(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"]);
+
+        // A tracked change: exactly git's own plain text.
+        std::fs::write(root.join("a.txt"), "1\ntwo\n").unwrap();
+        let got = diff_in(&held, &root, Some("a.txt")).unwrap();
+        let git_text = git(&root, &["diff", "--no-color", "--no-ext-diff", "HEAD", "--", "a.txt"]).unwrap();
+        assert_eq!(got, Diff { text: git_text, ..Diff::default() });
+        assert!(!got.text.contains('\x1b'));
+        // Unchanged, and a name that is a pattern elsewhere: nothing, literally.
+        std::fs::write(root.join("b.txt"), "b\n").unwrap();
+        run(&["add", "b.txt"]);
+        run(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "b"]);
+        assert_eq!(diff_in(&held, &root, Some("b.txt")).unwrap(), Diff::default());
+        assert_eq!(diff_in(&held, &root, Some("*.txt")).unwrap(), Diff::default());
+
+        // Untracked: compared with an empty file, read under the root.
+        std::fs::write(root.join("new.txt"), "x\ny").unwrap();
+        let new = diff_in(&held, &root, Some("new.txt")).unwrap();
+        assert!(new.untracked && !new.binary && !new.truncated, "{new:?}");
+        assert!(new.text.ends_with("@@ -0,0 +1,2 @@\n+x\n+y\n\\ No newline at end of file\n"), "{}", new.text);
+        // A link shows its target and is never followed.
+        std::fs::write(outside.join("secret.txt"), "secret\n").unwrap();
+        symlink(outside.join("secret.txt"), root.join("link")).unwrap();
+        let link = diff_in(&held, &root, Some("link")).unwrap();
+        assert!(link.text.contains("new file mode 120000") && link.text.contains(&format!("+{}", outside.join("secret.txt").display())));
+        assert!(!link.text.contains("+secret"), "{}", link.text);
+        // A FIFO never blocks the diff and is never opened for reading.
+        let fifo = std::ffi::CString::new(root.join("pipe").as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: a NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (dir, r2) = (root.clone(), Root::open(&root).unwrap());
+        std::thread::spawn(move || tx.send(diff_in(&r2, &dir, Some("pipe")).map_err(|e| e.to_string())).unwrap());
+        let pipe = rx.recv_timeout(Duration::from_secs(10)).expect("diff blocked on a FIFO");
+        // git lists no FIFO as untracked: no change, and nothing opened.
+        assert_eq!(pipe, Ok(Diff::default()));
+        let direct = untracked_diff(&held, "pipe").map_err(|e| e.to_string());
+        assert!(direct.is_err_and(|e| e.contains("not a regular file")));
+        std::fs::remove_file(root.join("pipe")).unwrap();
+        // Binary: git's note only.
+        std::fs::write(root.join("blob.bin"), [0u8, 1, 2, 3]).unwrap();
+        let blob = diff_in(&held, &root, Some("blob.bin")).unwrap();
+        assert!(blob.binary && blob.untracked && blob.text.contains("Binary files /dev/null and b/blob.bin differ"));
+        std::fs::write(root.join("a.txt"), [0u8, 9, 9]).unwrap();
+        let tracked_bin = diff_in(&held, &root, Some("a.txt")).unwrap();
+        assert!(tracked_bin.binary && !tracked_bin.untracked, "{tracked_bin:?}");
+
+        // Over the limit, tracked or untracked: cut at a line end, and said so.
+        let big = "0123456789abcdef\n".repeat(DIFF_LIMIT / 8);
+        std::fs::write(root.join("a.txt"), &big).unwrap();
+        std::fs::write(root.join("big.txt"), &big).unwrap();
+        for f in ["a.txt", "big.txt"] {
+            let d = diff_in(&held, &root, Some(f)).unwrap();
+            assert!(d.truncated && d.text.len() <= DIFF_LIMIT && d.text.ends_with('\n'), "{f}: {}", d.text.len());
+        }
+        let all = diff_in(&held, &root, None).unwrap();
+        assert!(all.truncated && all.text.len() <= DIFF_LIMIT && !all.text.contains("big.txt"));
+
+        // Not a path below the worktree.
+        for bad in ["../outside/secret.txt", "/etc/hosts", "", "./a.txt", "link/../a.txt"] {
+            assert!(diff_in(&held, &root, Some(bad)).is_err(), "{bad}");
+        }
+        // The root swapped for a link: refused, never the other folder's.
+        std::fs::rename(&root, base.join("moved")).unwrap();
+        symlink(&outside, &root).unwrap();
+        assert!(diff_in(&held, &root, Some("new.txt")).is_err_and(|e| e.to_string().contains("replaced")));
+    }
+
+    /// The diff's subprocess: a run past its time is killed, and output past
+    /// the limit is cut and the process killed, not read to the end.
+    #[cfg(unix)]
+    #[test]
+    fn a_diff_process_is_bounded_in_time_and_output() {
+        let sh = |script: &str| {
+            let mut c = Command::new("sh");
+            c.args(["-c", script]);
+            c
+        };
+        let started = std::time::Instant::now();
+        let slow = bounded(sh("sleep 30"), 10, Duration::from_millis(300));
+        assert!(slow.is_err_and(|e| e.to_string().contains("longer than")));
+        assert!(started.elapsed() < Duration::from_secs(10));
+        let started = std::time::Instant::now();
+        let (out, cut) = bounded(sh("yes"), 4096, Duration::from_secs(20)).unwrap();
+        assert!(cut && out.len() == 4096 && started.elapsed() < Duration::from_secs(10));
+        let failed = bounded(sh("echo why >&2; exit 3"), 10, Duration::from_secs(20));
+        assert!(failed.is_err_and(|e| e.to_string() == "why"));
+        assert_eq!(bounded(sh("printf ok"), 10, Duration::from_secs(20)).unwrap(), (b"ok".to_vec(), false));
     }
 
     #[test]

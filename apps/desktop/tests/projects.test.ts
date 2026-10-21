@@ -6,7 +6,7 @@ import { moduleFromSource } from "./workspaceHarness.ts";
  *  shows. The Tauri side is a fake that answers as the selected Host's data
  *  plane would, or fails as it does when no skiff-host answers. */
 function page(o: { remote: boolean; caps: string[]; fail?: string }) {
-  const S: any = { agents: [{ id: "a" }], projects: [], closedProjects: [], projectsError: null, selectedProject: null };
+  const S: any = { agents: [{ id: "a" }], projects: [], closedProjects: [], projectsError: null, selectedProject: null, dataState: "loading", dataNote: null };
   const calls: string[] = [];
   const projects = [
     { name: "web", path: "/srv/web", closed: false, worktrees: [{ path: "/srv/web", branch: "main" }] },
@@ -50,6 +50,7 @@ test("a remote Host with a data plane shows its own projects and reads no settin
   assert.deepEqual(p.S.projects.map((x: any) => x.path), ["/srv/web"]);
   assert.deepEqual(p.S.closedProjects.map((x: any) => x.name), ["old"]);
   assert.equal(p.S.projectsError, null);
+  assert.equal(p.S.dataState, "ready");
 });
 
 test("a remote Host without a data plane shows its sessions only: no project read at all", async () => {
@@ -59,6 +60,9 @@ test("a remote Host without a data plane shows its sessions only: no project rea
   assert.deepEqual(p.calls, []);
   assert.equal(p.S.projects.length, 0);
   assert.equal(p.S.projectsError, null);
+  // Not "loading" forever: the list says it is out of reach, and the data
+  // plane check fills in why.
+  assert.equal(p.S.dataState, "unavailable");
 });
 
 test("this Mac reads its projects through the data plane, with its own settings", async () => {
@@ -74,4 +78,6 @@ test("this Mac without its service still asks, and the cause shows; nothing else
   assert.ok(p.calls.includes("list_projects"));
   assert.equal(p.S.projects.length, 0);
   assert.match(p.S.projectsError, /skiff-host did not start/);
+  assert.equal(p.S.dataState, "unavailable");
+  assert.match(p.S.dataNote, /skiff-host did not start/);
 });

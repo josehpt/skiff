@@ -3,7 +3,8 @@ import { sectionHeader } from "../ui/sectionHeader";
 /**
  * The Changes section under each worktree, and the +/- counts on its row.
  * It lists changes against HEAD, shows their diffs in the peek, and opens files
- * in the selected apps.
+ * in the selected apps. A remote Host's diffs are its git's text, in the
+ * page's own viewer; its files are never opened here.
  */
 import { invoke } from "@tauri-apps/api/core";
 import type { Project, Worktree } from "../platform/types";
@@ -22,13 +23,17 @@ import { collapsed } from "../app/state";
 
 import { storedSet } from "../app/stored";
 import { isRemote } from "../app/hosts";
+import { hostCan } from "../app/hostCaps";
+import { dataEpoch } from "../app/dataPlane";
+import type { Preview } from "./rowActs";
 
 type Change = { path: string; status: "M" | "A" | "D" | "U"; added: number | null; removed: number | null };
 
 /** Projects with `changes = false` in projects.toml. Changes show by default. */
 const hidden = new Set<string>();
 
-export const showsChanges = (p: Project) => !hidden.has(p.name);
+/** A remote Host's project says it itself, from that Host's projects.toml. */
+export const showsChanges = (p: Project) => (isRemote() ? p.changes !== false : !hidden.has(p.name));
 
 /** Reads which projects hide changes. Called with every project reload. */
 export async function loadChangesSetting() {
@@ -71,14 +76,27 @@ function store(wt: string, list: Change[]) {
 function load(wt: string) {
   if (loading.has(wt)) return;
   loading.add(wt);
+  const at = dataEpoch();
   invoke<Change[]>("git_changes", { path: wt })
     // Not a repository, or git is missing: the worktree shows no changes.
     .catch((): Change[] => [])
-    .then((list) => store(wt, list))
+    .then((list) => {
+      if (at === dataEpoch()) store(wt, list);
+    })
     .finally(() => {
       loading.delete(wt);
+      // Asked on a data connection that is gone since: ask the new one.
+      if (at !== dataEpoch()) load(wt);
       scheduleRender();
     });
+}
+
+/** The diff a change row or Changes row shows: this Mac's diff command, or
+ *  a remote Host's text in the viewer when that Host offers it. */
+function diffPreview(w: Worktree, file?: string): Preview | undefined {
+  const base = { wt: w.path, branch: branchName(w), file, wait: file === undefined ? true : undefined };
+  if (!isRemote()) return { kind: "diff", ...base };
+  return hostCan("git_diff") ? { kind: "host-diff", ...base } : undefined;
 }
 
 /** Reads the known worktrees in `only` again, or every known worktree without it. */
@@ -145,10 +163,9 @@ export function changesBlock(w: Worktree): HTMLElement | null {
   const key = `changes:${w.path}`;
   // A click selects the row on mousedown (keyboard.ts), then opens or closes it.
   const head = sectionHeader(key, "Changes", isOpen, glyph, () => toggle(w.path));
-  // A remote Host's diffs need a diff read (M4 follow-up): its list shows, its preview does not.
-  const remote = isRemote();
+  const preview = diffPreview(w);
   setRowActs(key, {
-    preview: remote ? undefined : { kind: "diff", wt: w.path, branch: branchName(w), wait: true },
+    preview,
     fold: (open) => { if (open === undefined || open !== shown.has(w.path)) toggle(w.path); },
   });
   // Open, the rows show how many.
@@ -157,7 +174,7 @@ export function changesBlock(w: Worktree): HTMLElement | null {
     e.preventDefault();
     e.stopPropagation();
     ctxMenu.open(e.clientX, e.clientY, "Changes", [
-      ...(remote ? [] : [{ icon: "code-git-branch", label: "Review all changes", run: () => reviewChanges(w) }]),
+      ...(preview ? [{ icon: "code-git-branch", label: "Review all changes", run: () => reviewChanges(w) }] : []),
       { icon: "schedule-refresh-cw", label: "Refresh", run: () => load(w.path) },
     ]);
   });
@@ -177,9 +194,11 @@ function row(w: Worktree, c: Change): HTMLElement {
   const key = `change:${path}`;
   const gone = c.status === "D";
   // The row's diff shows while it is current. Shift+Enter opens the file itself.
-  // A remote Host's file is that Host's: its path is copied, never previewed or opened here.
+  // A remote Host's file is that Host's: its diff shows from its git, its path
+  // is copied, and it is never opened here.
   const remote = isRemote();
-  setRowActs(key, remote ? {} : { preview: { kind: "diff", wt, branch: branchName(w), file: c.path }, open: gone ? undefined : () => open(path) });
+  const preview = diffPreview(w, c.path);
+  setRowActs(key, { preview, open: gone || remote ? undefined : () => open(path) });
   const show = () => select(key, true, true);
   const slash = c.path.lastIndexOf("/");
   const name = c.path.slice(slash + 1);
@@ -200,9 +219,9 @@ function row(w: Worktree, c: Change): HTMLElement {
   r.addEventListener("contextmenu", (m) => {
     m.preventDefault();
     m.stopPropagation();
-    const items: MenuEntry[] = remote ? [] : [
+    const items: MenuEntry[] = preview ? [
       { icon: "code-git-branch", label: "Show diff", hint: "Enter", run: show },
-    ];
+    ] : [];
     if (!gone && !remote) items.push(
       { icon: "indicators-square-arrow-out-up-right", label: "Open file", hint: "Shift+Enter", run: () => open(path) },
       { icon: "documents-folder-open", label: "Show in file manager", hint: keyLabel("project-folder"), run: () => reveal(path) },

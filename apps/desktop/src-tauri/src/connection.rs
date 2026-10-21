@@ -12,6 +12,9 @@ pub(crate) struct App {
     /// M4: the selected Host's data-plane service (`skiff-host`), checked
     /// against the session plane's Host id on every connection.
     pub(crate) data: Mutex<Option<DataPlane>>,
+    /// Counts the data-plane connections made: a new one may bring other
+    /// data than the page shows (`data_plane_status`).
+    pub(crate) data_gen: std::sync::atomic::AtomicU64,
     /// The one endpoint this window reaches: this Mac, or the remote Host
     /// `hosts.toml` selects. Only `select_host` changes it, never a reconnect.
     /// Legacy paths only borrow its accepted Client.
@@ -384,7 +387,78 @@ pub(crate) async fn data_now(app: &App) -> Result<Arc<HostConnection>, String> {
     };
     let c = plane.connection();
     *guard = Some(plane);
+    app.data_gen.fetch_add(1, Ordering::SeqCst);
     Ok(c)
+}
+
+/// Why a data reply is not shown: the connection it came on was replaced.
+pub(crate) const DATA_REPLACED: &str = "The connection to skiff-host changed during the read. Skiff reads again.";
+
+/// One data-plane read. Its reply is used only if the connection it came on
+/// is still the selected Host's data connection: a reply from a connection
+/// that a Host switch or a reconnect replaced is never shown.
+pub(crate) async fn data_read<T, F, Fut>(app: &App, read: F) -> Result<T, String>
+where
+    F: FnOnce(Arc<HostConnection>) -> Fut,
+    Fut: std::future::Future<Output = Result<T, skiff_host_api::Error>>,
+{
+    let c = data_now(app).await?;
+    let result = read(c.clone()).await;
+    let current = app.data.lock().await.as_ref().map(|d| d.connection());
+    if !current.is_some_and(|d| Arc::ptr_eq(&d, &c)) {
+        return Err(DATA_REPLACED.into());
+    }
+    result.map_err(data_err)
+}
+
+/// The data plane as the page shows it: reachable or why not, and which
+/// connection, so the page reads projects and Git again after a new one.
+#[derive(Serialize, Debug, PartialEq)]
+pub(crate) struct DataPlaneStatus {
+    ready: bool,
+    /// No live session plane: the data plane is not tried.
+    waiting: bool,
+    host_id: Option<String>,
+    instance_id: Option<String>,
+    /// Changes with every new data connection.
+    connection: u64,
+    capabilities: Vec<String>,
+    message: Option<String>,
+}
+
+/// Checks the data plane over the live session plane only: it never connects
+/// or starts skiffd, and never touches a terminal stream. On This Mac a
+/// missing `skiff-host` starts, as for any data read.
+#[tauri::command]
+pub(crate) async fn data_plane_status(app: State<'_, App>) -> Result<DataPlaneStatus, String> {
+    Ok(data_status(&app).await)
+}
+
+pub(crate) async fn data_status(app: &App) -> DataPlaneStatus {
+    let live = app.host.lock().await.as_ref().map(|h| h.connection()).filter(|c| !c.is_closed());
+    let mut status = DataPlaneStatus {
+        ready: false,
+        waiting: live.is_none(),
+        host_id: None,
+        instance_id: None,
+        connection: app.data_gen.load(Ordering::SeqCst),
+        capabilities: Vec::new(),
+        message: None,
+    };
+    if live.is_none() {
+        return status;
+    }
+    match data_now(app).await {
+        Ok(c) => {
+            status.ready = true;
+            status.host_id = Some(c.hello().host.host_id.as_str().to_string());
+            status.instance_id = Some(c.hello().instance_id.as_str().to_string());
+            status.capabilities = capability_names(&c);
+        }
+        Err(e) => status.message = Some(e),
+    }
+    status.connection = app.data_gen.load(Ordering::SeqCst);
+    status
 }
 
 /// Why the data plane is out of reach, in words that name no local path.
@@ -1310,6 +1384,40 @@ mod tests {
             assert!(Arc::ptr_eq(&c, &data_now(&app).await.unwrap()));
             assert_eq!(std::fs::read_to_string(dir.join("started")).unwrap().lines().count(), 1);
 
+            // The page's check: ready, with the data plane's own families.
+            let first = data_status(&app).await;
+            assert!(first.ready && !first.waiting && first.host_id.as_deref() == Some("A"), "{first:?}");
+            assert!(first.capabilities.contains(&"git_diff@1".to_string()), "{first:?}");
+            // A reply that comes on a connection replaced meanwhile is never shown.
+            let app = &app;
+            let stale = data_read(app, |c| async move {
+                *app.data.lock().await = None;
+                skiff_client::host::data::project_list(&c).await
+            })
+            .await;
+            assert_eq!(stale, Err(DATA_REPLACED.to_string()));
+            let again = data_status(app).await;
+            assert!(again.ready && again.connection > first.connection && again.instance_id == first.instance_id, "{again:?}");
+
+            // The service restarts: the next check finds the new instance on
+            // a new connection, with no page reload and nothing else redone.
+            service.abort();
+            let _ = service.await;
+            let _ = std::fs::remove_file(&data_socket);
+            let listener = tokio::net::UnixListener::bind(&data_socket).unwrap();
+            let restarted = tokio::spawn(skiff_host::serve(listener, Arc::new(host("A"))));
+            let old_c = app.data.lock().await.as_ref().unwrap().connection();
+            for _ in 0..100 {
+                if old_c.is_closed() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            let back = data_status(app).await;
+            assert!(back.ready && back.connection > again.connection && back.instance_id != again.instance_id, "{back:?}");
+            assert_eq!(std::fs::read_to_string(dir.join("started")).unwrap().lines().count(), 1, "a running service was started again");
+            let service = restarted;
+
             // Another Host's service at this socket: refused, nothing sent.
             service.abort();
             let _ = service.await;
@@ -1317,7 +1425,7 @@ mod tests {
             let _ = std::fs::remove_file(&data_socket);
             let listener = tokio::net::UnixListener::bind(&data_socket).unwrap();
             let other = tokio::spawn(skiff_host::serve(listener, Arc::new(host("B"))));
-            let e = data_now(&app).await.err().unwrap();
+            let e = data_now(app).await.err().unwrap();
             assert!(e.contains("answers as another Skiff Host"), "{e}");
             other.abort();
         });

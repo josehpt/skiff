@@ -413,11 +413,16 @@ fn m4_projects_and_git_status_are_read_only_data_plane_families() {
     let fixture: Value = serde_json::from_str(include_str!("fixtures/m4.json")).unwrap();
     let projects = Capability::projects();
     let git = Capability::git_status();
+    let diff_cap = Capability::git_diff();
     assert_eq!(serde_json::to_value(&projects).unwrap(), fixture["capabilities"]["projects"]);
     assert_eq!(serde_json::to_value(&git).unwrap(), fixture["capabilities"]["git_status"]);
+    assert_eq!(serde_json::to_value(&diff_cap).unwrap(), fixture["capabilities"]["git_diff"]);
     let list = Response::Projects { projects: vec![] };
     let changes = Response::Changes { changes: vec![] };
-    for (key, cap) in [("project_requests", &projects), ("git_requests", &git)] {
+    let diff = Response::Diff {
+        diff: skiff_host_api::HostDiff { text: String::new(), truncated: false, binary: false, untracked: false },
+    };
+    for (key, cap) in [("project_requests", &projects), ("git_requests", &git), ("diff_requests", &diff_cap)] {
         for value in fixture[key].as_array().unwrap() {
             let request: Request = serde_json::from_value(value.clone()).unwrap();
             assert_eq!(serde_json::to_value(&request).unwrap(), *value);
@@ -425,6 +430,7 @@ fn m4_projects_and_git_status_are_read_only_data_plane_families() {
             // Exactly one reply kind each, never Ok.
             assert!(!request.accepts(&Response::Ok));
             assert_eq!(request.accepts(&changes), cap == &git);
+            assert_eq!(request.accepts(&diff), cap == &diff_cap);
         }
     }
     assert!(Request::ProjectList.accepts(&list));
@@ -436,15 +442,20 @@ fn m4_projects_and_git_status_are_read_only_data_plane_families() {
     // Neither family grants a session operation, nor the other family.
     for session in [Request::SessionInventory, Request::AgentList, Request::GroupList] {
         let c = session.capability().unwrap();
-        assert!(c != projects && c != git);
+        assert!(c != projects && c != git && c != diff_cap);
     }
     assert_ne!(projects, git);
+    assert_ne!(git, diff_cap);
+    // An older client's request without `file` is the whole worktree's.
+    let whole: Request = serde_json::from_value(json!({"cmd":"git_diff","worktree":"/w"})).unwrap();
+    assert_eq!(whole, Request::GitDiff { worktree: "/w".into(), file: None });
     // A row needs its states; a status is one of four letters.
     for bad in [
         json!({"kind":"changes","changes":[{"path":"a","status":"X","added":1,"removed":0}]}),
         json!({"kind":"changes","changes":[{"path":"a","added":1,"removed":0}]}),
         json!({"kind":"projects","projects":[{"name":"x","short":"x","path":"/x","color":null,"agents":[],"worktrees":[],"error":null}]}),
         json!({"kind":"project","project":{"name":"x"}}),
+        json!({"kind":"diff","diff":{"text":"","truncated":false,"binary":false}}),
     ] {
         let ok = serde_json::from_value::<Response>(bad.clone()).is_ok();
         // A project with only the required fields decodes: the rest default.

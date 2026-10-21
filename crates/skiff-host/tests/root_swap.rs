@@ -2,6 +2,7 @@
 //! folder while git runs. The count once reopened the path and read the
 //! other folder's file. A controlled `git` makes the swap at the diff, the
 //! gap between the worktree check and the count, as another process could.
+//! The diff text of an untracked file is held to the same root.
 //!
 //! Its own process: `git` here is the fake one on PATH, and the state is
 //! private (never the live socket, config or Host id).
@@ -40,12 +41,12 @@ async fn a_worktree_replaced_while_git_runs_is_refused_not_read() {
 
     // `git -C <dir> ...`: the root is its only worktree, `victim.txt` is
     // untracked, and once `swap` exists the diff replaces the root's path
-    // with a link to `outside`.
+    // with a link to `outside` (with `diff-swap` too, status does it).
     let swap = dir.join("swap");
     let script = format!(
         "#!/bin/sh\nshift 2\ncase \"$1\" in\n\
          worktree) printf 'worktree %s\\0HEAD 0000000\\0branch refs/heads/main\\0\\0' '{root}' ;;\n\
-         status) printf '?? victim.txt\\0' ;;\n\
+         status) printf '?? victim.txt\\0'; [ -e '{swap}' ] && [ -e '{dir}/diff-swap' ] && mv '{root}' '{dir}/original-repo' && ln -s '{outside}' '{root}'; exit 0 ;;\n\
          diff) [ -e '{swap}' ] && mv '{root}' '{dir}/original-repo' && ln -s '{outside}' '{root}'; exit 1 ;;\n\
          *) exit 1 ;;\nesac\n",
         root = root.display(),
@@ -82,6 +83,19 @@ async fn a_worktree_replaced_while_git_runs_is_refused_not_read() {
     // Swapped at the diff: refused, never the outside file's three lines.
     std::fs::write(&swap, "").unwrap();
     let got = ask().await;
+    assert!(std::fs::symlink_metadata(&root).unwrap().file_type().is_symlink(), "the swap ran");
+    assert!(matches!(&got, Err(Error::OperationFailed { message }) if message.contains("replaced")), "{got:?}");
+
+    // Diff text: put the root back, then swap it once git status ran.
+    std::fs::remove_file(&root).unwrap();
+    std::fs::rename(dir.join("original-repo"), &root).unwrap();
+    let diff = || skiff_host::answer(Request::GitDiff { worktree: root.to_str().unwrap().into(), file: Some("victim.txt".into()) }, &hello);
+    std::fs::remove_file(&swap).unwrap();
+    let Ok(Response::Diff { diff: own }) = diff().await else { panic!("no diff") };
+    assert!(own.untracked && own.text.ends_with("+1\n"), "{own:?}");
+    std::fs::write(&swap, "").unwrap();
+    std::fs::write(dir.join("diff-swap"), "").unwrap();
+    let got = diff().await;
     assert!(std::fs::symlink_metadata(&root).unwrap().file_type().is_symlink(), "the swap ran");
     assert!(matches!(&got, Err(Error::OperationFailed { message }) if message.contains("replaced")), "{got:?}");
 }

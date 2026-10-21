@@ -123,6 +123,25 @@ function pointerRow(s: SessionInfo): HTMLElement {
   return row;
 }
 
+/**
+ * What the list says about the projects themselves, from the selected
+ * Host's data plane: they load, they are out of reach and why, or there are
+ * none. Null when the projects show and say it all.
+ */
+export function projectsNote(): HTMLElement | null {
+  const remote = isRemote();
+  const on = remote ? ` on ${hostName()}` : "";
+  if (S.dataState === "loading") return S.projects.length ? null : h("div", "note-row", `Loading projects${on}…`);
+  if (S.dataState === "unavailable") {
+    const why = S.dataNote ?? `Projects${on} need skiff-host there.`;
+    const last = S.projects.length ? " The list shows the last read." : "";
+    const text = `${why}${last} Skiff checks again on its own.`;
+    // A remote Host without its service is a setup, not a fault: no red.
+    return remote ? h("div", "note-row", text) : errorRow(text);
+  }
+  return S.projects.length ? null : h("div", "note-row", `No projects${on}`);
+}
+
 function errorRow(text: string): HTMLElement {
   const row = h("div", "error-row", text);
   row.setAttribute("role", "alert");
@@ -172,6 +191,7 @@ function sidebarSig(): string {
   return JSON.stringify([
     listGen, appliedTheme(), S.selectedProject, folded.keys(), S.projects.map(shows),
     S.selection, S.renamingSession, S.renaming?.id ?? null, rows, groups, projects, agent,
+    S.dataState, S.dataNote,
   ]);
 }
 
@@ -210,9 +230,9 @@ export function renderSidebar() {
     for (const p of sec.projects) kids.appendChild(projectBlock(p));
     side.appendChild(kids);
   }
-  if (isRemote()) side.appendChild(h("div", "note-row", `Projects on ${hostName()} show in a later version`));
-  else if (!S.projects.length) side.appendChild(h("div", "note-row", "No projects"));
-  else if (!S.projects.some(shows)) side.appendChild(h("div", "note-row", "No projects in this workspace"));
+  const note = projectsNote();
+  if (note) side.appendChild(note);
+  else if (S.projects.length && !S.projects.some(shows)) side.appendChild(h("div", "note-row", "No projects in this workspace"));
   // Sessions whose folder is in no project.
   const other = worktreeLines(null);
   if (other.length) {

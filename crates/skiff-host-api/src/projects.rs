@@ -1,5 +1,6 @@
 //! M4 (first slice) data plane, read-only: the Host's projects, fleets and
-//! worktrees (`projects@1`) and a worktree's changed files (`git_status@1`).
+//! worktrees (`projects@1`), a worktree's changed files (`git_status@1`) and
+//! their diff text (`git_diff@1`).
 //! Served by `skiff-host`, the Host's restartable data-plane service, never
 //! by skiffd. Every path is a path on the Host: opaque to the client, never
 //! opened, resolved or checked on the client's machine.
@@ -45,6 +46,10 @@ pub struct HostProject {
     pub closed: bool,
     #[serde(default)]
     pub fleet: Option<String>,
+    /// `changes = false` in the Host's config: its Changes section is hidden.
+    /// Absent: shown.
+    #[serde(default)]
+    pub changes: Option<bool>,
 }
 
 /// One changed file in a worktree against HEAD, staged and unstaged together.
@@ -65,4 +70,19 @@ pub enum ChangeStatus {
     A,
     D,
     U,
+}
+
+/// A diff as plain text, for a viewer on the client. Never colored, never
+/// from the Host's external diff tool or textconv filter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostDiff {
+    /// Unified diff text. Empty: the file has no change.
+    pub text: String,
+    /// The diff was longer than the Host's limit (512 KiB): `text` is its
+    /// start, cut at a line end.
+    pub truncated: bool,
+    /// The file is binary: `text` holds git's one-line note only.
+    pub binary: bool,
+    /// The file is untracked: it is compared with an empty file.
+    pub untracked: bool,
 }

@@ -15,7 +15,7 @@ pub use agents::HostAgent;
 pub use groups::Group;
 pub use inventory::InventorySession;
 pub use lifecycle::SessionSpec;
-pub use projects::{ChangeStatus, HostChange, HostProject, HostWorktree};
+pub use projects::{ChangeStatus, HostChange, HostDiff, HostProject, HostWorktree};
 pub use terminal::{EchoTimes, TerminalFrame};
 pub use updates::SessionUpdate;
 
@@ -31,6 +31,7 @@ pub const SESSION_GROUPS: &str = "session_groups";
 pub const SESSION_AGENTS: &str = "session_agents";
 pub const PROJECTS: &str = "projects";
 pub const GIT_STATUS: &str = "git_status";
+pub const GIT_DIFF: &str = "git_diff";
 
 macro_rules! identity {
     ($name:ident) => {
@@ -138,6 +139,15 @@ impl Capability {
     pub fn git_status() -> Self {
         Self {
             name: GIT_STATUS.into(),
+            version: 1,
+        }
+    }
+    /// Read one changed file's diff text, or a whole worktree's, in one of
+    /// the Host's project worktrees. Data plane; bounded plain text only:
+    /// grants no file read beyond the diff, no external tool and no write.
+    pub fn git_diff() -> Self {
+        Self {
+            name: GIT_DIFF.into(),
             version: 1,
         }
     }
@@ -395,6 +405,14 @@ pub enum Request {
     GitChanges {
         worktree: String,
     },
+    /// Answers `diff`: `file`'s diff against HEAD, or the whole worktree's
+    /// without untracked files. `worktree` as for `git_changes`; `file` is
+    /// relative to it, else `not_found`.
+    GitDiff {
+        worktree: String,
+        #[serde(default)]
+        file: Option<String>,
+    },
 }
 impl Request {
     pub fn capability(&self) -> Option<Capability> {
@@ -418,6 +436,7 @@ impl Request {
             Self::AgentList => Some(Capability::session_agents()),
             Self::ProjectList | Self::ProjectGet { .. } => Some(Capability::projects()),
             Self::GitChanges { .. } => Some(Capability::git_status()),
+            Self::GitDiff { .. } => Some(Capability::git_diff()),
             Self::ListSessions
             | Self::Write { .. }
             | Self::Resize { .. }
@@ -445,6 +464,7 @@ impl Request {
                 | (Self::ProjectList, Response::Projects { .. })
                 | (Self::ProjectGet { .. }, Response::Project { .. })
                 | (Self::GitChanges { .. }, Response::Changes { .. })
+                | (Self::GitDiff { .. }, Response::Diff { .. })
         ) || (!matches!(
             self,
             Self::Hello
@@ -461,6 +481,7 @@ impl Request {
                 | Self::ProjectList
                 | Self::ProjectGet { .. }
                 | Self::GitChanges { .. }
+                | Self::GitDiff { .. }
         ) && matches!(reply, Response::Ok))
     }
 }
@@ -482,6 +503,7 @@ pub enum Response {
     /// Boxed, as `Session`. Same JSON.
     Project { project: Box<HostProject> },
     Changes { changes: Vec<HostChange> },
+    Diff { diff: HostDiff },
     SessionInventory { sessions: Vec<InventorySession> },
     SessionScreen { lines: Vec<String> },
     ConnectionStatus { version: String, protocol: u32 },

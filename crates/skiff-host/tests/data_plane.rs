@@ -98,7 +98,7 @@ async fn the_data_plane_serves_this_hosts_projects_and_git_only() {
     let hello = skiff_host::hello().unwrap();
     let stored = skiff_core::host_identity::load(&skiff_core::host_identity::path()).unwrap();
     assert_eq!(hello.host.host_id.as_str(), stored);
-    assert_eq!(hello.capabilities, vec![Capability::projects(), Capability::git_status()]);
+    assert_eq!(hello.capabilities, vec![Capability::projects(), Capability::git_status(), Capability::git_diff()]);
     let host = hello.host.host_id.clone();
     let mut service = start(&skiff_core::socket::data_socket(&session), hello.clone());
 
@@ -144,6 +144,28 @@ async fn the_data_plane_serves_this_hosts_projects_and_git_only() {
     let link = read.unwrap().into_iter().find(|c| c.path == "link-fifo").unwrap();
     assert_eq!((link.status, link.added, link.removed), (ChangeStatus::A, Some(1), Some(0)));
     std::fs::remove_file(app.join("link-fifo")).unwrap();
+
+    // Diff text: the same as the Host's own read, plain and bounded.
+    let one = data::git_diff(&c, &feat, Some("a.txt")).await.unwrap();
+    let held = skiff_core::git::Root::open(Path::new(&feat)).unwrap();
+    let local = skiff_core::git::diff_in(&held, Path::new(&feat), Some("a.txt")).unwrap();
+    assert_eq!(serde_json::to_value(&one).unwrap(), serde_json::to_value(&local).unwrap());
+    assert!(one.text.contains("+two") && !one.untracked && !one.truncated && !one.binary, "{one:?}");
+    let new = data::git_diff(&c, &feat, Some("new.txt")).await.unwrap();
+    assert!(new.untracked && new.text.contains("+x\n+y\n"), "{new:?}");
+    let all = data::git_diff(&c, &feat, None).await.unwrap();
+    assert!(all.text.contains("a/a.txt") && !all.text.contains("new.txt"), "{all:?}");
+    // Over the limit: cut at a line end, said so, and still one frame.
+    let big = "0123456789abcdef\n".repeat(skiff_core::git::DIFF_LIMIT / 8);
+    std::fs::write(dir.join("app-feat/big.txt"), &big).unwrap();
+    let cut = data::git_diff(&c, &feat, Some("big.txt")).await.unwrap();
+    assert!(cut.truncated && cut.text.len() <= skiff_core::git::DIFF_LIMIT && cut.text.ends_with('\n'));
+    std::fs::remove_file(dir.join("app-feat/big.txt")).unwrap();
+    // Only a file below a known worktree: never another path or project.
+    for (wt, file) in [(feat.as_str(), "../outside/a.txt"), (feat.as_str(), "/etc/hosts"), (outside.to_str().unwrap(), "a.txt"), ("/", "etc/hosts")] {
+        let got = data::git_diff(&c, wt, Some(file)).await;
+        assert!(matches!(got, Err(Error::NotFound { .. })), "{wt} {file}: {got:?}");
+    }
 
     // Git runs in no folder the client names unless it is a worktree of an
     // open project: not a closed project's, not any other repo or path.

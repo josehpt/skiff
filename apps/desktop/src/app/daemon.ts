@@ -31,6 +31,8 @@ import { reattachPanes } from "../terminal/terminalRuntime";
 import { focusPane, inBackground, paneNear, revealSession, rowNear, showSingle, splitWith, unfocus } from "../workspace/view";
 import { hostCan, hostInvoke, loadHostCaps } from "./hostCaps";
 import { hostName, isRemote } from "./hosts";
+import { watchDataPlane } from "./dataPlane";
+import { refreshHostDiff } from "../terminal/peek";
 import { muteInput } from "../terminal/terminalRuntime";
 
 export function setDaemon(status: DaemonStatus) {
@@ -241,7 +243,10 @@ export async function loadProjects() {
     S.projects = [];
     S.closedProjects = [];
     S.projectsError = null;
+    // The data plane check says why (dataPlane.ts), and reads again once it answers.
+    S.dataState = "unavailable";
     if (S.selectedProject !== OTHER) S.selectedProject = null;
+    render();
     return;
   }
   let list: Project[] | null = null;
@@ -263,6 +268,8 @@ export async function loadProjects() {
     S.closedProjects = list.filter((p) => p.closed);
   }
   S.projectsError = err;
+  S.dataState = err ? "unavailable" : "ready";
+  S.dataNote = err;
   if (S.selectedProject !== OTHER && !S.projects.some((p) => p.name === S.selectedProject)) {
     const f = S.focused ? sessions.get(S.focused) : undefined;
     S.selectedProject = (f && place(f)?.project.name) || S.projects[0]?.name || null;
@@ -271,6 +278,29 @@ export async function loadProjects() {
     if (!S.projects.some((p) => p.worktrees.some((w) => w.path === path))) removeErrors.delete(path);
   }
   render();
+}
+
+/**
+ * Follows the selected Host's data plane from now on (dataPlane.ts). A new
+ * data connection reads its capabilities, projects, Git changes and a
+ * remote diff on screen again; a lost one says why. Sessions, panes and
+ * terminal streams stay as they are.
+ */
+export function followDataPlane() {
+  watchDataPlane({
+    async reload() {
+      await loadHostCaps().catch(console.error);
+      await loadProjects();
+      reloadChanges();
+      refreshHostDiff();
+    },
+    down(message) {
+      S.dataState = "unavailable";
+      S.dataNote = message;
+      render();
+    },
+    fresh: () => S.dataState === "ready" && hostCan("projects"),
+  });
 }
 
 let staleTimer: number | undefined;

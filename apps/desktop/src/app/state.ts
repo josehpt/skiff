@@ -69,6 +69,10 @@ export const S = {
   /** Closed projects: kept with their settings, out of the tree. */
   closedProjects: [] as Project[],
   projectsError: null as string | null,
+  /** The selected Host's data plane (skiff-host), which serves projects and
+   *  Git: still loading, ready, or out of reach with `dataNote` as the cause. */
+  dataState: "loading" as "loading" | "ready" | "unavailable",
+  dataNote: null as string | null,
   selectedProject: null as string | null,
   /** Known agents with installed and enabled state, from list_agents. */
   agents: [] as AgentInfo[],

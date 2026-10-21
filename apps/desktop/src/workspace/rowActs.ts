@@ -7,6 +7,8 @@
 export type Preview =
   /** `wait`: a card first; the diff runs on Enter. All changes of a big branch can be slow to draw. */
   | { kind: "diff"; wt: string; branch: string; file?: string; wait?: boolean }
+  /** A remote Host's diff: its git's text, in the page's own viewer. No command runs here. */
+  | { kind: "host-diff"; wt: string; branch: string; file?: string; wait?: boolean }
   | { kind: "file"; path: string }
   | { kind: "folder"; path: string };
 

@@ -1,4 +1,4 @@
-# Host API — M0 contract, local M1a–M1g seams, M2 remote terminals, M3 remote lifecycle and the M4 data plane (first slice)
+# Host API — M0 contract, local M1a–M1g seams, M2 remote terminals, M3 remote lifecycle and the M4 data plane (read slices)
 
 Tracking: [M0 #156](https://github.com/solutionscay/skiff/issues/156),
 [epic #155](https://github.com/solutionscay/skiff/issues/155).
@@ -1269,7 +1269,8 @@ Tracking: [M4 #160](https://github.com/solutionscay/skiff/issues/160), [epic #15
   worktrees and change counts. They are read-only:
   - Project, worktree and fleet menus offer New session and Copy path only.
   - Drag-to-reorder, project keys, project themes and backgrounds do nothing.
-  - Change rows show no diff preview and no Open, and copy the Host path only.
+  - Change rows show no Open, and copy the Host path only. Since the second
+    slice they show the Host's diff text in the page's own viewer.
   - Rust still refuses every write and every opener while a remote Host is
     shown (`LOCAL_ONLY`).
 - `list_projects`, `get_project` and `git_changes` left `LOCAL_ONLY`. The
@@ -1349,22 +1350,148 @@ Tracking: [M4 #160](https://github.com/solutionscay/skiff/issues/160), [epic #15
   `skiff_core::config` for them.
 - **Config migration** (§5 of #155). Not started: `schema = 2`, client keys
   copied out, and `skiff-host` as the only writer.
-- **Diff text.** A diff read API is needed, plus a client view or peek for
-  remote text. Local diffs still run the person's `[open] diff` command in
-  the peek, on this Mac's path.
-- **Per-project display settings** (`files_projects`,
-  `hidden_changes_projects`, `project_themes`) still come from this Mac's
-  config, and are not loaded for a remote Host.
+- **Diff text.** Done in the second slice (below).
+- **Per-project display settings.** `changes` comes from the Host since the
+  second slice. `files_projects` and `project_themes` still come from this
+  Mac's config, and are not loaded for a remote Host.
 - **Supervision.** On a remote Host, the person starts `skiff-host`.
   Nothing restarts it. `skiff info` does not show it. A release-skill and
   upgrade story for two-process Hosts belongs to M7.
 - **Change watching.** The page still reads again on session events. The
   Host has no data-plane event stream yet.
-- **Stale capabilities.** If the data plane was down when capabilities were
-  read, a remote Host shows sessions only until the next reload or
-  reconnect.
+- **Stale capabilities.** Fixed in the second slice: the page follows the
+  data plane and reads again when it answers.
 - **Acceptance.** No manual run on two machines yet, and CI has not run
   (nothing is pushed). M2 and M3 manual and CI acceptance also stay open.
+
+## M4 (second slice): diff text, data-plane recovery, Host display metadata
+
+Tracking: [M4 #160](https://github.com/solutionscay/skiff/issues/160). Read-only,
+like the first slice. Writes and config migration are the next M4 increment.
+
+### Contract (additive, API major 1)
+
+- **`git_diff@1`**, served by `skiff-host` beside `git_status@1`. It is a
+  capability of its own: `git_status` still grants no diff text.
+  - `git_diff { worktree, file? }` answers `diff { diff: HostDiff }`: one
+    changed file's diff against HEAD, or, without `file`, the whole
+    worktree's. A request without `file` is the whole worktree's.
+  - `HostDiff`: `text`, `truncated`, `binary`, `untracked`.
+  - `worktree` is checked as for `git_changes`. `file` must be relative,
+    with no `..`, `.` or root (`skiff_core::git::is_relative_file`), else
+    `not_found`.
+- **`HostProject.changes`** (and `skiff_core::project::Project.changes`):
+  the Host's `changes = false` setting, so the Changes section follows that
+  Host's `projects.toml`. Absent means shown. This is the only display key
+  added; `files` and themes stay later work.
+- Golden fixture: `m4.json` has the capability, both request forms, a text,
+  a binary untracked and an empty reply, and the new project field.
+
+### How the Host makes the text (`skiff_core::git::diff_in`)
+
+- **The held root.** The same rules as the counts: the service opens the
+  named folder before `known_worktree`, and the path must name that folder
+  (device and inode) before git runs and after. A swap is refused.
+- **Tracked files and the whole worktree:** `git diff --no-color
+  --no-ext-diff --no-textconv --no-renames <HEAD> [-- :(literal)<file>]`
+  with `core.quotePath=false` and `GIT_OPTIONAL_LOCKS=0`. The Host's
+  external diff tool and textconv filters never run. The pathspec is
+  literal, so `*` in a name is not a pattern. A repository with no commit is
+  compared with the empty tree.
+- **Untracked files** are not given to git. They are read under the held
+  root with the count's rules (`O_NOFOLLOW` per component, a type check
+  before any open, non-blocking) and drawn in the `git diff --no-index`
+  form. A link shows its target and is never followed. A FIFO, device or
+  folder is refused with a message. git lists no FIFO as untracked, so a
+  request for one answers "no change".
+- **Bounds:** at most 512 KiB of text (`DIFF_LIMIT`). Longer text is cut at
+  a line end and marked `truncated`. git's output is read with a limit; past
+  it, or past 20 s, git is killed. Its stderr is drained and only its start
+  is kept. Text is UTF-8 with invalid bytes replaced, so a reply stays
+  within one 8 MiB frame.
+- **Binary:** git's note (`Binary files … differ`) with `binary`. An
+  untracked file is binary when it has a NUL in its first 8000 bytes, as
+  git decides.
+
+### The app
+
+- **Remote diffs in the page.** On a remote Host that offers `git_diff`,
+  a change row and the Changes row show the Host's text in the peek, in a
+  viewer of its own (`terminal/diffView.ts`). No command runs on this Mac.
+  The Host's paths are never read or opened here (`open_diff` stays
+  `LOCAL_ONLY`).
+  - The viewer says what it shows: loading, no change, untracked, binary,
+    cut at 512 KiB, the whole worktree without untracked files, or the
+    cause of a failed read.
+  - Esc closes it. Space opens or closes the row. The arrow and page keys
+    scroll.
+  - This Mac keeps its `[open] diff` command in the peek, unchanged.
+- **Recovery** (`app/dataPlane.ts`, `data_plane_status`). The page checks
+  the data plane on its own: every 5 s while it answers, and 1 s, doubling
+  to 30 s, while it does not. The check uses the live session plane only: it
+  never connects skiffd or touches a terminal stream. On This Mac a missing
+  `skiff-host` starts, as for any data read.
+  - A new data connection (the service started late, restarted, or the link
+    came back) reads the capabilities, projects, Git changes and an open
+    remote diff again. No page reload.
+  - A lost one shows its cause in the list. The last list stays, and says
+    so.
+- **No stale replies.** Rust uses a data reply only if its connection is
+  still the selected Host's (`data_read`). Each new connection, or its
+  loss, is a new data epoch in the page. A Git list or diff asked in an
+  older epoch is dropped and asked again. A Host switch reloads the page,
+  as before.
+- **States.** The list says `Loading projects…`, the cause when the data
+  plane is out of reach, and `No projects` for an empty list. The old "show
+  in a later version" note is gone.
+
+### Demo
+
+1. **An SSH Host** with `skiff-host` running there: pick it, open a
+   worktree's Changes, and select a changed file. The viewer shows the
+   Host's diff. Select an untracked file, a binary file and the Changes row
+   itself (Enter, or Review all changes).
+2. Stop `skiff-host` there. Within seconds the list says why, and the
+   terminals keep working. Start it again: the projects and changes come
+   back without a reload.
+3. **This Mac:** a change row still runs `[open] diff` in the peek.
+
+### Tests
+
+- **Core** (`git.rs`): `diff_text_is_bounded_plain_and_stays_in_the_worktree`
+  (parity with git's own text, no color, an unborn repo, a literal
+  pathspec, no change, untracked text, a link not followed, a FIFO that
+  never blocks, binary tracked and untracked, cut tracked, untracked and
+  whole diffs, refused paths, a refused root swap) and
+  `a_diff_process_is_bounded_in_time_and_output` (killed after its time,
+  killed past its limit, a failure's stderr).
+- **Contract:** the `git_diff` capability, requests and replies in
+  `m4.json`; one reply kind; a request without `file`.
+- **Service:** `data_plane.rs` diff parity with `diff_in`, untracked, whole
+  worktree, a cut diff in one frame, and refused paths and projects.
+  `root_swap.rs`: a controlled `git` swaps the root after `status`, and the
+  untracked diff is refused, not read.
+- **Real SSH** (`ssh_remote.rs`): the diff of the Host's change over the
+  data forward.
+- **Desktop:** the data plane status on a new connection and after a
+  restart of the service (no second start), and a reply on a replaced
+  connection is refused (`DATA_REPLACED`).
+- **Page:** `dataPlane.test.ts` (late start, restart, link back, waiting,
+  epochs), `diffView.test.ts` (line kinds, text never parsed as markup,
+  every state), `changes.test.ts` (which diff a row shows, the Host's
+  `changes`, a stale Git list dropped and asked again), and
+  `projects.test.ts` (load states).
+
+### Not yet (after the second slice)
+
+- Writes and config migration, as listed for the first slice.
+- `files` and project themes from the Host, and a remote file tree (M5).
+- A running git that hangs after its output closes is still waited for by
+  its `spawn_blocking` worker; the 20 s limit kills git itself, not a
+  process that git started and that holds its pipe.
+- Data-plane events: changes are read again on session events and on the
+  check, not pushed.
+- Manual two-machine and CI acceptance.
 
 ## M0 demo and handoff
 

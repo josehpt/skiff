@@ -103,3 +103,17 @@ fn capability_majors_are_exact_and_service_versions_do_not_replace_negotiation()
         Err(Error::UnsupportedCapability { .. })
     ));
 }
+
+#[test]
+fn m1a_status_is_additive_and_gated_by_its_own_capability() {
+    let fixture: Value = serde_json::from_str(include_str!("fixtures/m1a.json")).unwrap();
+    let request: Request = serde_json::from_value(fixture["request"].clone()).unwrap();
+    let response: Response = serde_json::from_value(fixture["reply"].clone()).unwrap();
+    let capability: Capability = serde_json::from_value(fixture["capability"].clone()).unwrap();
+    assert_eq!(serde_json::to_value(&request).unwrap(), fixture["request"]);
+    assert_eq!(serde_json::to_value(&response).unwrap(), fixture["reply"]);
+    assert_eq!(request.capability(), Some(capability));
+    assert!(request.accepts(&response));
+    assert!(!request.accepts(&Response::Ok));
+    assert!(!Request::ListSessions.accepts(&response));
+}

@@ -1,6 +1,8 @@
-//! Opt-in M0 Host client. Existing Client/Ping/Pong and app startup do not use it.
+//! Host contract client, with a narrow in-process local status adapter in M1a.
 use std::{
     collections::HashMap,
+    future::Future,
+    pin::Pin,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex,
@@ -16,6 +18,23 @@ use tokio::{
 };
 
 use crate::transport::Transport;
+
+pub mod local;
+
+/// The one in-process M1a operation; no concrete socket/process type in the seam.
+/// Other Host capabilities remain on the negotiated wire backend.
+pub trait StatusSource: Send + Sync {
+    fn status(&self) -> Pin<Box<dyn Future<Output = Result<Response, Error>> + Send + '_>>;
+}
+
+enum Backend {
+    Wire(Engine),
+    LocalStatus {
+        source: Arc<dyn StatusSource>,
+        closed: watch::Sender<bool>,
+        slots: tokio::sync::Semaphore,
+    },
+}
 
 const MAX_FRAME: usize = 8 * 1024 * 1024;
 const MAX_PENDING: usize = 64;
@@ -227,7 +246,7 @@ impl Engine {
 /// Dropping a request future cancels its local wait; it never replays a request.
 /// Dropping/disconnecting this connection closes transport tasks, not host sessions.
 pub struct HostConnection {
-    engine: Engine,
+    backend: Backend,
     hello: Hello,
     continuity: Continuity,
 }
@@ -251,6 +270,10 @@ impl HostConnection {
         else {
             unreachable!()
         };
+        Self::negotiated(Backend::Wire(engine), hello, previous)
+    }
+
+    fn negotiated(backend: Backend, hello: Hello, previous: Option<&Hello>) -> Result<Self, Error> {
         hello.validate()?;
         let continuity = match previous {
             None => Continuity::FirstConnection,
@@ -264,10 +287,39 @@ impl HostConnection {
             Some(_) => Continuity::SameInstance,
         };
         Ok(Self {
-            engine,
+            backend,
             hello,
             continuity,
         })
+    }
+
+    /// Bootstrap an in-process local status source. It is never a wire Hello
+    /// from legacy skiffd, and cannot claim the session-plane capability.
+    pub fn local_status(
+        source: Arc<dyn StatusSource>,
+        hello: Hello,
+        previous: Option<&Hello>,
+    ) -> Result<Self, Error> {
+        hello.validate()?;
+        if hello
+            .capabilities
+            .iter()
+            .any(|c| c.name != skiff_host_api::CONNECTION_STATUS)
+        {
+            return Err(Error::MalformedContract {
+                message: "local status adapter cannot advertise other capabilities".into(),
+            });
+        }
+        let slots = tokio::sync::Semaphore::new(hello.limits.max_in_flight.min(MAX_PENDING));
+        Self::negotiated(
+            Backend::LocalStatus {
+                source,
+                closed: watch::channel(false).0,
+                slots,
+            },
+            hello,
+            previous,
+        )
     }
 
     pub fn hello(&self) -> &Hello {
@@ -285,29 +337,72 @@ impl HostConnection {
                 message: "Hello is handshake-only".into(),
             })?;
         self.hello.require(&capability)?;
-        self.engine
-            .request(
-                request,
-                self.hello.limits.max_in_flight.min(MAX_PENDING),
-                self.hello.limits.max_frame_bytes.min(MAX_FRAME),
-            )
-            .await
+        match &self.backend {
+            Backend::Wire(engine) => {
+                engine
+                    .request(
+                        request,
+                        self.hello.limits.max_in_flight.min(MAX_PENDING),
+                        self.hello.limits.max_frame_bytes.min(MAX_FRAME),
+                    )
+                    .await
+            }
+            Backend::LocalStatus {
+                source,
+                closed,
+                slots,
+            } => {
+                let mut closing = closed.subscribe();
+                if *closing.borrow() {
+                    return Err(Error::TransportLost);
+                }
+                if request != Request::ConnectionStatus {
+                    return Err(Error::UnsupportedCapability { capability });
+                }
+                let _slot = slots.try_acquire().map_err(|_| Error::HostBusy)?;
+                let reply = tokio::select! {
+                    biased;
+                    _ = closing.changed() => return Err(Error::TransportLost),
+                    reply = tokio::time::timeout(Duration::from_secs(20), source.status()) => reply.map_err(|_| Error::TimedOut)??,
+                };
+                if !request.accepts(&reply) {
+                    return Err(Error::MalformedContract {
+                        message: "reply does not match request".into(),
+                    });
+                }
+                Ok(reply)
+            }
+        }
     }
 
     /// Listen before requesting Subscribe: a snapshot may precede its reply.
     /// Lagged means discard queued output and request a new subscription/snapshot.
     pub fn events(&self) -> Result<broadcast::Receiver<Event>, Error> {
-        let s = self.engine.state.inner.lock().unwrap();
-        s.events
-            .as_ref()
-            .map(|events| events.subscribe())
-            .ok_or_else(|| s.failure.clone().unwrap_or(Error::TransportLost))
+        match &self.backend {
+            Backend::Wire(engine) => {
+                let s = engine.state.inner.lock().unwrap();
+                s.events
+                    .as_ref()
+                    .map(|events| events.subscribe())
+                    .ok_or_else(|| s.failure.clone().unwrap_or(Error::TransportLost))
+            }
+            Backend::LocalStatus { .. } => Err(Error::UnsupportedCapability {
+                capability: skiff_host_api::Capability::sessions(),
+            }),
+        }
     }
 
     pub fn disconnect(&self) {
-        self.engine.state.fail(Error::TransportLost);
-        for task in &self.engine.tasks {
-            task.abort();
+        match &self.backend {
+            Backend::Wire(engine) => {
+                engine.state.fail(Error::TransportLost);
+                for task in &engine.tasks {
+                    task.abort();
+                }
+            }
+            Backend::LocalStatus { closed, .. } => {
+                closed.send_replace(true);
+            }
         }
     }
 }

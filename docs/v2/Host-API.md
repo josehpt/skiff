@@ -1,4 +1,4 @@
-# Host API — M0 contract and seams
+# Host API — M0 contract and M1a local status seam
 
 Tracking: [M0 #156](https://github.com/solutionscay/skiff/issues/156),
 [epic #155](https://github.com/solutionscay/skiff/issues/155).
@@ -16,7 +16,7 @@ push to the separate wiki repository.
 - **Selected Host**: the one Host whose data a future app window presents.
   Selection is not implemented in M0. No cross-Host aggregation is implied.
 - **Capability**: `{ name, version }`, a feature's major contract. `sessions@1`
-  is the only M0 operation family. Unknown names/majors are retained as metadata
+  is the M0 operation family; M1a adds `connection_status@1`. Unknown names/majors are retained as metadata
   and ignored unless an operation requires them.
 
 The ownership rule is: if data would differ on another Host, it must eventually
@@ -40,9 +40,11 @@ input/output queues, lag recovery and terminal framing are unchanged.
 `skiff-client::host::HostConnection` is an opt-in M0 interface over Transport.
 It has no concrete socket or process-ownership type in its public API. It
 negotiates Hello, gates typed requests, correlates replies, offers an event
-receiver, and can disconnect. It is not called by the desktop, CLI or daemon.
+receiver, and can disconnect. The CLI and daemon do not use it. M1a integrates only desktop connection status
+through the local adapter described below.
 A local UnixStream fixture and a fake duplex stream exercise the same interface.
-No persistent IDs are fabricated and no identity/config file is written.
+M0 fixtures wrote no identity/config file; M1a provisions local bootstrap
+identity as described below, without changing the legacy daemon protocol.
 
 No `skiff-host` process, IPC proxy or extra listener is implemented. M1 decides
 how the session/data planes are reached and introduces one HostConnection per
@@ -80,7 +82,10 @@ at 1 for a new connection, increase without reuse, and correlate replies even
 when they arrive out of order. Events are ordered as received. Snapshot can
 arrive before the subscribe reply: take the event receiver first.
 
-All operation requests require exactly `sessions@1`; Hello is handshake-only.
+M0 session operation requests require exactly `sessions@1`; Hello is handshake-only.
+M1a `connection_status` requires exactly `connection_status@1` and replies with
+`{ kind: "connection_status", version, protocol }`; these are the existing skiffd
+service version and session-plane PROTOCOL, not Host API versions.
 A reply of the wrong variant is malformed. Unknown optional fields are ignored;
 required fields and unknown message variants must parse or fail explicitly.
 Future operations/messages must be gated behind a capability they require.
@@ -169,6 +174,61 @@ aliases, macro expansion and reflective/dynamically constructed I/O are not
 resolved. Regex recognition inside template expressions uses a lexical heuristic.
 Baseline and checker changes require review.
 
+## M1a: selected local Host owns connection status
+
+The desktop's current single-window `App` runtime owns one fixed `LocalSelection`
+and one active `SelectedLocalHost`. Only the selection can create its pending
+client, and only that pending client can activate the Host. The accepted legacy
+`Arc<Client>` is the exact same allocation lent to existing terminal/data callers
+and the nonblocking input path; there is no second socket or terminal pipeline.
+Initial connect, restart probe and reload reconnect obtain clients from this
+selection. Existing compatibility, spawn/reload, CLI and watcher policy is kept.
+This is **not** full M1 endpoint-policy/capability adoption.
+
+The vertical slice is the existing `daemon_status` Ping/Pong refresh. It now
+requests `connection_status@1` through `HostConnection`; the in-process local
+`StatusSource` delegates to `Client::hello()` on that same selected client. No
+Host envelope or Hello is sent to legacy skiffd. No listener, proxy, Host service,
+worker process or extra round trip is added. The command's JSON shape, timeout,
+warning logic and visible GUI flow stay unchanged. Session operations and event
+streams are deliberately not advertised by this adapter: they still use the
+legacy client until a later slice. Missing/wrong capability major and unknown API
+major are typed errors before source dispatch, never fallback to another client.
+Local status requests have a 20-second limit, at most 64 in flight, cancellation
+by dropping the future, and disconnect wakes pending calls without replay.
+
+Local bootstrap uses an opaque random UUID in `local-host-id` beside the already
+selected `projects.toml`. This is additive identity metadata, not daemon settings;
+no existing config, state or ledger bytes move or change. Existing private-state
+selection and `SKIFF_CONFIG` apply, so test/debug identities stay isolated. File
+creation uses private `0600` permissions, a complete synced temporary file and
+atomic no-clobber publication so concurrent app launches agree. Existing corrupt,
+public, symlink or foreign-owned identity files fail explicitly, without silently
+replacing identity or falling back to a path/PID-derived value. Bootstrap I/O runs
+off async workers. It happens only after existing daemon compatibility policy
+accepts a connection. An identity change within this selection rejects activation.
+
+The UUID is durable for this local bootstrap store. `instance_id` is a fresh
+**adapter connection generation**, not an authenticated daemon identity or PID;
+reconnect conservatively yields NewInstance. Metadata advertises
+`local-status-adapter` as its service, never a nonexistent `skiff-host`. Authoritative
+daemon/service Hello rollout remains a later step; the future Host service must
+adopt this identity deliberately. Copying identity metadata to another machine
+is not supported provisioning or authentication.
+
+Tests exercise the real desktop status entry point against a private fake daemon,
+assert exact Ping IDs and shared Client identity, retain config/ledger bytes, and
+verify reuse without another connection. Separate fixtures prove only the selected
+endpoint receives status traffic, durable identity/concurrent bootstrap, explicit
+capability/version/identity failures, cancellation/bounds and unchanged terminal
+wire bytes. `local_host` is included in the existing boundary CI job.
+
+Next deliberately excluded step: move another operation family (and its capability
+checks) through the selected connection, with endpoint-local lifecycle guards and
+authoritative Hello rollout designed before any remote endpoint. No SSH, host
+picker, skiff-host service, migrations, data relocation or broad data conversion is
+part of M1a. Per-surface capability UI and session event routing remain excluded.
+
 ## M0 demo and handoff
 
 M0 has zero visible behavior changes: desktop source, daemon source, protocol,
@@ -178,7 +238,7 @@ performs the identical call. Test-only paired streams/private sockets prove the
 old Ping JSON, protocol 27, ordered raw input and snapshot/output bytes still work.
 Existing config/ledger fixture tests cover their unchanged on-disk contracts.
 
-M1 still owns actual app routing, capability-driven surfaces, endpoint-local
+Remaining M1 work includes routing beyond status, capability-driven surfaces, endpoint-local
 lifecycle guards, persistence/Hello rollout and the session/data-plane topology.
 M2–M6 own transport, services and data APIs. This document intentionally does not
 implement SSH, a host process, host selection, migrations or data-location changes.

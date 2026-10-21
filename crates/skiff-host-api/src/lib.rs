@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 pub const API_MAJOR: u32 = 1;
 pub const SESSIONS: &str = "sessions";
+pub const CONNECTION_STATUS: &str = "connection_status";
 
 macro_rules! identity {
     ($name:ident) => {
@@ -67,6 +68,12 @@ pub struct Capability {
     pub version: u32,
 }
 impl Capability {
+    pub fn connection_status() -> Self {
+        Self {
+            name: CONNECTION_STATUS.into(),
+            version: 1,
+        }
+    }
     pub fn sessions() -> Self {
         Self {
             name: SESSIONS.into(),
@@ -167,6 +174,7 @@ pub struct Session {
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Request {
     Hello,
+    ConnectionStatus,
     ListSessions,
     Write {
         session: String,
@@ -191,14 +199,20 @@ impl Request {
     pub fn capability(&self) -> Option<Capability> {
         match self {
             Self::Hello => None,
+            Self::ConnectionStatus => Some(Capability::connection_status()),
             _ => Some(Capability::sessions()),
         }
     }
     pub fn accepts(&self, reply: &Response) -> bool {
         matches!(
             (self, reply),
-            (Self::Hello, Response::Hello { .. }) | (Self::ListSessions, Response::Sessions { .. })
-        ) || (!matches!(self, Self::Hello | Self::ListSessions) && matches!(reply, Response::Ok))
+            (Self::Hello, Response::Hello { .. })
+                | (Self::ListSessions, Response::Sessions { .. })
+                | (Self::ConnectionStatus, Response::ConnectionStatus { .. })
+        ) || (!matches!(
+            self,
+            Self::Hello | Self::ListSessions | Self::ConnectionStatus
+        ) && matches!(reply, Response::Ok))
     }
 }
 
@@ -210,6 +224,7 @@ pub struct Envelope {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Response {
+    ConnectionStatus { version: String, protocol: u32 },
     Hello { hello: Hello },
     Sessions { sessions: Vec<Session> },
     Ok,

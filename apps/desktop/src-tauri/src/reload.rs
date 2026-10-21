@@ -14,8 +14,10 @@ use std::{
     time::{Duration, Instant},
 };
 use serde::Serialize;
-use skiff_client::{Client, DaemonInfo, Refused};
-use skiff_core::{session::{SessionInfo, SessionState}, socket::socket_path};
+use skiff_client::{DaemonInfo, Refused};
+#[cfg(test)]
+use skiff_client::Client;
+use skiff_core::session::{SessionInfo, SessionState};
 use tauri::State;
 use crate::connection::{check_daemon, compare_versions, daemon_binary, restart_warning, status_now, App, DaemonStatus, Warning, HELLO_TIMEOUT};
 
@@ -183,10 +185,10 @@ fn same(before: &Listed, after: &Listed, id: &str) -> bool {
 
 async fn run(app: &App, plan: &Plan) -> Outcome {
     // No other call connects, or starts a daemon, until the reload ends.
-    let mut guard = app.client.lock().await;
+    let mut guard = app.host.lock().await;
     // A reload that ends before the request keeps the restart of #27.
     let keep = |why: &str, live: Option<usize>| restart_warning(&plan.from, plan.protocol, live, Some(why));
-    let Some(old) = guard.clone().filter(|c| !c.is_closed()) else {
+    let Some(old) = guard.as_ref().map(|host| host.client()).filter(|c| !c.is_closed()) else {
         let why = "skiffd closed the connection before the reload";
         *app.warning.lock().await = Some(keep(why, None));
         return Outcome { error: Some(why.into()), ..Default::default() };
@@ -238,7 +240,7 @@ async fn run(app: &App, plan: &Plan) -> Outcome {
     *app.live.lock().unwrap() = None;
     drop(old);
 
-    let (c, info) = match reconnect(plan.pid).await {
+    let (c, info) = match reconnect(app, plan.pid).await {
         Ok(found) => found,
         Err(why) => {
             let lost = name(app.input.open_gate(None, |_| false));
@@ -256,7 +258,16 @@ async fn run(app: &App, plan: &Plan) -> Outcome {
             return Outcome { error: Some(message), reconnected: true, lost, ..Default::default() };
         }
     };
-    let c = Arc::new(c);
+    let host = match c.activate().await {
+        Ok(host) => Arc::new(host),
+        Err(e) => {
+            let why = format!("local Host bootstrap after reload: {e:#}");
+            *app.failed.lock().unwrap() = Some(why.clone());
+            let lost = name(app.input.open_gate(None, |_| false));
+            return Outcome { error: Some(why), reconnected: true, lost, ..Default::default() };
+        }
+    };
+    let c = host.client();
     // Streams of the old connection are gone. The page subscribes again.
     for (_, task) in app.subs.lock().await.drain() {
         task.abort();
@@ -265,7 +276,7 @@ async fn run(app: &App, plan: &Plan) -> Outcome {
     if let Some(task) = app.events.lock().await.take() {
         task.abort();
     }
-    *guard = Some(c.clone());
+    *guard = Some(host);
     *app.live.lock().unwrap() = Some(c.clone());
 
     let mut error = None;
@@ -309,12 +320,11 @@ async fn run(app: &App, plan: &Plan) -> Outcome {
 
 /// Connects again and asks the daemon what it is. Never starts a daemon.
 /// Waits up to [`RECONNECT`], and up to [`ADOPT_LIMIT`] while `pid` lives.
-async fn reconnect(pid: u32) -> Result<(Client, DaemonInfo), String> {
-    let path = socket_path();
+async fn reconnect(app: &App, pid: u32) -> Result<(skiff_client::host::local::PendingLocalConnection, DaemonInfo), String> {
     let start = Instant::now();
     loop {
-        let last = match Client::connect(&path).await {
-            Ok(c) => match tokio::time::timeout(HELLO_TIMEOUT, c.daemon_info()).await {
+        let last = match app.local().connect().await {
+            Ok(c) => match tokio::time::timeout(HELLO_TIMEOUT, c.client().daemon_info()).await {
                 Ok(Ok(info)) => return Ok((c, info)),
                 Ok(Err(e)) => format!("{e:#}"),
                 Err(_) => "no answer".into(),

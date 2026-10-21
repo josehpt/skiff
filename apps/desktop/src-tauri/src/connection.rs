@@ -1,6 +1,6 @@
 use std::{collections::HashMap, path::PathBuf, process::Stdio, sync::{atomic::{AtomicBool, Ordering}, Arc}, time::Duration};
 use serde::Serialize;
-use skiff_client::Client;
+use skiff_client::{Client, host::local::{LocalSelection, SelectedLocalHost, connection_status}};
 use skiff_core::{socket::socket_path, session::SessionState};
 use tauri::{async_runtime::JoinHandle, State};
 use tokio::sync::Mutex;
@@ -8,7 +8,10 @@ use crate::{input::Input, reload::{self, NoPlan, Plan}, streaming::Flow};
 
 #[derive(Default)]
 pub(crate) struct App {
-    pub(crate) client: Mutex<Option<Arc<Client>>>,
+    pub(crate) host: Mutex<Option<Arc<SelectedLocalHost>>>,
+    /// One local selection for this runtime; no ambient endpoint re-selection
+    /// on reconnect. Legacy paths only borrow its accepted Client.
+    local: std::sync::OnceLock<LocalSelection>,
     /// The same connection, for keystrokes, which must not wait on a lock.
     pub(crate) live: std::sync::Mutex<Option<Arc<Client>>>,
     pub(crate) subs: Mutex<HashMap<String, JoinHandle<()>>>,
@@ -40,6 +43,15 @@ pub(crate) struct App {
     /// Held across each watcher check, so a start and a restore at once do
     /// not both act on the same lock.
     pub(crate) watch_gate: Mutex<()>,
+}
+
+impl App {
+    pub(crate) fn local(&self) -> &LocalSelection {
+        self.local.get_or_init(|| LocalSelection::new(
+            socket_path(),
+            skiff_core::config::config_path().with_file_name("local-host-id"),
+        ))
+    }
 }
 
 #[derive(Serialize, Clone)]
@@ -113,19 +125,24 @@ pub(crate) const HELLO_TIMEOUT: Duration = Duration::from_secs(2);
 /// Reuses a live connection, else connects, else starts the daemon and connects.
 /// A live connection costs no round trip: every keystroke comes through here.
 pub(crate) async fn ensure_client(app: &App) -> Result<(Arc<Client>, bool), String> {
-    let mut guard = app.client.lock().await;
-    if let Some(c) = guard.as_ref() {
-        if !c.is_closed() {
-            return Ok((c.clone(), false));
+    let (host, spawned) = ensure_host(app).await?;
+    Ok((host.client(), spawned))
+}
+
+async fn ensure_host(app: &App) -> Result<(Arc<SelectedLocalHost>, bool), String> {
+    let mut guard = app.host.lock().await;
+    if let Some(host) = guard.as_ref() {
+        if !host.client().is_closed() {
+            return Ok((host.clone(), false));
         }
     }
     *guard = None;
-    let path = socket_path();
+    let path = app.local().socket();
     let mut spawned = false;
     let mut replaced = false;
     let mut last = String::new();
     for _ in 0..40 {
-        let c = match Client::connect(&path).await {
+        let c = match app.local().connect().await {
             Ok(c) => c,
             Err(e) => {
                 last = format!("{e:#}");
@@ -141,13 +158,13 @@ pub(crate) async fn ensure_client(app: &App) -> Result<(Arc<Client>, bool), Stri
                 continue;
             }
         };
-        match check_daemon(app, &c, !replaced).await {
+        match check_daemon(app, c.client(), !replaced).await {
             Check::Use => {
                 *app.failed.lock().unwrap() = None;
-                let c = Arc::new(c);
-                *guard = Some(c.clone());
-                *app.live.lock().unwrap() = Some(c.clone());
-                return Ok((c, spawned));
+                let host = Arc::new(c.activate().await.map_err(err)?);
+                *app.live.lock().unwrap() = Some(host.client());
+                *guard = Some(host.clone());
+                return Ok((host, spawned));
             }
             Check::Replaced => {
                 replaced = true;
@@ -318,10 +335,10 @@ async fn stop_daemon(pid: i32, escalate: bool) -> bool {
 #[tauri::command]
 pub(crate) async fn restart_daemon(app: State<'_, App>) -> Result<DaemonStatus, String> {
     {
-        let mut guard = app.client.lock().await;
+        let mut guard = app.host.lock().await;
         let pid = match guard.as_ref() {
-            Some(c) => c.daemon_pid,
-            None => Client::connect(&socket_path()).await.ok().and_then(|c| c.daemon_pid),
+            Some(host) => host.client().daemon_pid,
+            None => app.local().connect().await.ok().and_then(|c| c.client().daemon_pid),
         };
         *guard = None;
         *app.live.lock().unwrap() = None;
@@ -350,10 +367,11 @@ pub(crate) async fn daemon_status(app: State<'_, App>) -> Result<DaemonStatus, S
 }
 
 pub(crate) async fn status_now(app: &App) -> DaemonStatus {
-    let socket = socket_path().display().to_string();
-    match ensure_client(app).await {
-        Ok((c, spawned)) => {
-            let hello = tokio::time::timeout(HELLO_TIMEOUT, c.hello()).await.ok().and_then(|r| r.ok());
+    let socket = app.local().socket().display().to_string();
+    match ensure_host(app).await {
+        Ok((host, spawned)) => {
+            let c = host.client();
+            let hello = tokio::time::timeout(HELLO_TIMEOUT, connection_status(&host.connection())).await.ok().and_then(|r| r.ok());
             DaemonStatus {
                 connected: true,
                 version: hello.as_ref().map(|(v, _)| v.clone()),
@@ -384,6 +402,56 @@ pub(crate) async fn status_now(app: &App) -> DaemonStatus {
 mod tests {
     use super::{compare_versions, stop_daemon};
     use std::cmp::Ordering::*;
+
+    #[tokio::test]
+    async fn status_and_legacy_commands_share_the_selected_local_connection() {
+        use super::*;
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let dir = std::env::temp_dir().join(format!("skiff-m1a-desktop-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).unwrap();
+        let socket = dir.join("selected.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        // Existing data remains byte-for-byte unchanged by the new bootstrap.
+        let config = dir.join("projects.toml");
+        let ledger = dir.join("ledger.db");
+        std::fs::write(&config, "# existing config\n").unwrap();
+        std::fs::write(&ledger, b"existing ledger fixture").unwrap();
+        let app = App::default();
+        assert!(app.local.set(LocalSelection::new(socket.clone(), dir.join("local-host-id"))).is_ok());
+        let peer = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut stream = BufReader::new(stream);
+            for id in 1..=3 {
+                let mut line = String::new();
+                stream.read_line(&mut line).await.unwrap();
+                assert_eq!(serde_json::from_str::<serde_json::Value>(&line).unwrap(), serde_json::json!({"id":id,"cmd":"ping"}));
+                let reply = serde_json::json!({"id":id,"type":"pong","version":skiff_core::VERSION,"protocol":skiff_core::PROTOCOL});
+                let mut bytes = serde_json::to_vec(&reply).unwrap(); bytes.push(b'\n');
+                stream.get_mut().write_all(&bytes).await.unwrap();
+            }
+            // Keep the one connection alive through the reuse assertions.
+            let mut line = String::new();
+            stream.read_line(&mut line).await.ok();
+        });
+        let first = status_now(&app).await;
+        assert!(first.connected && !first.spawned);
+        assert_eq!(first.version.as_deref(), Some(skiff_core::VERSION));
+        assert_eq!(first.protocol, Some(skiff_core::PROTOCOL));
+        assert_eq!(first.socket, socket.display().to_string());
+        assert!(first.warning.is_none() && !first.reload);
+        let owner = app.host.lock().await.as_ref().unwrap().clone();
+        let (client, spawned) = ensure_client(&app).await.unwrap();
+        assert!(!spawned && Arc::ptr_eq(&owner.client(), &client));
+        assert!(Arc::ptr_eq(&app.live.lock().unwrap().clone().unwrap(), &client));
+        let second = status_now(&app).await;
+        assert_eq!(second.version, first.version);
+        assert!(Arc::ptr_eq(&owner, app.host.lock().await.as_ref().unwrap()));
+        assert_eq!(std::fs::read_to_string(config).unwrap(), "# existing config\n");
+        assert_eq!(std::fs::read(ledger).unwrap(), b"existing ledger fixture");
+        peer.abort();
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn orders_versions_by_number() {

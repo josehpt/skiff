@@ -391,3 +391,34 @@ async fn service_errors_are_typed_without_fallback_or_connection_replacement() {
     }
     assert_eq!(connection.continuity(), Continuity::FirstConnection);
 }
+
+#[tokio::test]
+async fn m1a_connection_status_also_works_over_the_negotiated_transport() {
+    let mut h = hello();
+    h.capabilities = vec![Capability::connection_status()];
+    let (connection, mut peer) = connect(h, None).await;
+    let connection = connection.unwrap();
+    let (response, ()) = tokio::join!(connection.request(Request::ConnectionStatus), async {
+        let request = peer.request().await;
+        assert_eq!(request.request, Request::ConnectionStatus);
+        peer.reply(
+            request.id,
+            Ok(Response::ConnectionStatus {
+                version: "fixture".into(),
+                protocol: 27,
+            }),
+        )
+        .await;
+    });
+    assert_eq!(
+        response,
+        Ok(Response::ConnectionStatus {
+            version: "fixture".into(),
+            protocol: 27
+        })
+    );
+    assert!(matches!(
+        connection.request(Request::ListSessions).await,
+        Err(Error::UnsupportedCapability { .. })
+    ));
+}

@@ -3535,6 +3535,7 @@ dependencies = [
  "skiff-host-api",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

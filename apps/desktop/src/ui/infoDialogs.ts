@@ -51,6 +51,7 @@ const FIXED_SHORTCUTS: Shortcut[] = [
   ["Session list", "Go into the preview of the focused change, file, folder, Changes or Files", "Enter"],
   ["Session list", "Open or close the focused Changes, Files or folder", "Space"],
   ["Session list", "Give the keys to the preview", "Tab"],
+  ["Session list", "Close the preview. A tool that took the terminal keeps Esc", "Esc"],
   ["Session list", "Open the file of the focused change", "Shift+Enter"],
   ["Session list", "Extend the session selection", "Shift+↑ / ↓"],
   ["Session list", "Make a group from the selected sessions", "Enter"],

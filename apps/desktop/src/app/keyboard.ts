@@ -17,7 +17,7 @@ import { collapsed, S } from "./state";
 
 import { panes } from "../terminal/terminalState";
 import { revealSession, selectProject, showGroup } from "../workspace/view";
-import { enterPreview, giveKeys, peekBlocksAction, previewOnScreen, startPreview } from "../terminal/peek";
+import { closePreview, enterPreview, giveKeys, peekBlocksAction, previewOnScreen, startPreview } from "../terminal/peek";
 import { rowActs } from "../workspace/rowActs";
 import { animateFold } from "../ui/fold";
 import { isOpen, projectKey as projectRowKey, toggleRow, visibleProjects } from "../workspace/tree";
@@ -276,7 +276,8 @@ $("sidebar-scroll").addEventListener("keydown", (e) => {
     clearSelection();
     render();
     keepRow(key);
-  } else if ((el.classList.contains("project-pick") || el.classList.contains("fleet-pick")) && (e.key === "Enter" || e.key === " " || e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+  } else if (e.key === "Escape" && !e.shiftKey && previewOnScreen()) closePreview();
+  else if ((el.classList.contains("project-pick") || el.classList.contains("fleet-pick")) && (e.key === "Enter" || e.key === " " || e.key === "ArrowLeft" || e.key === "ArrowRight")) {
     // A project with nothing under it does not open or fold.
     if (!el.hasAttribute("aria-expanded")) return e.preventDefault();
     // A project or fleet row: Enter or Space opens or folds it, Right opens, Left folds.

@@ -11,8 +11,14 @@
 //!   something when opened are refused.
 //! - At most [`KEEP`] copies per process: the oldest go. The process's folder
 //!   goes when the app quits, and the folders of processes that no longer
-//!   run go when the app starts.
+//!   run go when the app starts. Every removal starts from the account's
+//!   folder held open after the same checks as a copy's, and goes down one
+//!   entry at a time relative to it, never through a link: a folder Skiff
+//!   refuses to copy into is never cleaned either.
 use std::{
+    ffi::{CStr, CString},
+    os::fd::{AsRawFd, FromRawFd, OwnedFd},
+    os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -96,7 +102,9 @@ pub(crate) fn save_in(base: &Path, host_file: &str, bytes: &[u8]) -> Result<Path
     if !std::fs::symlink_metadata(&mine)?.is_dir() {
         bail!("{} is not a folder", mine.display());
     }
-    prune(&mine, KEEP - 1);
+    if let Some(held) = held(base) {
+        prune(&held, KEEP - 1);
+    }
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
     let folder = mine.join(format!("{stamp:032}-{n}"));
@@ -123,28 +131,129 @@ pub(crate) fn save(host_file: &str, bytes: &[u8]) -> Result<PathBuf> {
     save_in(&base(), host_file, bytes)
 }
 
-/// Keeps the newest `keep` copy folders of `mine`.
-fn prune(mine: &Path, keep: usize) {
-    let Ok(read) = std::fs::read_dir(mine) else { return };
-    let mut folders: Vec<_> = read.flatten().map(|e| e.path()).collect();
+/// `base` held open, if it is a private folder of this account and not a
+/// link: what [`private`] checks, without making it. The fd checked is the
+/// one every removal starts from.
+fn held(base: &Path) -> Option<OwnedFd> {
+    let path = CString::new(base.as_os_str().as_bytes()).ok()?;
+    // SAFETY: open(2) on a NUL-terminated path; the fd is owned at once.
+    let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return None;
+    }
+    // SAFETY: a fresh fd this function owns.
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    owned(&fd, true).then_some(fd)
+}
+
+/// The open fd is a folder of this account; `private`: that no one else can open.
+fn owned(fd: &OwnedFd, private: bool) -> bool {
+    // SAFETY: fstat(2) on an open fd into a zeroed stat; geteuid as in `base`.
+    unsafe {
+        let mut st: libc::stat = std::mem::zeroed();
+        libc::fstat(fd.as_raw_fd(), &mut st) == 0
+            && st.st_mode & libc::S_IFMT == libc::S_IFDIR
+            && st.st_uid == libc::geteuid()
+            && (!private || st.st_mode & 0o077 == 0)
+    }
+}
+
+/// The entry `name` of the open folder `dir`, opened as a folder without
+/// following it: `None` for a link or anything but a folder.
+fn open_dir_at(dir: &OwnedFd, name: &CStr) -> Option<OwnedFd> {
+    // SAFETY: openat(2) relative to an open fd; the fd is owned at once.
+    let fd = unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC) };
+    // SAFETY: a fresh fd this function owns.
+    (fd >= 0).then(|| unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// The names in the open folder `dir`, without `.` and `..`.
+fn names(dir: &OwnedFd) -> Vec<CString> {
+    let mut found = Vec::new();
+    // SAFETY: fdopendir(3) takes a dup of `dir`, closed with the stream.
+    unsafe {
+        let fd = libc::fcntl(dir.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0);
+        if fd < 0 {
+            return found;
+        }
+        let stream = libc::fdopendir(fd);
+        if stream.is_null() {
+            libc::close(fd);
+            return found;
+        }
+        // A dup shares the offset: read from the start.
+        libc::rewinddir(stream);
+        loop {
+            let e = libc::readdir(stream);
+            if e.is_null() {
+                break;
+            }
+            let name = CStr::from_ptr((*e).d_name.as_ptr());
+            if !matches!(name.to_bytes(), b"." | b"..") {
+                found.push(name.to_owned());
+            }
+        }
+        libc::closedir(stream);
+    }
+    found
+}
+
+/// Removes the entry `name` of the open folder `dir`, and everything in it
+/// if it is a folder, each relative to the folder held before it. A link is
+/// removed itself, never followed.
+fn remove_at(dir: &OwnedFd, name: &CStr) -> std::io::Result<()> {
+    // SAFETY: fstatat(2) and unlinkat(2) relative to an open fd, on a NUL-terminated name.
+    unsafe {
+        let mut st: libc::stat = std::mem::zeroed();
+        if libc::fstatat(dir.as_raw_fd(), name.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if st.st_mode & libc::S_IFMT == libc::S_IFDIR {
+            let Some(inner) = open_dir_at(dir, name) else { return Err(std::io::Error::last_os_error()) };
+            for n in names(&inner) {
+                remove_at(&inner, &n)?;
+            }
+            if libc::unlinkat(dir.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+        } else if libc::unlinkat(dir.as_raw_fd(), name.as_ptr(), 0) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+/// This process's folder in the held `base`: a name it owns there.
+fn mine_name() -> CString {
+    CString::new(std::process::id().to_string()).expect("a number has no NUL")
+}
+
+/// Keeps the newest `keep` copy folders of this process's folder in `base`.
+fn prune(base: &OwnedFd, keep: usize) {
+    let Some(mine) = open_dir_at(base, &mine_name()) else { return };
+    if !owned(&mine, false) {
+        return;
+    }
+    let mut folders = names(&mine);
     if folders.len() <= keep {
         return;
     }
     // Named by time first: the name order is the age order.
     folders.sort();
     for old in &folders[..folders.len() - keep] {
-        let _ = remove(old);
+        let _ = remove_at(&mine, old);
     }
 }
 
-/// Removes a copy folder. Its files are read-only, the folder is not.
-fn remove(path: &Path) -> std::io::Result<()> {
-    std::fs::remove_dir_all(path)
-}
-
-/// The app quits: this process's copies go.
+/// The app quits: this process's copies go. Nothing goes unless `base` is
+/// a private folder of this account and not a link, and this process's
+/// folder in it is a folder of this account, not a link.
 pub(crate) fn cleanup_in(base: &Path) {
-    let _ = remove(&base.join(std::process::id().to_string()));
+    let Some(base) = held(base) else { return };
+    let name = mine_name();
+    if open_dir_at(&base, &name).is_some_and(|mine| owned(&mine, false)) {
+        let _ = remove_at(&base, &name);
+    }
 }
 
 pub(crate) fn cleanup() {
@@ -154,16 +263,13 @@ pub(crate) fn cleanup() {
 /// The app starts: copies of app processes that no longer run go. Only
 /// folders named by a process id, inside a private folder of this account.
 pub(crate) fn sweep_in(base: &Path) {
-    if std::fs::symlink_metadata(base).map(|m| !m.is_dir()).unwrap_or(true) || private(base).is_err() {
-        return;
-    }
-    let Ok(read) = std::fs::read_dir(base) else { return };
-    for e in read.flatten() {
-        let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<libc::pid_t>().ok()) else { continue };
+    let Some(base) = held(base) else { return };
+    for name in names(&base) {
+        let Some(pid) = name.to_str().ok().and_then(|n| n.parse::<libc::pid_t>().ok()) else { continue };
         // SAFETY: kill(2) with signal 0 only checks that the process exists.
         let alive = pid > 0 && (unsafe { libc::kill(pid, 0) } == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM));
-        if !alive && e.file_type().is_ok_and(|t| t.is_dir()) {
-            let _ = remove(&e.path());
+        if !alive && open_dir_at(&base, &name).is_some_and(|d| owned(&d, false)) {
+            let _ = remove_at(&base, &name);
         }
     }
 }
@@ -267,5 +373,83 @@ mod tests {
         std::fs::remove_dir_all(&target).unwrap();
         assert!(open.is_err() && linked.is_err());
         assert_eq!(written, 0);
+    }
+
+    /// The review's case: a base that save refuses, then the exit cleanup and
+    /// the start sweep through that same base. Neither removes anything.
+    #[test]
+    fn cleanup_and_sweep_never_remove_through_a_refused_folder() {
+        let pid = std::process::id().to_string();
+        let fill = |d: &Path| {
+            for n in [pid.as_str(), "999999"] {
+                std::fs::create_dir_all(d.join(n)).unwrap();
+                std::fs::write(d.join(n).join("keep.txt"), "keep").unwrap();
+            }
+        };
+        let kept = |d: &Path| [pid.as_str(), "999999"].map(|n| d.join(n).join("keep.txt").exists());
+
+        // A link to another private folder of this account.
+        let target = scratch("foreign");
+        let _target = Gone(target.clone());
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o700)).unwrap();
+        fill(&target);
+        let linked = scratch("linked");
+        let _linked = Gone(linked.clone());
+        std::os::unix::fs::symlink(&target, &linked).unwrap();
+        assert!(save_in(&linked, "a.txt", b"x").is_err());
+        cleanup_in(&linked);
+        sweep_in(&linked);
+        assert_eq!(kept(&target), [true, true], "nothing removed through a linked base");
+        std::fs::remove_file(&linked).unwrap();
+
+        // A folder others can open.
+        let shared = scratch("shared");
+        let _shared = Gone(shared.clone());
+        std::fs::create_dir_all(&shared).unwrap();
+        fill(&shared);
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(save_in(&shared, "a.txt", b"x").is_err());
+        cleanup_in(&shared);
+        sweep_in(&shared);
+        assert_eq!(kept(&shared), [true, true], "nothing removed in a shared base");
+
+        // A private base whose process folders are links out: the links
+        // are not followed, so what they name stays.
+        let base = scratch("inner-links");
+        let _base = Gone(base.clone());
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let outside = scratch("inner-outside");
+        let _outside = Gone(outside.clone());
+        fill(&outside);
+        for n in [pid.as_str(), "999999"] {
+            std::os::unix::fs::symlink(outside.join(n), base.join(n)).unwrap();
+        }
+        cleanup_in(&base);
+        sweep_in(&base);
+        assert_eq!(kept(&outside), [true, true], "process folders that are links are not followed");
+
+        // Missing: nothing made, nothing removed.
+        let missing = scratch("missing");
+        cleanup_in(&missing);
+        sweep_in(&missing);
+        assert!(!missing.exists());
+    }
+
+    #[test]
+    fn removal_goes_down_without_following_links() {
+        let base = scratch("deep");
+        let _base = Gone(base.clone());
+        let outside = scratch("deep-outside");
+        let _outside = Gone(outside.clone());
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("keep.txt"), "keep").unwrap();
+        let copy = save_in(&base, "a.txt", b"x").unwrap();
+        // A link inside a copy folder: the link goes, its target stays.
+        std::os::unix::fs::symlink(&outside, copy.parent().unwrap().join("out")).unwrap();
+        cleanup_in(&base);
+        assert!(!base.join(std::process::id().to_string()).exists());
+        assert!(outside.join("keep.txt").exists());
     }
 }

@@ -168,7 +168,7 @@ function folder(into: HTMLElement, root: string, dir: string, depth: number) {
     into.appendChild(note("…", depth));
   }
   else if ("error" in l) into.appendChild(note(l.error, depth, true));
-  else if (!l.entries.length) into.appendChild(note("Empty", depth));
+  else if (!l.entries.length && !l.truncated) into.appendChild(note("Empty", depth));
   else {
     for (const e of l.entries) {
       const path = join(dir, e.name);
@@ -181,7 +181,8 @@ function folder(into: HTMLElement, root: string, dir: string, depth: number) {
         into.appendChild(sub);
       }
     }
-    if (l.truncated) into.appendChild(note(`Only the first ${l.entries.length} entries show.`, depth));
+    // Cut: never "Empty", and the folder keeps its fold.
+    if (l.truncated) into.appendChild(note(l.entries.length ? `Only the first ${l.entries.length} entries show.` : "No entries show. The folder has too many to list.", depth));
   }
 }
 
@@ -189,23 +190,25 @@ function folder(into: HTMLElement, root: string, dir: string, depth: number) {
 const folderPreview = (path: string): Preview => ({ kind: "folder", path, local: !isRemote() });
 
 /**
- * What a row that is not a folder shows. This Mac: its Open with setting on
- * the Host's own path, as before; a FIFO, device or socket only in the
- * viewer, never opened. A remote Host: its preview from the Host, and Open
- * makes a local copy of a regular file only.
+ * What a row that is not a folder shows. This Mac: a regular file its Open
+ * with setting on the Host's own path, as before. A link, FIFO, device or
+ * socket only in the Host's bounded viewer, never followed or opened. A
+ * remote Host: its preview from the Host, and Open makes a local copy of a
+ * regular file only.
  */
 function filePreview(e: Entry, root: string, path: string): { preview: Preview; open?: () => void } {
   const file = relative(root, path);
-  if (!isRemote() && e.kind !== "other") return { preview: { kind: "file", path }, open: () => open(path) };
+  if (!isRemote() && e.kind === "file") return { preview: { kind: "file", path }, open: () => open(path) };
   const copy = isRemote() && e.kind === "file";
   return { preview: { kind: "host-file", wt: root, file, path, copy }, open: copy ? () => openHostCopy(root, file) : undefined };
 }
 
 function row(e: Entry, root: string, path: string, depth: number): HTMLElement {
-  // A folder read as empty has nothing to open: no chevron, no fold.
+  // A folder read as empty has nothing to open: no chevron, no fold. One cut
+  // short has entries, shown or not.
   const dir = e.kind === "dir";
   const l = dir ? listings.get(path) : undefined;
-  const foldable = dir && !(l && !("error" in l) && !l.entries.length);
+  const foldable = dir && !(l && !("error" in l) && !l.entries.length && !l.truncated);
   const cls = ["file-row"];
   if (dir) cls.push("dir");
   if (e.name.startsWith(".")) cls.push("hidden-file");

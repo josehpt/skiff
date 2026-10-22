@@ -131,6 +131,18 @@ async fn files_and_backgrounds_come_from_the_host_bounded_and_inside_its_worktre
     let plain = dir.join("plain");
     repo(&plain);
     std::fs::write(plain.join("bg.jpg"), [0xffu8, 0xd8, 0xff, 0xe0, 1, 2]).unwrap();
+    // Backgrounds that are a link, or go through one, to an image outside;
+    // and an absolute regular image, named without a link.
+    std::fs::write(outside.join("bg.png"), &png).unwrap();
+    let linkbg = dir.join("linkbg");
+    repo(&linkbg);
+    std::os::unix::fs::symlink(outside.join("bg.png"), linkbg.join("bg-link.png")).unwrap();
+    let dirbg = dir.join("dirbg");
+    repo(&dirbg);
+    std::os::unix::fs::symlink(&outside, dirbg.join("art")).unwrap();
+    let absbg = dir.join("absbg");
+    repo(&absbg);
+    let absolute = outside.canonicalize().unwrap().join("bg.png");
 
     let config = skiff_core::config::config_path();
     std::fs::create_dir_all(config.parent().unwrap()).unwrap();
@@ -139,10 +151,17 @@ async fn files_and_backgrounds_come_from_the_host_bounded_and_inside_its_worktre
         format!(
             "[[project]]\nname = \"app\"\npath = \"{}\"\nbackground = \"bg.txt\"\n\n\
              [[project]]\nname = \"plain\"\npath = \"{}\"\nbackground = \"bg.jpg\"\n\n\
-             [[project]]\nname = \"closed\"\npath = \"{}\"\nclosed = true\n",
+             [[project]]\nname = \"closed\"\npath = \"{}\"\nclosed = true\n\n\
+             [[project]]\nname = \"linkbg\"\npath = \"{}\"\nbackground = \"bg-link.png\"\n\n\
+             [[project]]\nname = \"dirbg\"\npath = \"{}\"\nbackground = \"art/bg.png\"\n\n\
+             [[project]]\nname = \"absbg\"\npath = \"{}\"\nbackground = \"{}\"\n",
             app.display(),
             plain.display(),
-            closed.display()
+            closed.display(),
+            linkbg.display(),
+            dirbg.display(),
+            absbg.display(),
+            absolute.display()
         ),
     )
     .unwrap();
@@ -237,4 +256,13 @@ async fn files_and_backgrounds_come_from_the_host_bounded_and_inside_its_worktre
     assert!(matches!(data::project_background(&r, "app").await, Err(Error::Invalid { .. })), "a text file named as the background");
     assert!(matches!(data::project_background(&r, "closed").await, Err(Error::NotFound { .. })), "no background");
     assert!(matches!(data::project_background(&r, "ghost").await, Err(Error::NotFound { .. })));
+    // Never through a link: the entry itself, or a folder on the way. The
+    // preview says the same entry is a link.
+    assert_eq!(data::file_read(&r, &linkbg.to_string_lossy(), "bg-link.png", ReadPurpose::Preview).await.unwrap().content, FileContent::Link);
+    for c in [&l, &r] {
+        assert!(matches!(data::project_background(c, "linkbg").await, Err(Error::Invalid { .. })), "a link as the background");
+        assert!(matches!(data::project_background(c, "dirbg").await, Err(Error::NotFound { .. })), "a background through a folder link");
+        let abs = data::project_background(c, "absbg").await.unwrap();
+        assert_eq!((abs.mime.as_str(), abs.bytes.as_slice()), ("image/png", png.as_slice()), "an absolute regular image");
+    }
 }

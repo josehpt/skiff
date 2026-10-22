@@ -15,8 +15,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::git::{self, Beneath, Root};
 
-/// At most this many entries of one folder are listed.
+/// At most this many entries of one folder are listed, counted after what
+/// git ignores is left out.
 pub const LIST_LIMIT: usize = 2000;
+/// At most this many entries of one folder are read from disk to find them:
+/// a folder of ignored files cannot hide the ones listed after them.
+pub const SCAN_LIMIT: usize = 20 * LIST_LIMIT;
+/// Entries asked of git at a time, so a listing that is full stops asking.
+const IGNORE_BATCH: usize = 512;
 /// At most this much text of a file is shown.
 pub const TEXT_LIMIT: usize = 512 * 1024;
 /// The largest image shown, file copied or background served: its bytes fit
@@ -66,7 +72,8 @@ pub struct Entry {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
 pub struct Listing {
     pub entries: Vec<Entry>,
-    /// The folder has more than [`LIST_LIMIT`] entries: the rest are left out.
+    /// The folder has more than [`LIST_LIMIT`] entries git does not ignore,
+    /// or more than [`SCAN_LIMIT`] in all: the rest are left out.
     pub truncated: bool,
 }
 
@@ -84,20 +91,33 @@ fn below(rel: &str) -> Result<()> {
 pub fn list_in(root: &Root, dir: &Path, rel: &str) -> Result<Listing> {
     below(rel)?;
     root.check(dir)?;
-    let (mut entries, truncated) = read_folder(root, rel)?;
-    let asked: Vec<String> = entries
-        .iter()
-        .map(|e| {
-            let path = if rel.is_empty() { e.name.clone() } else { format!("{rel}/{}", e.name) };
-            if e.kind == Kind::Dir { format!("{path}/") } else { path }
-        })
-        .collect();
-    let ignored = git::ignored_in(root, dir, &asked, git::Deadline::after(IGNORE_TIMEOUT));
-    let mut asked = asked.into_iter();
-    entries.retain(|_| {
-        let path = asked.next().unwrap_or_default();
-        !ignored.contains(&path) && !ignored.contains(path.trim_end_matches('/'))
-    });
+    let (read, mut truncated) = read_folder(root, rel)?;
+    let deadline = git::Deadline::after(IGNORE_TIMEOUT);
+    let mut entries = Vec::new();
+    // In batches, after git's answer: an ignored entry takes no place in the listing.
+    for batch in read.chunks(IGNORE_BATCH) {
+        let asked: Vec<String> = batch
+            .iter()
+            .map(|e| {
+                let path = if rel.is_empty() { e.name.clone() } else { format!("{rel}/{}", e.name) };
+                if e.kind == Kind::Dir { format!("{path}/") } else { path }
+            })
+            .collect();
+        let ignored = git::ignored_in(root, dir, &asked, deadline);
+        for (e, path) in batch.iter().zip(&asked) {
+            if ignored.contains(path) || ignored.contains(path.trim_end_matches('/')) {
+                continue;
+            }
+            if entries.len() == LIST_LIMIT {
+                truncated = true;
+                break;
+            }
+            entries.push(e.clone());
+        }
+        if entries.len() == LIST_LIMIT && truncated {
+            break;
+        }
+    }
     entries.sort_by(|a, b| {
         (b.kind == Kind::Dir)
             .cmp(&(a.kind == Kind::Dir))
@@ -147,7 +167,7 @@ fn read_folder(root: &Root, rel: &str) -> Result<(Vec<Entry>, bool)> {
             if matches!(name, "." | ".." | ".git") {
                 continue;
             }
-            if entries.len() == LIST_LIMIT {
+            if entries.len() == SCAN_LIMIT {
                 truncated = true;
                 break;
             }
@@ -178,7 +198,7 @@ fn read_folder(root: &Root, rel: &str) -> Result<(Vec<Entry>, bool)> {
         if name == ".git" {
             continue;
         }
-        if entries.len() == LIST_LIMIT {
+        if entries.len() == SCAN_LIMIT {
             truncated = true;
             break;
         }
@@ -342,15 +362,36 @@ pub fn image_type(head: &[u8]) -> Option<&'static str> {
     }
 }
 
-/// An image file the Host's config names, such as a project background:
-/// a regular file (opened non-blocking, type checked before a read) of at
-/// most [`BYTES_LIMIT`] whose first bytes are an image. Its type and bytes.
-pub fn read_image(path: &Path) -> Result<(String, Vec<u8>)> {
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NONBLOCK);
-    let file = options.open(path).map_err(|e| missing!("The image cannot be read: {e}"))?;
+/// A project's configured background, opened as [`read_in`] opens a file:
+/// a relative name below the project folder, an absolute one from `/`, one
+/// component at a time and none followed if it is a link, and only a regular
+/// file, typed before it opens. A link anywhere in the name is refused.
+pub fn open_background(project: &Path, configured: &str) -> Result<std::fs::File> {
+    let configured = configured.trim();
+    let named = Path::new(configured);
+    let (from, rel) = match named.strip_prefix("/") {
+        Ok(rel) => (Path::new("/"), rel),
+        Err(_) => (project, named),
+    };
+    let not_regular = || missing!("{configured} is not a regular file, so it is not a background");
+    let rel = rel.to_str().filter(|r| !r.is_empty()).ok_or_else(not_regular)?;
+    let root = Root::open(from).map_err(|_| not_regular())?;
+    match git::open_beneath(&root, rel) {
+        Some(Beneath::File(file)) if file.metadata().is_ok_and(|m| m.is_file()) => Ok(file),
+        Some(Beneath::Symlink(_)) => Err(invalid!("{configured} is a link, or goes through one. Skiff does not follow it.")),
+        _ => Err(not_regular()),
+    }
+}
+
+/// The project's configured background, read: see [`open_background`] and [`read_image`].
+pub fn read_background(project: &Path, configured: &str) -> Result<(String, Vec<u8>)> {
+    read_image(open_background(project, configured)?)
+}
+
+/// An image file the Host's config names, opened without following a link:
+/// a regular file of at most [`BYTES_LIMIT`] whose first bytes are an
+/// image. Its type and bytes.
+pub fn read_image(file: std::fs::File) -> Result<(String, Vec<u8>)> {
     let meta = file.metadata()?;
     if !meta.is_file() {
         return Err(invalid!("The image is not a regular file."));
@@ -432,6 +473,28 @@ mod tests {
         assert!(!top.truncated);
         assert_eq!(names(&deep), [(":(glob)*".into(), Kind::File)]);
         assert!(through.is_err() && up.is_err() && file.is_err());
+    }
+
+    /// The review's case: more ignored entries than the listing holds, then
+    /// a file git does not ignore. It is listed; the ignored take no place.
+    #[test]
+    fn ignored_entries_take_no_place_in_the_listing() {
+        let root = fixture("ignored-many");
+        fs::create_dir_all(root.join("sub")).unwrap();
+        for i in 0..LIST_LIMIT + 5 {
+            fs::write(root.join(format!("sub/f{i}")), "").unwrap();
+        }
+        assert!(Command::new("git").arg("init").arg("-q").arg(&root).status().unwrap().success());
+        fs::write(root.join("sub/.gitignore"), "").unwrap();
+        // Every name but the one the disk reads last is ignored: before, the
+        // cap was spent on the ignored ones before it was reached.
+        let keep = fs::read_dir(root.join("sub")).unwrap().flatten().filter_map(|e| e.file_name().into_string().ok()).filter(|n| n.starts_with('f')).last().unwrap();
+        fs::write(root.join("sub/.gitignore"), format!("*\n!{keep}\n")).unwrap();
+        let held = Root::open(&root).unwrap();
+        let listing = list_in(&held, &root, "sub").unwrap();
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(names(&listing), [(keep, Kind::File)]);
+        assert!(!listing.truncated, "every entry was read");
     }
 
     #[test]
@@ -522,12 +585,39 @@ mod tests {
         fs::write(root.join("bg.png"), "<svg onload=x>").unwrap();
         fs::File::create(root.join("huge.png")).unwrap().set_len(BYTES_LIMIT + 1).unwrap();
         assert!(Command::new("mkfifo").arg(root.join("pipe.png")).status().unwrap().success());
-        let ok = read_image(&root.join("bg.jpg")).unwrap();
-        let errors = ["bg.png", "huge.png", "pipe.png", "missing.png"].map(|n| read_image(&root.join(n)).is_err());
-        let folder = read_image(&root).is_err();
+        let ok = read_background(&root, "bg.jpg").unwrap();
+        let errors = ["bg.png", "huge.png", "pipe.png", "missing.png", "", "."].map(|n| read_background(&root, n).is_err());
         fs::remove_dir_all(&root).unwrap();
         assert_eq!(ok, ("image/png".to_string(), png));
-        assert_eq!(errors, [true; 4]);
-        assert!(folder);
+        assert_eq!(errors, [true; 6]);
+    }
+
+    /// The review's case: a background that is a link, or goes through one,
+    /// to an image outside is never followed. An absolute regular image is.
+    #[test]
+    fn a_configured_image_is_never_read_through_a_link() {
+        // Canonical, so the absolute name has no link of the system's in it.
+        let root = fixture("bg-links").canonicalize().unwrap();
+        let outside = fixture("bg-outside").canonicalize().unwrap();
+        let png = [b"\x89PNG\r\n\x1a\n".as_slice(), &[9u8; 8]].concat();
+        fs::write(outside.join("bg.png"), &png).unwrap();
+        fs::create_dir_all(root.join("art")).unwrap();
+        fs::write(root.join("art/own.png"), &png).unwrap();
+        std::os::unix::fs::symlink(outside.join("bg.png"), root.join("bg-link.png")).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("dirlink")).unwrap();
+        std::os::unix::fs::symlink(&root, outside.join("back")).unwrap();
+        let direct = read_background(&root, "bg-link.png");
+        let through = read_background(&root, "dirlink/bg.png");
+        let up = read_background(&root, "../bg-outside/bg.png");
+        let absolute = read_background(&root, &outside.join("bg.png").display().to_string());
+        let absolute_link = read_background(&root, &root.join("bg-link.png").display().to_string());
+        let absolute_through = read_background(&root, &outside.join("back/art/own.png").display().to_string());
+        let inside = read_background(&root, "art/own.png");
+        fs::remove_dir_all(&root).unwrap();
+        fs::remove_dir_all(&outside).unwrap();
+        assert!(direct.unwrap_err().to_string().contains("is a link"));
+        assert!(through.is_err() && up.is_err() && absolute_link.is_err() && absolute_through.is_err());
+        assert_eq!(absolute.unwrap().1, png, "an absolute regular image is still served");
+        assert_eq!(inside.unwrap().1, png);
     }
 }

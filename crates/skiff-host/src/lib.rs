@@ -310,9 +310,10 @@ pub async fn answer(request: Request, hello: &Hello) -> Result<Response, Error> 
             let p = config.iter().find(|p| p.name == project).ok_or_else(|| Error::NotFound {
                 message: format!("no such project: {project}"),
             })?;
-            let path = project::background_file(&p.path, p.background.as_deref())
+            let configured = p.background.as_deref().filter(|b| !b.trim().is_empty())
                 .ok_or_else(|| Error::NotFound { message: format!("{project} has no background image on this Host") })?;
-            let (mime, bytes) = files::read_image(Path::new(&path)).map_err(unread)?;
+            // Opened again here, never through a link: not the path the row named.
+            let (mime, bytes) = files::read_background(&p.path, configured).map_err(unread)?;
             Ok(Response::Image { image: HostImage { mime, bytes } })
         }
         Request::ProjectInspect { path } => Ok(Response::Folder { folder: host_folder(config::inspect_folder(&host_folder_path(&path)?)) }),

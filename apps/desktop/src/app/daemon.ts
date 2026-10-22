@@ -34,6 +34,7 @@ import { hostName, isRemote } from "./hosts";
 import { watchDataPlane } from "./dataPlane";
 import { refreshHostDiff } from "../terminal/peek";
 import { reloadFiles } from "../workspace/files";
+import { reloadBackdrops } from "../appearance/backdrop";
 import { muteInput } from "../terminal/terminalRuntime";
 
 export function setDaemon(status: DaemonStatus) {
@@ -300,6 +301,7 @@ export function followDataPlane() {
       await loadProjects();
       reloadChanges();
       reloadFiles();
+      reloadBackdrops();
       refreshHostDiff();
       // Either read failed: the next check on this connection reads again.
       return caps && S.projectsError === null;

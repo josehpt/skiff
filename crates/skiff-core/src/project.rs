@@ -123,11 +123,14 @@ const ICON_NAMES: [&str; 11] = [
     "icon.ico",
 ];
 
-/// The configured background image, made absolute. `None` when unset or missing.
+/// The configured background image, made absolute. `None` when unset, missing,
+/// or not a regular file reached without a link ([`crate::files::open_background`]).
 pub fn background_file(project: &Path, configured: Option<&str>) -> Option<String> {
-    let p = Path::new(configured?.trim());
+    let configured = configured?;
+    crate::files::open_background(project, configured).ok()?;
+    let p = Path::new(configured.trim());
     let p = if p.is_absolute() { p.to_path_buf() } else { project.join(p) };
-    p.is_file().then(|| p.display().to_string())
+    Some(p.display().to_string())
 }
 
 /// The icon file for a project: the configured one, else the first candidate.

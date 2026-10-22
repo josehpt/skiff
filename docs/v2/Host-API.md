@@ -1631,13 +1631,18 @@ Host.
     relative to the worktree; empty or absent is the worktree itself.
     `HostListing`: `entries` (`name`, `kind`: `dir`, `file`, `link` or
     `other`), folders first, then by name, without `.git` and what the
-    Host's git ignores; `truncated` past 2000 entries.
+    Host's git ignores; `truncated` past 2000 entries that git does not
+    ignore, or past 40000 read from disk.
   - `file_read { worktree, file, purpose? }` answers `file { file }`.
     `purpose` is `preview` (the default) or `copy`. `HostFile`: `content`
     (`text`, `image`, `binary`, `link`), `size`, and as they apply `mime`,
     `text`, `bytes` (base64), `truncated` and a link's `target`.
 - **`project_assets@1`**: `project_background { project }` answers
-  `image { image: { mime, bytes } }`.
+  `image { image: { mime, bytes } }`. The configured name opens as a
+  worktree file does: a relative one below the project folder, an absolute
+  one from `/`, each component with `O_NOFOLLOW`. A link as the image is
+  `invalid`; a path through a link, `..` or anything but a regular file is
+  `not_found`.
 - Neither family is granted by another, and neither grants a write.
   Golden shapes: `tests/fixtures/m5.json`.
 
@@ -1664,7 +1669,8 @@ Host.
   - binary: no bytes
   - a copy: every byte up to 5 MiB, else `invalid` (also for a file that
     grows past the limit while it is read)
-  - a listing: 2000 entries
+  - a listing: 2000 entries, counted after git's ignore check, from at most
+    40000 read from disk. A cut listing with no entry shown is not empty.
   - git's ignore check: 10 s per folder
 
   Each reply fits in one 8 MiB frame.

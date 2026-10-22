@@ -5,6 +5,16 @@ import { flush, moduleFromSource } from "./workspaceHarness.ts";
 /** The real Files tree logic for one Host: every folder from the Host's
  *  `files` capability, which preview and open each row gets, and that a
  *  listing from an older data connection is never stored. */
+/** Just enough of an element for the tree's rows and notes. */
+function el(tag: string, cls = "", text = ""): any {
+  const kids: any[] = [];
+  return {
+    tag, className: cls, textContent: text, dataset: {} as Record<string, string>, kids,
+    style: { setProperty() {} }, setAttribute() {}, addEventListener() {},
+    appendChild: (c: any) => kids.push(c), append: (...c: any[]) => kids.push(...c),
+  };
+}
+
 function tree(o: { remote: boolean; caps: string[] }) {
   let epoch = 0;
   const calls: string[] = [];
@@ -31,9 +41,11 @@ function tree(o: { remote: boolean; caps: string[] }) {
       "../app/stored": { storedSet: () => new Set() },
       "../app/render": { render() {} },
       "../ui/alerts": { showError() {} },
+      "../ui/dom": { h: el },
+      "../ui/icons": { chevron: () => el("span", "chevron") },
     },
     { Promise, JSON, Map, Set },
-    "\nexports.load = load; exports.listings = listings; exports.filePreview = filePreview;",
+    "\nexports.load = load; exports.listings = listings; exports.filePreview = filePreview; exports.folder = folder; exports.store = store;",
   );
   return { mod, calls, pending, acts, opened, bump: () => epoch++ };
 }
@@ -85,6 +97,32 @@ test("a remote Host's file previews in the viewer, and Open makes a copy; its pa
   assert.equal(mine.preview.kind, "file");
   mine.open();
   assert.deepEqual(local.opened, [`open ${W}/a.rs`]);
-  // A FIFO on This Mac is shown by the Host, never opened here.
-  assert.equal(local.mod.filePreview({ name: "p", kind: "other" }, W, `${W}/p`).preview.kind, "host-file");
+  // A FIFO or a link on This Mac is shown by the Host, never followed,
+  // opened or copied here: a link to a FIFO cannot block a local reader.
+  for (const kind of ["other", "link"]) {
+    const x = local.mod.filePreview({ name: "p", kind }, W, `${W}/p`);
+    assert.deepEqual(JSON.parse(JSON.stringify(x.preview)), { kind: "host-file", wt: W, file: "p", path: `${W}/p`, copy: false });
+    assert.equal(x.open, undefined);
+  }
+  assert.deepEqual(local.opened, [`open ${W}/a.rs`], "nothing else reached this Mac's opener");
+});
+
+test("a cut listing with no entry shown is never Empty, and its folder still folds", () => {
+  const t = tree({ remote: false, caps: ["files"] });
+  const notes = (dir: string) => {
+    const into = el("div");
+    t.mod.folder(into, W, dir, 0);
+    return into.kids.map((k: any) => `${k.className}:${k.textContent}`);
+  };
+  t.mod.store(`${W}/big`, { entries: [], truncated: true });
+  assert.deepEqual(notes(`${W}/big`), ["file-note:No entries show. The folder has too many to list."]);
+  t.mod.store(`${W}/none`, { entries: [], truncated: false });
+  assert.deepEqual(notes(`${W}/none`), ["file-note:Empty"]);
+  // In the parent: the cut folder keeps its fold, the empty one has none.
+  t.mod.store(W, { entries: [{ name: "big", kind: "dir" }, { name: "none", kind: "dir" }], truncated: false });
+  const into = el("div");
+  t.mod.folder(into, W, W, 0);
+  const folds = Object.fromEntries(into.kids.map((r: any) => [r.dataset.key, r.dataset.fold !== undefined]));
+  assert.deepEqual(folds, { [`file:${W}/big`]: true, [`file:${W}/none`]: false });
+  assert.ok(t.acts.get(`file:${W}/big`).fold, "Space and Right open it");
 });

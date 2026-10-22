@@ -27,7 +27,8 @@ pub struct HostEntry {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostListing {
     pub entries: Vec<HostEntry>,
-    /// More entries than the Host lists (2000): the rest are left out.
+    /// More entries than the Host lists (2000, after what git ignores), or
+    /// more than it reads from disk (40000): the rest are left out.
     pub truncated: bool,
 }
 

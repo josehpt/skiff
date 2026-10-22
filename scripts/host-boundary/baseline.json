@@ -89,7 +89,7 @@
       "process",
       "read_dir"
     ],
-    "sha256": "bc13397721607fcfc51749a0bc95ae84fe3eb1128e342f349fcf305d7e1186dd"
+    "sha256": "170661dc4c0a8b6519ee8bcd8311bace9d932442a81ed8c4ddbfbca54af01ed6"
   },
   "apps/desktop/src-tauri/src/diagnostics.rs": {
     "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
@@ -246,7 +246,7 @@
       "@tauri-apps/api/event",
       "invoke"
     ],
-    "sha256": "8c5c3494749a4b1fd75a14f1fe0ec1ebe7560490f8b53749a38f742d1b29d12d"
+    "sha256": "3fc3764b714e20c5eb2bd97d4420813046f1a04c27f09bd51f0f9544c17c8a56"
   },
   "apps/desktop/src/app/daemonRestart.ts": {
     "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",
@@ -408,11 +408,12 @@
   "apps/desktop/src/appearance/backdrop.ts": {
     "ownership": "mixed/host data: retain current adapter; route host-owned operations through Host API in M1\u2013M6",
     "reasons": [
+      "local provider: apps/desktop/src/app/dataPlane.ts",
       "local provider: apps/desktop/src/app/hostCaps.ts",
       "local provider: apps/desktop/src/app/state.ts",
       "local provider: apps/desktop/src/app/stateQueries.ts"
     ],
-    "sha256": "5307fab8915faa79ec081294483079c47f873837665a5f3762c1cfd5db36dd7a"
+    "sha256": "7f66dbc3358f7b839e35f4ed978aa3f1f3d685876477af1e9bcc31c281e064c1"
   },
   "apps/desktop/src/appearance/backdropOpacity.ts": {
     "ownership": "mixed/host data: retain current adapter; route host-owned operations through Host API in M1\u2013M6",
@@ -675,7 +676,7 @@
     "reasons": [
       "../platform/fileActions"
     ],
-    "sha256": "16abff4865d16f7934005468c2079a118fba175bcbbc1757737589deca486fa3"
+    "sha256": "6d9aea937237b8d8a1197b1b9fb248a57c15fb7958ec9beb9336100c36a03f6a"
   },
   "apps/desktop/src/workspace/fleets.ts": {
     "ownership": "legacy local adapter: migrate behind Host API in M1\u2013M6",

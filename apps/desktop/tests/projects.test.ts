@@ -42,6 +42,7 @@ function page(o: { remote: boolean; caps: string[]; fail?: string; capsFail?: st
       "../diagnostics/stalls": { work() {} },
       "../workspace/files": { filesFrom: (l: any[]) => void calls.push(`files ${l.filter((p) => p.files).map((p) => p.name)}`), reloadFiles() {} },
       "../workspace/changes": { reloadChanges() {} },
+      "../appearance/backdrop": { reloadBackdrops: () => void calls.push("backdrops") },
       "../appearance/themes": { projectThemesFrom: (l: any[]) => void calls.push(`themes ${l.filter((p) => p.theme).map((p) => `${p.name}=${p.theme}`)}`) },
       "./skiffAgent": { loadSkiffAgent: async () => void calls.push("get_skiff_agent") },
       "./stateQueries": { place: () => null },
@@ -119,5 +120,7 @@ test("review M4 P2: a failed project or capability read on a live data connectio
     for (let i = 0; i < 10; i++) await l.check();
     assert.equal(l.count(cmd), 2, what);
     assert.equal(l.p.S.dataState, "ready", what);
+    // Each recovery reads the background images again too (review M5 P2).
+    assert.equal(l.count("backdrops"), 2, what);
   }
 });

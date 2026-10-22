@@ -5,7 +5,6 @@ use skiff_client::host::{
 };
 use skiff_host_api::*;
 use std::{
-    collections::BTreeMap,
     future::Future,
     path::PathBuf,
     pin::Pin,
@@ -16,6 +15,8 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::UnixListener,
 };
+
+mod common;
 
 type Reply = Result<Response, Error>;
 struct Fake {
@@ -51,21 +52,7 @@ fn source(reply: Reply) -> Arc<Fake> {
     })
 }
 fn hello() -> Hello {
-    Hello {
-        host: Host {
-            host_id: HostId::try_from("screen-host".to_owned()).unwrap(),
-            os: "fixture".into(),
-            account: "fixture".into(),
-        },
-        instance_id: InstanceId::try_from("screen-generation".to_owned()).unwrap(),
-        service_versions: BTreeMap::new(),
-        api_major: API_MAJOR,
-        capabilities: vec![Capability::session_screen()],
-        limits: Limits {
-            max_frame_bytes: 8388608,
-            max_in_flight: 64,
-        },
-    }
+    common::hello("screen-host", "screen-generation", vec![Capability::session_screen()])
 }
 fn connect(source: &Arc<Fake>, hello: Hello) -> Result<HostConnection, Error> {
     HostConnection::local_screen(source.clone(), source.clone(), hello, None)

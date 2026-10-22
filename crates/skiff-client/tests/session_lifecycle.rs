@@ -13,7 +13,6 @@ use skiff_client::host::{
 use skiff_core::{group::Group, session::SessionSpec};
 use skiff_host_api::*;
 use std::{
-    collections::BTreeMap,
     future::Future,
     path::PathBuf,
     pin::Pin,
@@ -27,6 +26,8 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::{UnixListener, UnixStream},
 };
+
+mod common;
 
 struct Dir(PathBuf);
 impl Dir {
@@ -404,21 +405,7 @@ impl GroupSource for Fake {
 }
 
 fn hello(capabilities: Vec<Capability>) -> Hello {
-    Hello {
-        host: Host {
-            host_id: HostId::try_from("host".to_owned()).unwrap(),
-            os: "fixture".into(),
-            account: "fixture".into(),
-        },
-        instance_id: InstanceId::try_from("i".to_owned()).unwrap(),
-        service_versions: BTreeMap::new(),
-        api_major: API_MAJOR,
-        capabilities,
-        limits: Limits {
-            max_frame_bytes: 8 * 1024 * 1024,
-            max_in_flight: 64,
-        },
-    }
+    common::hello("host", "i", capabilities)
 }
 
 fn local(

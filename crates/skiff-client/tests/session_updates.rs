@@ -7,7 +7,6 @@ use skiff_client::host::{
 };
 use skiff_host_api::*;
 use std::{
-    collections::BTreeMap,
     future::Future,
     path::PathBuf,
     pin::Pin,
@@ -22,6 +21,8 @@ use tokio::{
     net::UnixListener,
     sync::mpsc,
 };
+
+mod common;
 
 type Reply = Result<Response, Error>;
 type Item = Result<SessionUpdate, UpdateGap>;
@@ -78,21 +79,7 @@ fn fake(n: usize) -> (Arc<Fake>, Vec<mpsc::UnboundedSender<Item>>) {
     (fake, txs)
 }
 fn hello(capabilities: Vec<Capability>) -> Hello {
-    Hello {
-        host: Host {
-            host_id: HostId::try_from("host".to_owned()).unwrap(),
-            os: "fixture".into(),
-            account: "fixture".into(),
-        },
-        instance_id: InstanceId::try_from("generation".to_owned()).unwrap(),
-        service_versions: BTreeMap::new(),
-        api_major: API_MAJOR,
-        capabilities,
-        limits: Limits {
-            max_frame_bytes: 8388608,
-            max_in_flight: 64,
-        },
-    }
+    common::hello("host", "generation", capabilities)
 }
 fn connect(source: &Arc<Fake>, hello: Hello) -> Result<HostConnection, Error> {
     HostConnection::local_updates(

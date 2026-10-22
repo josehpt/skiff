@@ -6,7 +6,6 @@ use skiff_client::host::{
 };
 use skiff_host_api::*;
 use std::{
-    collections::BTreeMap,
     future::Future,
     path::PathBuf,
     pin::Pin,
@@ -20,6 +19,8 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::UnixListener,
 };
+
+mod common;
 
 type Reply = Result<Response, Error>;
 fn fixture() -> Value {
@@ -52,21 +53,7 @@ impl InventorySource for Fake {
     }
 }
 fn hello() -> Hello {
-    Hello {
-        host: Host {
-            host_id: HostId::try_from("host".to_owned()).unwrap(),
-            os: "fixture".into(),
-            account: "fixture".into(),
-        },
-        instance_id: InstanceId::try_from("generation".to_owned()).unwrap(),
-        service_versions: BTreeMap::new(),
-        api_major: API_MAJOR,
-        capabilities: vec![Capability::session_inventory()],
-        limits: Limits {
-            max_frame_bytes: 8388608,
-            max_in_flight: 64,
-        },
-    }
+    common::hello("host", "generation", vec![Capability::session_inventory()])
 }
 fn connect(source: &Arc<Fake>, hello: Hello) -> Result<HostConnection, Error> {
     HostConnection::local_inventory(source.clone(), source.clone(), source.clone(), hello, None)

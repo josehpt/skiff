@@ -75,7 +75,7 @@ States: `working`, `waiting`, `idle`, `done`.
 
 ## Task types
 
-`skiff agents --json` prints `{"agents": [...], "tasks": [...]}`. Each task row has `type`, `agent`, `model` (null: the agent's default), `command` and `error`. The person sets the table in Settings › Skiff agent › Task types.
+`skiff agents --json` prints `{"agents": [...], "tasks": [...]}`. Each task row has `type`, `agent`, `model` (null: the agent's default), `instructions` (an instruction file, or null), `command` and `error`. The person sets the table in Settings › Skiff agent › Task types.
 
 1. Pick the type yourself. Skiff reads no task text.
 2. Do not use a row whose `error` is not null.
@@ -84,6 +84,8 @@ States: `working`, `waiting`, `idle`, `done`.
 5. If no type fits, start the project's agent with `--agent`.
 
 `--type` with no row exits 1 and starts nothing. `--type` with `--agent` or `-- CMD` is an error.
+
+A row with `instructions` gives that file to the agent at start: claude gets `--append-system-prompt-file FILE`, codex gets `-c developer_instructions=<the file's text>`. It adds to the project's own `AGENTS.md` or `CLAUDE.md`. Do not repeat the file in the task text. Skiff writes nothing into the project. Another agent, or a file that is not there, puts the reason in `error`, and `--type` exits 1 and starts nothing.
 
 ## Send a task
 

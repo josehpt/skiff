@@ -75,7 +75,7 @@
 /* Settings tables (appearance/rowTable.ts): Agents and Task types. Each cell is a span; a field fills its cell. */
 .set-table { flex-shrink: 0; display: flex; flex-direction: column; }
 .set-table.g-agents .set-row { grid-template-columns: calc(72 * var(--u)) calc(200 * var(--u)) minmax(0, 1fr) calc(220 * var(--u)); }
-.set-table.g-tasks .set-row { grid-template-columns: calc(200 * var(--u)) calc(160 * var(--u)) calc(160 * var(--u)) minmax(0, 1fr) calc(160 * var(--u)); }
+.set-table.g-tasks .set-row { grid-template-columns: calc(160 * var(--u)) calc(140 * var(--u)) calc(140 * var(--u)) calc(220 * var(--u)) minmax(0, 1fr) calc(120 * var(--u)); }
 .set-table .set-row > .c-field, .set-table .set-row > .c-lead { padding: 0; }
 .set-table .set-row > .c-lead { justify-content: center; }
 .set-table .set-row > .c-lead > button { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }

@@ -113,7 +113,7 @@ pub(super) fn home_relative(p: &Path) -> String {
     }
 }
 
-pub(super) fn expand_home(p: &Path) -> PathBuf {
+pub(crate) fn expand_home(p: &Path) -> PathBuf {
     let Some(rest) = p.to_str().and_then(|s| s.strip_prefix("~/")) else {
         return p.to_path_buf();
     };

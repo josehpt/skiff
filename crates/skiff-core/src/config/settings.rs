@@ -273,11 +273,11 @@ pub fn set_skiff_agent(key: SkiffAgentKey) -> Result<()> {
     })
 }
 
-/// Adds `[skiff_agent.tasks] <name> = { agent, model }` at the end of the
-/// table. Refuses a name that is there.
-pub fn add_task_type(name: &str, agent: &str, model: Option<&str>) -> Result<()> {
+/// Adds `[skiff_agent.tasks] <name> = { agent, model, instructions }` at the
+/// end of the table. Refuses a name that is there.
+pub fn add_task_type(name: &str, agent: &str, model: Option<&str>, instructions: Option<&str>) -> Result<()> {
     let name = crate::tasks::check_name(name)?;
-    let row = task_row(agent, model)?;
+    let row = task_row(agent, model, instructions)?;
     edit_table("skiff_agent", |t| {
         let tasks = tasks(t)?;
         if tasks.contains_key(name) {
@@ -288,11 +288,12 @@ pub fn add_task_type(name: &str, agent: &str, model: Option<&str>) -> Result<()>
     })
 }
 
-/// Changes the agent and model of a task type, in its place. An empty model
-/// takes the key out: the agent's default. An agent that takes its model in
-/// its command saves no model.
-pub fn set_task_type(name: &str, agent: &str, model: Option<&str>) -> Result<()> {
-    let row = task_row(agent, model)?;
+/// Changes the agent, model and instruction file of a task type, in its
+/// place. An empty model takes the key out: the agent's default. An agent
+/// that takes its model in its command saves no model. An empty file takes
+/// the key out: no file.
+pub fn set_task_type(name: &str, agent: &str, model: Option<&str>, instructions: Option<&str>) -> Result<()> {
+    let row = task_row(agent, model, instructions)?;
     edit_table("skiff_agent", |t| {
         let tasks = tasks(t)?;
         if !tasks.contains_key(name) {
@@ -338,8 +339,10 @@ pub fn remove_task_type(name: &str) -> Result<()> {
     })
 }
 
-/// `{ agent = "claude", model = "opus" }` for an agent Skiff lists.
-fn task_row(agent: &str, model: Option<&str>) -> Result<toml_edit::InlineTable> {
+/// `{ agent = "claude", model = "opus" }` for an agent Skiff lists. The
+/// instruction file is saved as typed, even for an agent that cannot take
+/// it: the row's error says so, and the person sees what they set.
+fn task_row(agent: &str, model: Option<&str>, instructions: Option<&str>) -> Result<toml_edit::InlineTable> {
     let agent = agent.trim();
     let Some(a) = crate::project::agents().into_iter().find(|a| a.id == agent) else {
         anyhow::bail!("There is no agent {agent}. Add it in Settings › Agents.");
@@ -351,6 +354,9 @@ fn task_row(agent: &str, model: Option<&str>) -> Result<toml_edit::InlineTable> 
     row.insert("agent", agent.into());
     if let Some(m) = model {
         row.insert("model", m.into());
+    }
+    if let Some(f) = crate::tasks::check_instructions(instructions)? {
+        row.insert("instructions", f.into());
     }
     Ok(row)
 }

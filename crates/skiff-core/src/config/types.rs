@@ -78,6 +78,10 @@ pub struct TaskRow {
     pub agent: String,
     /// Absent: the agent's default model.
     pub model: Option<String>,
+    /// An instruction file the agent gets at start, as typed: a full path or
+    /// `~/…`. Absent: none. Skiff only reads it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
 }
 
 /// `[skiff_agent.tasks]` in file order, which is the order Settings shows.

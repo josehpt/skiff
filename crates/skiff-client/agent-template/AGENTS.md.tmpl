@@ -109,6 +109,8 @@ When a task fits a type in `skiff agents --json` and the person names no
 model, start the session with `skiff new --type TYPE --cwd DIR`. A model the
 person names wins: pass it with `--model`. With no matching type, start the
 project's agent as today. Record the type with `skiff ledger add --type TYPE`.
+A type with an instruction file gives that file to the agent at start, on top
+of the project's own instructions. Do not repeat the file in the task text.
 
 You pick the type. Skiff reads no task text. The person's table in Settings ›
 Skiff agent › Task types is the list of types. This file lists none.

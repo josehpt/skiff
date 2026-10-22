@@ -192,6 +192,9 @@ pub struct TaskEdit {
     name: String,
     agent: String,
     model: Option<String>,
+    /// Absent from an older page: no file.
+    #[serde(default)]
+    instructions: Option<String>,
 }
 
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> anyhow::Result<T> + Send + 'static) -> Result<T, String> {
@@ -215,8 +218,8 @@ pub async fn set_skiff_agent(app: AppHandle, edit: Edit) -> Result<SkiffAgent, S
             Edit::Name(v) => config::set_skiff_agent(SkiffAgentKey::Name(v.as_deref()))?,
             Edit::Agent(v) => config::set_skiff_agent(SkiffAgentKey::Agent(v.as_deref()))?,
             Edit::ContinueOnRestore(on) => config::set_skiff_agent(SkiffAgentKey::ContinueOnRestore(on))?,
-            Edit::AddTask(t) => config::add_task_type(&t.name, &t.agent, t.model.as_deref())?,
-            Edit::Task(t) => config::set_task_type(&t.name, &t.agent, t.model.as_deref())?,
+            Edit::AddTask(t) => config::add_task_type(&t.name, &t.agent, t.model.as_deref(), t.instructions.as_deref())?,
+            Edit::Task(t) => config::set_task_type(&t.name, &t.agent, t.model.as_deref(), t.instructions.as_deref())?,
             Edit::RenameTask { from, to } => config::rename_task_type(&from, &to)?,
             Edit::RemoveTask(name) => config::remove_task_type(&name)?,
             Edit::Enabled(on) => {
@@ -303,7 +306,9 @@ mod tests {
         let add = edit(serde_json::json!({ "key": "add_task", "value": { "type": "review", "agent": "claude", "model": "opus" } }));
         assert!(matches!(add, Edit::AddTask(t) if t.name == "review" && t.agent == "claude" && t.model.as_deref() == Some("opus")));
         let set = edit(serde_json::json!({ "key": "task", "value": { "type": "review", "agent": "aider", "model": null } }));
-        assert!(matches!(set, Edit::Task(t) if t.model.is_none()));
+        assert!(matches!(set, Edit::Task(t) if t.model.is_none() && t.instructions.is_none()));
+        let file = edit(serde_json::json!({ "key": "task", "value": { "type": "review", "agent": "claude", "model": null, "instructions": "~/.skiff/types/review.md" } }));
+        assert!(matches!(file, Edit::Task(t) if t.instructions.as_deref() == Some("~/.skiff/types/review.md")));
         let rename = edit(serde_json::json!({ "key": "rename_task", "value": { "from": "review", "to": "code-review" } }));
         assert!(matches!(rename, Edit::RenameTask { from, to } if from == "review" && to == "code-review"));
         assert!(matches!(edit(serde_json::json!({ "key": "remove_task", "value": "review" })), Edit::RemoveTask(t) if t == "review"));

@@ -57,7 +57,7 @@ enum Cmd {
     },
     /// Start a session and print its id.
     #[command(
-        after_help = "--type starts a task type from Settings › Skiff agent › Task types ([skiff_agent.tasks] in projects.toml): its agent, with its model flag. With no --name, the session takes the type's name, numbered when one runs (review, review 2).\nWith no row for the type, it exits 1 and starts nothing.\n--model replaces the row's model for this session. A custom agent takes its model in its command, so it refuses --model.\n`skiff agents` lists the types with the command each one starts."
+        after_help = "--type starts a task type from Settings › Skiff agent › Task types ([skiff_agent.tasks] in projects.toml): its agent, with its model flag. With no --name, the session takes the type's name, numbered when one runs (review, review 2).\nWith no row for the type, it exits 1 and starts nothing.\n--model replaces the row's model for this session. A custom agent takes its model in its command, so it refuses --model.\nA row with an instruction file gives it to the agent at start: claude gets --append-system-prompt-file FILE, codex gets -c developer_instructions=<the file's text>. The project's AGENTS.md or CLAUDE.md still applies, and Skiff writes nothing into the project. Another agent, or a file that is not there, exits 1 and starts nothing.\n`skiff agents` lists the types with the command each one starts."
     )]
     New {
         /// The session's name.
@@ -69,7 +69,7 @@ enum Cmd {
         /// Start this agent, as the app's + menu does.
         #[arg(long, value_name = "ID", conflicts_with = "command")]
         agent: Option<String>,
-        /// Start this task type's agent with its model. Not with --agent.
+        /// Start this task type's agent with its model and instruction file. Not with --agent.
         #[arg(long = "type", value_name = "TYPE", conflicts_with_all = ["agent", "command"])]
         task_type: Option<String>,
         /// With --type: this model in place of the type's model.

@@ -199,6 +199,7 @@ mod tests {
             name: name.into(),
             agent: "claude".into(),
             model: model.map(Into::into),
+            instructions: None,
             command: command.map(Into::into),
             error: error.map(Into::into),
         };

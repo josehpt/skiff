@@ -90,6 +90,8 @@ interface Active {
   /** The preview takes the keys when it is ready. */
   keys: boolean;
   closed: boolean;
+  /** A ledger result shown over the row: its own preview, read again on a new data connection. */
+  result?: { uid: string; title: string };
 }
 
 let active: Active | null = null;
@@ -263,6 +265,7 @@ export function openPath(path: string) {
   // Its own generation: a reply still due for the row's preview, or an older Open, shows nothing.
   active.gen = ++gen;
   active.keys = true;
+  active.result = undefined;
   const mine = active.gen;
   // The command on screen, or still starting, belongs to the Open now: it may be the same tool.
   if (open) open.gen = mine;
@@ -525,16 +528,24 @@ export function openLedgerResult(uid: string, title: string) {
   }
   active.gen = ++gen;
   active.keys = true;
+  active.result = { uid, title };
   // A tool on screen gives way to the result.
   const p = open;
   open = null;
   if (p) retire(p);
-  showHostRead(active.gen, `Result: ${title}`, () => hostInvoke<HostFile>("ledger", "ledger_result", { uid }), null);
+  showLedgerResult(active.gen, active.result);
 }
 
-/** The data plane is back: a Host diff or file on screen is read again from it. */
+function showLedgerResult(mine: number, r: { uid: string; title: string }) {
+  const { uid } = r;
+  showHostRead(mine, `Result: ${r.title}`, () => hostInvoke<HostFile>("ledger", "ledger_result", { uid }), null);
+}
+
+/** The data plane is back: a Host diff, file or ledger result on screen is read again from it. */
 export function refreshHostDiff() {
   if (!active || active.closed || !card?.classList.contains("diff-view")) return;
+  // A result keeps its own uid and title: the row's preview does not replace it.
+  if (active.result) return showLedgerResult(active.gen, active.result);
   const t = rowActs(active.key)?.preview;
   if (t?.kind === "host-diff") showHostDiff(active.gen, t);
   if (t?.kind === "host-file") showHostFile(active.gen, t);

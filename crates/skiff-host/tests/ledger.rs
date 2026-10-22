@@ -94,12 +94,32 @@ fn sum(path: &Path) -> Vec<u8> {
     std::fs::read(path).unwrap_or_default()
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn the_ledger_results_and_skipper_settings_come_from_the_host_read_only_and_bounded() {
+/// A private home for this process, set before any thread runs. The live
+/// folder guard ([`skiff_client::skipper::refuse_live_folder`]) compares
+/// against the person's projects.toml and `~/skiff-agent`; with this home
+/// both are the fixture's own, so no test reads the person's config.
+fn private_home(dir: &Path) {
+    let home = dir.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    std::env::set_var("HOME", &home);
+    for k in ["XDG_CONFIG_HOME", "SKIFF_CONFIG", "SKIFF_STATE", "SKIFF_LEDGER", "SKIFF_REAL_STATE", "SKIFF_SESSION"] {
+        std::env::remove_var(k);
+    }
+    assert!(skiff_core::state::real_config_path().starts_with(&home), "the person's config");
+    assert!(skiff_core::state::real_agent_folders().iter().all(|f| f.starts_with(&home)), "the person's agent folder");
+}
+
+#[test]
+fn the_ledger_results_and_skipper_settings_come_from_the_host_read_only_and_bounded() {
     let dir = PathBuf::from("/tmp").join(format!("shl-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let _guard = Guard(dir.clone());
+    private_home(&dir);
+    tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap().block_on(host_ledger(dir));
+}
+
+async fn host_ledger(dir: PathBuf) {
     let socket = dir.join("skiffd.sock");
     skiff_core::state::set_socket(socket.clone());
     let private = skiff_core::state::private_dir().expect("never the live state");

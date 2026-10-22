@@ -7,7 +7,7 @@ import { flush, moduleFromSource } from "./workspaceHarness.ts";
  *  `skipper` capability; nothing names or opens a path here, and a remote
  *  Host's watcher and Skipper are never started from this app. */
 
-function ledger(caps: string[]) {
+function ledger(caps: string[], reply?: () => Promise<unknown>, epoch = () => 0) {
   const calls: string[] = [];
   const shown: string[] = [];
   const mod = moduleFromSource(
@@ -19,9 +19,10 @@ function ledger(caps: string[]) {
         hostInvoke: (cap: string, cmd: string, args: unknown) => {
           if (!caps.includes(cap)) return Promise.reject(new Error(`This Host does not offer ${cap}.`));
           calls.push(`${cap} ${cmd} ${JSON.stringify(args ?? null)}`);
-          return Promise.resolve([ROW]);
+          return reply ? reply() : Promise.resolve([ROW]);
         },
       },
+      "../app/dataPlane": { dataEpoch: () => epoch() },
       "../terminal/peek": {
         openLedgerResult: (uid: string, title: string) => shown.push(`${uid} ${title}`),
         openPath: (p: string) => shown.push(`path ${p}`),
@@ -71,7 +72,7 @@ test("a result opens in the page's viewer by its row's uid; no path reaches an o
   assert.ok(!t.shown.some((s) => s.startsWith("path ")));
 });
 
-function skipper(remote: boolean) {
+function skipper(remote: boolean, clock = { now: 0 }) {
   const calls: string[] = [];
   const errors: string[] = [];
   const S: any = { skiffAgent: { enabled: true, folder: "/home/me/skiff-agent", name: null, continue_on_restore: true }, agents: [] };
@@ -94,7 +95,7 @@ function skipper(remote: boolean) {
       "../workspace/view": { revealSession() {} },
       "../terminal/peek": { openPath: (p: string) => calls.push(`open ${p}`) },
     },
-    { Promise, JSON, Map, Set, Date, window: { setTimeout: () => 0 }, clearTimeout() {}, requestAnimationFrame: (f: () => void) => f() },
+    { Promise, JSON, Map, Set, Date: { now: () => clock.now }, window: { setTimeout: () => 0 }, clearTimeout() {}, requestAnimationFrame: (f: () => void) => f() },
     "",
   );
   return { mod, calls, errors, S, sessions, coordinator };
@@ -132,4 +133,66 @@ test("This Mac keeps starting its own watcher and restoring Skipper", async () =
   assert.ok(t.calls.includes("invoke start_skiff_watch"));
   assert.ok(t.calls.includes("invoke open_skiff_agent"));
   assert.match(t.mod.watchText("missing", t.coordinator, "Skipper", null), /tries to start/);
+});
+
+/** A reply the test settles by hand. */
+function later<T>() {
+  let settle!: { ok: (v: T) => void; fail: (e: unknown) => void };
+  const p = new Promise<T>((ok, fail) => (settle = { ok, fail }));
+  return { p, ...settle };
+}
+
+test("review M6 P2: only the latest ledger read shows, whichever reply comes last", async () => {
+  const OLD = { ...ROW, uid: "0ld00000" };
+  const NEW = { ...ROW, uid: "new00000" };
+  // An older success after a newer one, and an older failure after a newer success.
+  for (const older of [(r: ReturnType<typeof later>) => r.ok([OLD]), (r: ReturnType<typeof later>) => r.fail(new Error("read failed"))]) {
+    const replies = [later<unknown>(), later<unknown>()];
+    let n = 0;
+    const t = ledger(["ledger"], () => replies[n++].p);
+    const first = t.mod.loadLedger();
+    const second = t.mod.loadLedger();
+    replies[1].ok([NEW]);
+    await second;
+    older(replies[0]);
+    await first;
+    assert.deepEqual(t.mod.rowsNow().map((r: any) => r.uid), ["new00000"]);
+    assert.equal(t.mod.errorNow(), null);
+  }
+});
+
+test("review M6 P2: a ledger reply from an older data connection does not show", async () => {
+  let epoch = 1;
+  const reply = later<unknown>();
+  const t = ledger(["ledger"], () => reply.p, () => epoch);
+  const read = t.mod.loadLedger();
+  epoch = 2;
+  reply.ok([ROW]);
+  await read;
+  assert.equal(t.mod.rowsNow().length, 0, "the old connection's rows");
+  // The new connection's own read shows.
+  const fresh = ledger(["ledger"], undefined, () => epoch);
+  await fresh.mod.loadLedger();
+  assert.equal(fresh.mod.rowsNow().length, 1);
+});
+
+test("review M6 P2: a remote Host's missing watcher shows as missing once the grace ends, and nothing starts", async () => {
+  const clock = { now: 0 };
+  const t = skipper(true, clock);
+  t.coordinator.watch = undefined;
+  t.mod.noteDaemon({ connected: true, protocol: 40 });
+  t.mod.syncSkiffAgent();
+  assert.equal(t.mod.skiffWatch(t.coordinator).state, "starting");
+  for (const at of [60_000, 120_000]) {
+    clock.now = at;
+    t.mod.syncSkiffAgent();
+    const w = t.mod.skiffWatch(t.coordinator);
+    assert.equal(w.state, "missing", `${at / 1000} s`);
+    assert.match(w.text, /on devbox.*start skiff watch on that Host/);
+  }
+  await flush();
+  assert.deepEqual(t.calls.filter((c) => c.startsWith("invoke")), [], "no start_skiff_watch or open_skiff_agent");
+  // A reconnect starts a new grace.
+  t.mod.noteDaemon({ connected: true, protocol: 40 });
+  assert.equal(t.mod.skiffWatch(t.coordinator).state, "starting");
 });

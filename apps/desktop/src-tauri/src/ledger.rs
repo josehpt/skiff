@@ -62,8 +62,28 @@ async fn look(app: &App, last: &mut Seen) -> bool {
     }
     let stamp = data_read(app, |c| async move { skiff_client::host::data::ledger_stamp(&c).await }).await;
     let Ok(stamp) = stamp else { return false };
-    let now = Some((app.data_gen.load(Ordering::SeqCst), stamp));
-    let changed = last.is_some() && now != *last;
-    *last = now;
+    seen(last, (app.data_gen.load(Ordering::SeqCst), stamp))
+}
+
+/// Notes a stamp read. True when it differs from the last one, the first
+/// read included: a Host whose ledger could not be read before (its service
+/// or capability came late) is read now, even when the ledger did not change.
+fn seen(last: &mut Seen, now: (u64, String)) -> bool {
+    let changed = last.as_ref() != Some(&now);
+    *last = Some(now);
     changed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_first_stamp_read_reads_the_ledger_then_only_a_change_does() {
+        let mut last = None;
+        assert!(seen(&mut last, (1, "a".into())), "the first stamp the Host gives");
+        assert!(!seen(&mut last, (1, "a".into())), "the same ledger on the same connection");
+        assert!(seen(&mut last, (1, "b".into())), "a write");
+        assert!(seen(&mut last, (2, "b".into())), "a new data connection");
+    }
 }

@@ -230,11 +230,25 @@ export function watchText(state: WatchState, s: SessionInfo, name: string, error
   }
 }
 
+/** When this app first saw a remote Host's Skiff agent session. Its watcher is that Host's: the grace runs from here. */
+let remoteSeen = { id: "", at: 0 };
+
 /** The Skiff agent's watcher state now, and its tooltip text. */
 export function skiffWatch(s: SessionInfo): { state: WatchState; text: string } {
   const now = Date.now();
-  // A session not asked for yet is asked on this render.
-  const asked = watchAsked.id === s.id ? watchAsked.at : now;
+  let asked: number;
+  if (isRemote()) {
+    // Nothing is asked for there: the grace runs from the first sight of the
+    // session, or the last connect, and the render after it shows missing.
+    if (remoteSeen.id !== s.id) {
+      remoteSeen = { id: s.id, at: now };
+      graceRender();
+    }
+    asked = remoteSeen.at;
+  } else {
+    // A session not asked for yet is asked on this render.
+    asked = watchAsked.id === s.id ? watchAsked.at : now;
+  }
   const state = watchMark(s, daemon.protocol, Math.max(daemon.at, asked), now);
   return { state, text: watchText(state, s, skiffAgentName(), startError) };
 }

@@ -472,9 +472,14 @@ fn ledger_result(uid: &str) -> Result<files::FileRead, Error> {
 
 /// Where a result may be read: below the folder that holds `ledger`, where
 /// `skiff ledger` puts results, as [`files::hold_beneath`] allows. Answers
-/// the held folder, its path and the result relative to it.
+/// the held folder, its path and the result relative to it. A ledger with
+/// no folder of its own serves no result: never the root in its place.
 fn result_file(ledger: &Path, result: &str) -> Result<(git::Root, std::path::PathBuf, String), Error> {
-    let folder = ledger.parent().filter(|f| !f.as_os_str().is_empty()).unwrap_or(Path::new("/")).to_path_buf();
+    let folder = ledger
+        .parent()
+        .filter(|f| f.is_absolute() && f.parent().is_some())
+        .ok_or_else(|| Error::NotFound { message: format!("{} has no folder to hold results", ledger.display()) })?
+        .to_path_buf();
     let (root, rel) = files::hold_beneath(&folder, Path::new(result)).map_err(unread)?;
     Ok((root, folder, rel))
 }

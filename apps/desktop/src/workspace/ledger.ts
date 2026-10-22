@@ -42,6 +42,7 @@ import { shownIds } from "../app/stateQueries";
 import type { SessionInfo } from "../platform/types";
 import { openLedgerResult, previewToken } from "../terminal/peek";
 import { hostInvoke } from "../app/hostCaps";
+import { dataEpoch } from "../app/dataPlane";
 import { holdFits, releaseFits } from "../terminal/terminal";
 import { panes } from "../terminal/terminalState";
 import type { Action } from "../app/keys";
@@ -115,15 +116,24 @@ interface Unit {
 let rows: Entry[] = [];
 let error: string | null = null;
 let loaded = false;
+/** The last read asked for. Only its reply shows. */
+let asked = 0;
 
+/** Reads the rows again. A reply shows only when no read was asked since and
+ *  the data connection it came on is still the one on screen. */
 export async function loadLedger() {
+  const mine = ++asked;
+  const at = dataEpoch();
+  let next: Entry[] = [];
+  let err: string | null = null;
   try {
-    rows = await hostInvoke<Entry[]>("ledger", "ledger_rows");
-    error = null;
+    next = await hostInvoke<Entry[]>("ledger", "ledger_rows");
   } catch (e) {
-    rows = [];
-    error = String(e);
+    err = String(e);
   }
+  if (mine !== asked || at !== dataEpoch()) return;
+  rows = next;
+  error = err;
   loaded = true;
   render();
 }

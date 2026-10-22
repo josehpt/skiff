@@ -35,6 +35,7 @@ import { watchDataPlane } from "./dataPlane";
 import { refreshHostDiff } from "../terminal/peek";
 import { reloadFiles } from "../workspace/files";
 import { reloadBackdrops } from "../appearance/backdrop";
+import { loadLedger } from "../workspace/ledger";
 import { muteInput } from "../terminal/terminalRuntime";
 
 export function setDaemon(status: DaemonStatus) {
@@ -242,6 +243,9 @@ export async function loadProjects() {
   // its read is tried even before it is offered: a failure says why.
   const remote = isRemote();
   if (remote && !hostCan("projects")) {
+    // Skipper is the Host's own (`skipper@1`), with or without projects there.
+    await loadSkiffAgent();
+    if (seq !== projectsSeq) return;
     S.projects = [];
     S.closedProjects = [];
     S.projectsError = null;
@@ -256,8 +260,8 @@ export async function loadProjects() {
   const started = performance.now();
   try {
     const read = invoke<Project[]>("list_projects").finally(() => work("projects refresh (worktrees, branches)", performance.now() - started));
-    // The app theme is this computer's; Skipper is still this Mac's (M6): a remote Host gets neither.
-    [list] = await Promise.all(remote ? [read] : [read, loadAppTheme(), loadSkiffAgent()]);
+    // The app theme is this computer's: a remote Host does not get it. Skipper is the selected Host's.
+    [list] = await Promise.all(remote ? [read, loadSkiffAgent()] : [read, loadAppTheme(), loadSkiffAgent()]);
   } catch (e) {
     err = String(e);
   }
@@ -287,8 +291,9 @@ export async function loadProjects() {
 
 /**
  * Follows the selected Host's data plane from now on (dataPlane.ts). A new
- * data connection reads its capabilities, projects, Git changes and a
- * remote diff on screen again; a lost one says why. Sessions, panes and
+ * data connection reads its capabilities, projects, Skipper's settings, the
+ * ledger, Git changes and a remote diff or result on screen again; a lost
+ * one says why. Sessions, panes and
  * terminal streams stay as they are.
  */
 export function followDataPlane() {
@@ -298,7 +303,8 @@ export function followDataPlane() {
         () => true,
         (e) => (console.error(e), false),
       );
-      await loadProjects();
+      // The ledger too: its watcher sees no change in a ledger that did not change.
+      await Promise.all([loadProjects(), loadLedger()]);
       reloadChanges();
       reloadFiles();
       reloadBackdrops();

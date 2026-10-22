@@ -137,10 +137,12 @@ impl Row {
 
 /// `SKIFF_LEDGER`, else `ledger.db` in the Skiff agent's folder: the
 /// `[skiff_agent] folder` override, else `~/skiff-agent`, or the folder in
-/// the socket's private state.
+/// the socket's private state. A relative `SKIFF_LEDGER` is taken from the
+/// working folder, so the ledger always has a folder: results, stamps and
+/// rows all follow the one full path.
 pub fn path() -> Result<PathBuf> {
     if let Some(p) = std::env::var_os("SKIFF_LEDGER") {
-        return Ok(PathBuf::from(p));
+        return std::path::absolute(PathBuf::from(p)).context("SKIFF_LEDGER is not a usable path");
     }
     Ok(crate::skipper::configured(&skiff_core::config::load()?)?.join("ledger.db"))
 }
@@ -235,16 +237,19 @@ pub fn by_uid(file: &Path, uid: &str) -> Result<Option<Row>> {
 }
 
 /// A value that changes when the ledger does: the size, change time and
-/// inode of the file and its WAL, and the file's name. Read from metadata
-/// only; the database is not opened.
+/// inode of `file` itself and of its SQLite WAL, `<file>-wal`, whatever the
+/// file's name, and the file's name. Read from metadata only; the database
+/// is not opened.
 pub fn stamp(file: &Path) -> String {
     use std::hash::{Hash, Hasher};
     #[cfg(unix)]
     use std::os::unix::fs::MetadataExt;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     file.hash(&mut h);
-    for ext in ["db", "db-wal"] {
-        let m = std::fs::metadata(file.with_extension(ext)).ok();
+    let mut wal = file.as_os_str().to_owned();
+    wal.push("-wal");
+    for f in [file.to_path_buf(), PathBuf::from(wal)] {
+        let m = std::fs::metadata(f).ok();
         let modified = m.as_ref().and_then(|m| m.modified().ok());
         (m.as_ref().map(|m| m.len()), modified).hash(&mut h);
         #[cfg(unix)]

@@ -8,16 +8,12 @@
 //! private (never the live socket, config or Host id).
 #![cfg(unix)]
 
-use std::{os::unix::fs::PermissionsExt, path::PathBuf};
+use std::os::unix::fs::PermissionsExt;
 
 use skiff_host_api::{ChangeStatus, Error, Request, Response};
 
-struct Guard(PathBuf);
-impl Drop for Guard {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+mod common;
+use common::{Guard};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_worktree_replaced_while_git_runs_is_refused_not_read() {

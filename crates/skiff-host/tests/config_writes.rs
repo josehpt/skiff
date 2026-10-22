@@ -10,7 +10,6 @@
 
 use std::{
     path::{Path, PathBuf},
-    process::Command,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
@@ -32,38 +31,8 @@ use tokio::{
     task::JoinHandle,
 };
 
-struct Guard(PathBuf);
-impl Drop for Guard {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-fn git(dir: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main", "-C"])
-        .arg(dir)
-        .args(args)
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-}
-
-fn repo(dir: &Path) {
-    std::fs::create_dir_all(dir).unwrap();
-    git(dir, &["init", "-q"]);
-    std::fs::write(dir.join("a.txt"), "one\n").unwrap();
-    git(dir, &["add", "."]);
-    git(dir, &["commit", "-qm", "init"]);
-}
-
-fn start(socket: &Path, hello: Hello) -> JoinHandle<()> {
-    let _ = std::fs::remove_file(socket);
-    let listener = UnixListener::bind(socket).unwrap();
-    tokio::spawn(async move {
-        let _ = skiff_host::serve(listener, Arc::new(hello)).await;
-    })
-}
+mod common;
+use common::{fake_ssh, repo, start, Guard};
 
 /// The sessions the stand-in skiffd lists. `None`: it answers nothing.
 type Sessions = Arc<Mutex<Option<Vec<Value>>>>;
@@ -94,44 +63,6 @@ fn skiffd(socket: &Path, sessions: Sessions) -> JoinHandle<()> {
 fn session(cwd: &Path, state: &str) -> Value {
     json!({"id": "s1", "label": "claude · fix", "role": "agent", "cwd": cwd, "command": "claude", "args": [],
            "state": state, "cols": 80, "rows": 24, "pid": null, "exit_code": null})
-}
-
-/// A fake ssh: binds the -L path and pipes each connection to the remote
-/// path, which here is a socket on this machine.
-fn fake_ssh(dir: &Path) -> Option<PathBuf> {
-    if !Path::new("/usr/bin/python3").is_file() {
-        eprintln!("skipped the SSH route: no /usr/bin/python3");
-        return None;
-    }
-    let script = r#"#!/usr/bin/python3
-import socket,sys,threading
-spec=sys.argv[sys.argv.index('-L')+1]
-local,remote=spec.split(':',1)
-s=socket.socket(socket.AF_UNIX); s.bind(local); s.listen()
-def pipe(a,b):
- try:
-  while True:
-   d=a.recv(65536)
-   if not d: break
-   b.sendall(d)
- except OSError: pass
- for x in (a,b):
-  try: x.shutdown(socket.SHUT_RDWR)
-  except OSError: pass
-while True:
- c,_=s.accept()
- r=socket.socket(socket.AF_UNIX)
- try: r.connect(remote)
- except OSError:
-  c.close(); continue
- threading.Thread(target=pipe,args=(c,r),daemon=True).start()
- threading.Thread(target=pipe,args=(r,c),daemon=True).start()
-"#;
-    let ssh = dir.join("fake-ssh");
-    std::fs::write(&ssh, script).unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
-    Some(ssh)
 }
 
 fn conflict<T: std::fmt::Debug>(r: Result<T, Error>) -> bool {

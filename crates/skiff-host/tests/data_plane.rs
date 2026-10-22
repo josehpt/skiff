@@ -9,8 +9,6 @@
 
 use std::{
     path::{Path, PathBuf},
-    process::Command,
-    sync::Arc,
     time::Duration,
 };
 
@@ -23,41 +21,9 @@ use skiff_client::host::{
 use skiff_host_api::{
     Capability, ChangeStatus, Error, Hello, HostId, InstanceId, Request, Response,
 };
-use tokio::{net::UnixListener, task::JoinHandle};
 
-struct Guard(PathBuf);
-impl Drop for Guard {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-fn git(dir: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main", "-C"])
-        .arg(dir)
-        .args(args)
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-}
-
-fn repo(dir: &Path) {
-    std::fs::create_dir_all(dir).unwrap();
-    git(dir, &["init", "-q"]);
-    std::fs::write(dir.join("a.txt"), "one\n").unwrap();
-    git(dir, &["add", "."]);
-    git(dir, &["commit", "-qm", "init"]);
-}
-
-/// The service at `socket` with `hello`, until the handle is aborted.
-fn start(socket: &Path, hello: Hello) -> JoinHandle<()> {
-    let _ = std::fs::remove_file(socket);
-    let listener = UnixListener::bind(socket).unwrap();
-    tokio::spawn(async move {
-        let _ = skiff_host::serve(listener, Arc::new(hello)).await;
-    })
-}
+mod common;
+use common::{fake_ssh, git, repo, start, Guard};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_data_plane_serves_this_hosts_projects_and_git_only() {
@@ -232,43 +198,8 @@ async fn raw_frames(socket: &Path) {
 /// named by path only; a Host without the service is "not running", and
 /// nothing is started for it.
 async fn remote(dir: &Path, host: &HostId, hello: &Hello) {
-    let python = Path::new("/usr/bin/python3");
-    if !python.is_file() {
-        eprintln!("skipped the SSH part: no /usr/bin/python3");
-        return;
-    }
-    // A fake ssh: binds the -L path and pipes each connection to the remote
-    // path, which here is a socket on this machine. It logs the -L spec.
-    let script = r#"#!/usr/bin/python3
-import socket,sys,threading,os
-D=sys.argv[0].rsplit('/',1)[0]
-spec=sys.argv[sys.argv.index('-L')+1]
-local,remote=spec.split(':',1)
-open(D+'/forwards','a').write(remote+'\n')
-s=socket.socket(socket.AF_UNIX); s.bind(local); s.listen()
-def pipe(a,b):
- try:
-  while True:
-   d=a.recv(65536)
-   if not d: break
-   b.sendall(d)
- except OSError: pass
- for x in (a,b):
-  try: x.shutdown(socket.SHUT_RDWR)
-  except OSError: pass
-while True:
- c,_=s.accept()
- r=socket.socket(socket.AF_UNIX)
- try: r.connect(remote)
- except OSError:
-  c.close(); continue
- threading.Thread(target=pipe,args=(c,r),daemon=True).start()
- threading.Thread(target=pipe,args=(r,c),daemon=True).start()
-"#;
-    let ssh = dir.join("fake-ssh");
-    std::fs::write(&ssh, script).unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // It logs each remote path to dir/forwards.
+    let Some(ssh) = fake_ssh(dir) else { return };
     let far = dir.join("far");
     std::fs::create_dir_all(&far).unwrap();
     let remote_session = far.join("skiffd.sock");

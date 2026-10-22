@@ -10,12 +10,8 @@ use std::{
     process::Command,
 };
 
-struct Guard(PathBuf);
-impl Drop for Guard {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+mod common;
+use common::{Guard};
 
 fn is_socket(p: &Path) -> bool {
     std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_socket())

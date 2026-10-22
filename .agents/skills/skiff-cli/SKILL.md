@@ -47,7 +47,7 @@ Use the report to show the user what is open. Use the JSON to pick a target or m
 | Start an agent | `skiff new --agent ID [--name N] [--cwd DIR]` (`skiff agents --json` lists ids) |
 | Start a task type | `skiff new --type T [--model M] [--cwd DIR]` |
 | Start a command | `skiff new -- npm run dev` |
-| Start next to me | `skiff new --agent codex --group . --split right` |
+| Start next to me | `skiff new --agent codex --group .` |
 | Type into an idle agent | `skiff send S "text" --enter` |
 | Type a command into an idle shell | `skiff send S "make test" --enter --shell` |
 | Send a long prompt | `skiff send S - --enter < prompt.md` |
@@ -64,7 +64,7 @@ Use the report to show the user what is open. Use the JSON to pick a target or m
 
 - `skiff new` prints the new id. `--json` prints the full session.
 - `--cwd` is relative to your current folder. With `--group` and no `--cwd`, the session starts in the group's folder.
-- `--split` needs `--group`. A full group refuses before anything starts.
+- Without `--split`, the group takes its next template shape: 2 side by side, 1 left and 2 right, then 2 by 2. `--split` halves one pane, so repeated splits shrink the newest pane. `--split` needs `--group`. A full group refuses before anything starts.
 - A group holds 4 panes at most. A session is in one group at most. `g add` takes it out of its old group.
 
 States: `working`, `waiting`, `idle`, `done`.

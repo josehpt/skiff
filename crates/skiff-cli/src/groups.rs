@@ -231,8 +231,9 @@ pub fn room(g: &Group, p: &Place) -> Result<()> {
     Ok(())
 }
 
-/// Puts session `id` into `g`. With no target, it fills the group's first
-/// slot, else it splits the focus, else the last pane.
+/// Puts session `id` into `g`. With no side and no target, it fills the
+/// group's first slot, else the group takes the next template shape. A side
+/// or a target splits that pane in half: the focus, else the first session.
 pub async fn place(c: &Client, groups: &[Group], g: Group, id: &str, p: Place, all: &[SessionInfo]) -> Result<()> {
     let panes = g.layout.sessions();
     if panes.iter().any(|s| s == id) {
@@ -243,6 +244,17 @@ pub async fn place(c: &Client, groups: &[Group], g: Group, id: &str, p: Place, a
     match slot_for(&g, &panes, &p) {
         Some(slot) => {
             layout::fill(&mut next.layout, slot, id);
+        }
+        // No side and no target: the next template, as the app's `addToGroup`.
+        // 2 panes: the new one goes under the second. Else the default shape.
+        None if p.split.is_none() && p.of.is_none() => {
+            if panes.len() == 2 {
+                layout::split_pane(&mut next.layout, &panes[1], Side::Down, id);
+            } else {
+                let mut ids = panes.clone();
+                ids.push(id.to_string());
+                next.layout = layout::build(&ids);
+            }
         }
         None => {
             let target = match &p.of {

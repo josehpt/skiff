@@ -81,7 +81,8 @@ enum Cmd {
         /// Put the new session into this group.
         #[arg(long, value_name = "GROUP")]
         group: Option<String>,
-        /// With --group: the side of the focused pane it goes on.
+        /// With --group: the side of the focused pane it goes on. Default:
+        /// the group's next template shape.
         #[arg(long, value_enum, requires = "group")]
         split: Option<Side>,
         /// Print the new session as JSON.
@@ -430,12 +431,13 @@ enum GroupCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Put a session into a group. It fills an empty pane, else splits the
-    /// focused pane. The session leaves any other group.
+    /// Put a session into a group. It fills an empty pane, else the group
+    /// takes its next template shape. The session leaves any other group.
     Add {
         group: String,
         session: String,
-        /// The side of the target pane it goes on. Default: right.
+        /// Split the target pane in half, on this side. Default: the next
+        /// template shape.
         #[arg(long, value_enum)]
         split: Option<Side>,
         /// Split this pane instead of the focused one.

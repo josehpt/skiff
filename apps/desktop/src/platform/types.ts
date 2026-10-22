@@ -136,6 +136,33 @@ export interface HostDiff {
   untracked: boolean;
 }
 
+/** An entry of a Host's folder, as it is on its disk: a link is not followed (`files@1`). */
+export interface HostEntry {
+  name: string;
+  kind: "dir" | "file" | "link" | "other";
+}
+
+/** One folder of a worktree from the selected Host. */
+export interface HostListing {
+  entries: HostEntry[];
+  /** More entries than the Host lists: the rest are left out. */
+  truncated: boolean;
+}
+
+/** A file's preview from the selected Host. Its kind comes from its bytes, never its name. */
+export interface HostFile {
+  content: "text" | "image" | "binary" | "link";
+  size: number;
+  mime?: string;
+  /** A text file, cut at 512 KiB when `truncated`. */
+  text?: string;
+  /** An image's bytes, base64. Absent for an image over 5 MiB (`truncated`). */
+  bytes?: string;
+  truncated: boolean;
+  /** Where a link points. It was not followed. */
+  target?: string;
+}
+
 export type DaemonEvent =
   | { event: "state"; session: string; state: SessionState }
   | { event: "exit"; session: string; code: number | null }

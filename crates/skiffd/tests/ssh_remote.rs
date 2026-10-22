@@ -549,6 +549,12 @@ async fn remote_projects_and_git_status_come_from_the_hosts_data_plane_over_a_re
     // Its diff text comes from the Host's git over the same forward.
     let diff = data::git_diff(&c, &worktree, Some("a.txt")).await.unwrap();
     assert!(diff.text.contains("a/a.txt") && !diff.truncated && !diff.binary, "{diff:?}");
+    // M5: its files, listed and read on the Host over the same forward.
+    let listing = data::file_list(&c, &worktree, "").await.unwrap();
+    assert_eq!(listing.entries.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["a.txt"]);
+    let read = data::file_read(&c, &worktree, "a.txt", skiff_host_api::ReadPurpose::Copy).await.unwrap();
+    assert_eq!(read.bytes.as_deref(), Some(b"one\ntwo\n".as_slice()));
+    assert!(matches!(data::file_read(&c, &worktree, "../x", skiff_host_api::ReadPurpose::Preview).await, Err(skiff_host_api::Error::NotFound { .. })));
 
     // A terminal on the session plane, then the data plane stops on the Host.
     let spec = SessionSpec { cwd: Some(repo.clone()), cols: 80, rows: 24, ..Default::default() };

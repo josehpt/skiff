@@ -5,6 +5,7 @@ use std::{collections::BTreeMap, fmt};
 use serde::{Deserialize, Serialize};
 
 pub mod agents;
+pub mod files;
 pub mod groups;
 pub mod inventory;
 pub mod lifecycle;
@@ -12,6 +13,7 @@ pub mod projects;
 pub mod terminal;
 pub mod updates;
 pub use agents::HostAgent;
+pub use files::{EntryKind, FileContent, HostEntry, HostFile, HostImage, HostListing, ReadPurpose};
 pub use groups::Group;
 pub use inventory::InventorySession;
 pub use lifecycle::SessionSpec;
@@ -34,6 +36,8 @@ pub const GIT_STATUS: &str = "git_status";
 pub const GIT_DIFF: &str = "git_diff";
 pub const PROJECT_CONFIG: &str = "project_config";
 pub const WORKTREES: &str = "worktrees";
+pub const FILES: &str = "files";
+pub const PROJECT_ASSETS: &str = "project_assets";
 
 macro_rules! identity {
     ($name:ident) => {
@@ -169,6 +173,24 @@ impl Capability {
     pub fn worktrees() -> Self {
         Self {
             name: WORKTREES.into(),
+            version: 1,
+        }
+    }
+    /// List the folders and read the files of one of the Host's open project
+    /// worktrees, bounded, without following links or opening anything but
+    /// a regular file. Data plane; grants no write, no Git and no path the
+    /// client may open.
+    pub fn files() -> Self {
+        Self {
+            name: FILES.into(),
+            version: 1,
+        }
+    }
+    /// Read a project's configured background image as validated bytes.
+    /// Data plane; grants no write and no other file.
+    pub fn project_assets() -> Self {
+        Self {
+            name: PROJECT_ASSETS.into(),
             version: 1,
         }
     }
@@ -497,6 +519,27 @@ pub enum Request {
         #[serde(default)]
         force: bool,
     },
+    /// Answers `files`: the folder `dir` (relative; empty for the worktree
+    /// itself) of `worktree`, checked as for `git_changes`. A path that
+    /// leaves the worktree, or passes through a link, is `not_found`.
+    FileList {
+        worktree: String,
+        #[serde(default)]
+        dir: String,
+    },
+    /// Answers `file`: `file` (relative) of `worktree`, read for `purpose`.
+    FileRead {
+        worktree: String,
+        file: String,
+        #[serde(default)]
+        purpose: ReadPurpose,
+    },
+    /// Answers `image`: the project's configured background, read on the
+    /// Host. No background is `not_found`; a file that is not an image, or
+    /// is over 5 MiB, is `invalid`.
+    ProjectBackground {
+        project: String,
+    },
 }
 impl Request {
     pub fn capability(&self) -> Option<Capability> {
@@ -521,6 +564,8 @@ impl Request {
             Self::ProjectList | Self::ProjectGet { .. } => Some(Capability::projects()),
             Self::GitChanges { .. } => Some(Capability::git_status()),
             Self::GitDiff { .. } => Some(Capability::git_diff()),
+            Self::FileList { .. } | Self::FileRead { .. } => Some(Capability::files()),
+            Self::ProjectBackground { .. } => Some(Capability::project_assets()),
             Self::ProjectInspect { .. }
             | Self::ProjectAdd { .. }
             | Self::ProjectEdit { .. }
@@ -566,6 +611,9 @@ impl Request {
                     Response::Revision { .. }
                 )
                 | (Self::WorktreeAdd { .. }, Response::Worktree { .. })
+                | (Self::FileList { .. }, Response::Files { .. })
+                | (Self::FileRead { .. }, Response::File { .. })
+                | (Self::ProjectBackground { .. }, Response::Image { .. })
         ) || (!matches!(
             self,
             Self::Hello
@@ -589,6 +637,9 @@ impl Request {
                 | Self::ProjectArrange { .. }
                 | Self::ProjectRemove { .. }
                 | Self::WorktreeAdd { .. }
+                | Self::FileList { .. }
+                | Self::FileRead { .. }
+                | Self::ProjectBackground { .. }
         ) && matches!(reply, Response::Ok))
     }
 }
@@ -623,6 +674,10 @@ pub enum Response {
     /// Boxed, as `Project`. Same JSON.
     ProjectAdded { project: Box<HostProject>, revision: String },
     Worktree { worktree: HostWorktree },
+    Files { listing: HostListing },
+    /// Boxed, as `Project`. Same JSON.
+    File { file: Box<HostFile> },
+    Image { image: HostImage },
     SessionInventory { sessions: Vec<InventorySession> },
     SessionScreen { lines: Vec<String> },
     ConnectionStatus { version: String, protocol: u32 },
@@ -711,6 +766,22 @@ pub enum Message {
     Event {
         event: Event,
     },
+}
+
+mod opt_bytes {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use serde::{Deserialize, Deserializer, Serializer};
+    pub fn serialize<S: Serializer>(bytes: &Option<Vec<u8>>, serializer: S) -> Result<S::Ok, S::Error> {
+        match bytes {
+            Some(b) => serializer.serialize_some(&STANDARD.encode(b)),
+            None => serializer.serialize_none(),
+        }
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Vec<u8>>, D::Error> {
+        Option::<String>::deserialize(deserializer)?
+            .map(|s| STANDARD.decode(s).map_err(serde::de::Error::custom))
+            .transpose()
+    }
 }
 
 mod bytes {

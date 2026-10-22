@@ -154,21 +154,41 @@ pub(crate) async fn open_theme_folder() -> Result<(), String> {
     blocking(move || skiff_core::open::open_default(&path)).await
 }
 
-/// A background image's raw bytes. The page turns them into a blob URL.
+/// A project's background image from the selected Host (`project_assets@1`):
+/// bytes the Host checked, never a path read here. The page makes a blob URL.
 #[tauri::command]
-pub(crate) async fn read_image(path: PathBuf) -> Result<tauri::ipc::Response, String> {
-    let bytes = tokio::fs::read(&path).await.map_err(|e| format!("read {}: {e}", path.display()))?;
-    Ok(tauri::ipc::Response::new(bytes))
+pub(crate) async fn project_background(app: State<'_, App>, project: String) -> Result<tauri::ipc::Response, String> {
+    let image = crate::connection::data_read(&app, |c| async move { skiff_client::host::data::project_background(&c, &project).await }).await?;
+    Ok(tauri::ipc::Response::new(image.bytes))
 }
 
-/// One folder for the sidebar's file tree. Read here, not in the daemon:
-/// the tree is a view, and the daemon owns only sessions.
+/// One folder of a worktree for the sidebar's file tree, from the selected
+/// Host (`files@1`). `worktree` is the Host's; `dir` is relative to it.
 #[tauri::command]
-pub(crate) async fn list_dir(path: PathBuf) -> Result<Vec<skiff_core::files::Entry>, String> {
-    tokio::task::spawn_blocking(move || skiff_core::files::list_dir(&path))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(err)
+pub(crate) async fn list_files(app: State<'_, App>, worktree: String, dir: String) -> Result<skiff_host_api::HostListing, String> {
+    crate::connection::data_read(&app, |c| async move { skiff_client::host::data::file_list(&c, &worktree, &dir).await }).await
+}
+
+/// A file's preview from the selected Host: bounded text, an image's bytes,
+/// or what it is. Nothing is read or opened on this Mac.
+#[tauri::command]
+pub(crate) async fn read_file(app: State<'_, App>, worktree: String, file: String) -> Result<skiff_host_api::HostFile, String> {
+    use skiff_host_api::ReadPurpose;
+    crate::connection::data_read(&app, |c| async move { skiff_client::host::data::file_read(&c, &worktree, &file, ReadPurpose::Preview).await }).await
+}
+
+/// Open with for a Host's file: its bytes (5 MiB at most, checked by the
+/// Host) become a read-only copy that this app manages, and the copy opens
+/// in this Mac's default app. The Host's path never reaches an opener.
+#[tauri::command]
+pub(crate) async fn open_file_copy(app: State<'_, App>, worktree: String, file: String) -> Result<(), String> {
+    use skiff_host_api::ReadPurpose;
+    // Refused before anything is fetched.
+    crate::copies::copy_name(&file).map_err(err)?;
+    let name = file.clone();
+    let read = crate::connection::data_read(&app, |c| async move { skiff_client::host::data::file_read(&c, &worktree, &file, ReadPurpose::Copy).await }).await?;
+    let bytes = read.bytes.ok_or("The Host sent no bytes for this file.")?;
+    blocking(move || skiff_core::open::open_default(&crate::copies::save(&name, &bytes)?)).await
 }
 
 /// The changed files of one worktree, for the sidebar's Changes section.

@@ -10,7 +10,11 @@ export type Preview =
   /** A remote Host's diff: its git's text, in the page's own viewer. No command runs here. */
   | { kind: "host-diff"; wt: string; branch: string; file?: string; wait?: boolean }
   | { kind: "file"; path: string }
-  | { kind: "folder"; path: string };
+  /** A Host's file: its bounded preview from the Host, in the page's own viewer.
+   *  `path` is the Host's, shown only. `copy`: Enter opens a local copy. */
+  | { kind: "host-file"; wt: string; file: string; path: string; copy: boolean }
+  /** `local: false`: a remote Host's folder, with no file manager here to show it in. */
+  | { kind: "folder"; path: string; local?: boolean };
 
 export interface RowActs {
   preview?: Preview;

@@ -1,4 +1,4 @@
-# Host API — M0 contract, local M1a–M1g seams, M2 remote terminals, M3 remote lifecycle and the M4 data plane (reads, then project and worktree writes)
+# Host API — M0 contract, local M1a–M1g seams, M2 remote terminals, M3 remote lifecycle, the M4 data plane (reads, then project and worktree writes) and M5 files
 
 Tracking: [M0 #156](https://github.com/solutionscay/skiff/issues/156),
 [epic #155](https://github.com/solutionscay/skiff/issues/155).
@@ -1614,6 +1614,165 @@ worktree git of its own.
 - The M4 diff/recovery fixes (`c1f8f8b`) have no completed independent
   review.
 - Manual two-machine and CI acceptance for M2, M3 and M4.
+
+## M5 (first slice): files, previews, local copies and backgrounds
+
+Tracking: M5 child issue of [epic #155](https://github.com/solutionscay/skiff/issues/155).
+`skiff-host` serves a worktree's folders and files and a project's background
+as bytes. The app's Files tree, its file preview and the project background
+read them from the selected Host: This Mac and an SSH Host alike. A Host
+path never reaches this computer's filesystem calls or openers on a remote
+Host.
+
+### Contract (additive, API major 1)
+
+- **`files@1`**:
+  - `file_list { worktree, dir? }` answers `files { listing }`. `dir` is
+    relative to the worktree; empty or absent is the worktree itself.
+    `HostListing`: `entries` (`name`, `kind`: `dir`, `file`, `link` or
+    `other`), folders first, then by name, without `.git` and what the
+    Host's git ignores; `truncated` past 2000 entries.
+  - `file_read { worktree, file, purpose? }` answers `file { file }`.
+    `purpose` is `preview` (the default) or `copy`. `HostFile`: `content`
+    (`text`, `image`, `binary`, `link`), `size`, and as they apply `mime`,
+    `text`, `bytes` (base64), `truncated` and a link's `target`.
+- **`project_assets@1`**: `project_background { project }` answers
+  `image { image: { mime, bytes } }`.
+- Neither family is granted by another, and neither grants a write.
+  Golden shapes: `tests/fixtures/m5.json`.
+
+### How the Host reads (`skiff_core::files`)
+
+- **Where.** `worktree` is checked as for `git_changes` (a worktree of an
+  open project, or `not_found`), and held open first (`git::Root`). The
+  path must name that folder before and after. Each component below it
+  opens relative to the one before, with `O_NOFOLLOW`, and a type check
+  comes before any open (`git::open_beneath`). `..`, `.`, an absolute path
+  and a path through a link are `not_found`.
+- **Types.** A link is listed as `link` and previewed as its target. It is
+  never followed, and a copy of one is `invalid`. A FIFO, device or socket
+  is listed as `other` and never opened (`not_found` to read). Every open
+  is non-blocking.
+- **Content** is decided from the first bytes, never the name. A PNG, JPEG,
+  GIF, WebP, BMP or ICO signature is an image. Otherwise, as git decides, a
+  NUL in the first 8000 bytes is binary, and anything else is text. SVG is
+  text, so it is never drawn.
+- **Bounds.**
+  - text: 512 KiB, cut at a line end
+  - an image to show: up to 5 MiB, sent as bytes; larger is `truncated`
+    with no bytes
+  - binary: no bytes
+  - a copy: every byte up to 5 MiB, else `invalid` (also for a file that
+    grows past the limit while it is read)
+  - a listing: 2000 entries
+  - git's ignore check: 10 s per folder
+
+  Each reply fits in one 8 MiB frame.
+- **Ignored files.** `git check-ignore` runs in the held folder in batches,
+  with each path given as `./<path>`, so a name that starts with `:` is not
+  pathspec magic. If git fails, nothing is hidden, as before. A name that
+  git quotes (a control character, `"` or `\`) is shown.
+- **Backgrounds.** The Host reads the configured file (`background_file`).
+  It must be a regular file of at most 5 MiB whose bytes are an image, else
+  `invalid`. With no background set, the answer is `not_found`.
+
+### The app
+
+- **The Files tree** asks the Host (`list_files`) on This Mac and on an SSH
+  Host. Show files and its key are gated on `files`, not on "not remote".
+  A link row reads `name →` and does not open as a folder. A cut folder
+  says how many entries show. A listing from an older data connection is
+  dropped and asked again, and the data plane's recovery reads the open
+  folders again.
+- **Preview.**
+  - **This Mac:** a regular file or a link keeps Settings › Open with on
+    its own path (the Host is this Mac). A FIFO, device or socket shows
+    only in the Host's viewer.
+  - **Remote Host:** the peek shows the Host's preview in the page's own
+    viewer (`terminal/fileView.ts`). Text shows as text, never as markup.
+    An image draws from a blob of the bytes the Host sent, only for an
+    image type. Binary, link, cut and too-large files say what they are.
+    The folder card has no Show in file manager.
+- **Open with on a remote Host** (`open_file_copy`, `src-tauri/src/copies.rs`):
+  - Enter, a double-click or Open a copy fetches the file with `copy`
+    (5 MiB at most).
+  - The file is written as a new, read-only (`0400`) copy in
+    `$TMPDIR/skiff-copies-<uid>/<pid>/<stamp>/<name>`. Every folder is
+    `0700`. A shared or linked base folder is refused. On macOS the copy
+    carries the quarantine flag.
+  - Only the copy opens, in this computer's default app.
+  - Types that run or install something when opened (`.app`, `.command`,
+    `.pkg`, `.webloc`, `.desktop`, shell scripts and others) are refused
+    before anything is fetched.
+  - Each process keeps at most 32 copies. Its folder is removed when the
+    app exits. Folders of processes that no longer run are removed at
+    start.
+  - Configured `[open]` commands and peek terminal tools are not used for
+    copies: they need a path on this computer and a terminal.
+  - Edits to a copy stay local. There is no sync and no remote editor.
+- **Background** (`appearance/backdrop.ts`): `project_background` through
+  the Host, on This Mac too. A failed read is tried again after 30 s.
+  `read_image` and `list_dir` are gone: this computer has no command that
+  reads a Host's image or folder by path.
+
+### Tests
+
+- **Core** (`files.rs`):
+  - folders first, ignored files left out, a `:(glob)` name kept, a
+    link and a FIFO listed by type, and listing through a link, `..` or
+    a file refused
+  - 2000+ entries cut, and a swapped root refused for a list and a read
+  - text, image, fake `.png`, binary and link reads
+  - cut text, a large image without bytes, copy limits, and a FIFO or
+    `..` refused at once
+  - background validation
+- **Contract:** `m5.json` round trip, capability per request, one reply
+  kind each, defaults, refused malformed shapes.
+- **Service** (`skiff-host/tests/files.rs`, private state):
+  - over this computer's socket and a fake SSH forward, `file_list` and
+    `file_read` equal the core's answer
+  - a 5 MiB image and copy fit a frame
+  - typed refusals: `..`, absolute, through a link, a FIFO, a folder,
+    missing, too large, a link copy, a closed project, a parent folder and
+    `/`
+  - background bytes, `invalid` for a text background, `not_found` for none
+- **Real SSH** (`skiffd/tests/ssh_remote.rs`, loopback sshd): the Host's
+  listing and a copy read over the data forward, and `..` refused.
+- **Desktop** (`copies.rs`):
+  - names keep their type, and launcher types are refused
+  - copies are private, read-only, quarantined (macOS), kept to 32, and
+    removed on exit
+  - a dead process's copies are swept
+  - a shared or linked base folder is refused, with nothing written
+  - the command classification test is updated
+- **Page:**
+  - `files.test.ts`: both Hosts list through `files`, by worktree and
+    relative folder; a stale listing is dropped and asked again; a remote
+    file previews in the viewer and opens a copy; links and FIFOs never
+    open; This Mac keeps Open with
+  - `fileView.test.ts`: text not parsed, images only for image types,
+    and every note
+
+### Not yet (after this slice)
+
+- **Icon and background writes on a remote Host.** Reads are done: the
+  icon has been a data URL since M4, and the background now comes as
+  bytes. Choosing an image stays a This Mac command on a local path. A
+  remote Host needs an upload or a Host path chooser, kept Host-side.
+- **Reveal on a remote Host:** there is no file manager here for a Host
+  path. Copy path copies the Host path as text.
+- **`[open]` commands for remote copies.** These are copies opened with
+  the default app only. Running a configured app or a peek tool on a copy
+  needs a decision on terminal tools.
+- **Behavior changes on This Mac:**
+  - a linked folder in the tree no longer expands, since links are not
+    followed
+  - an ignored name that git quotes is now shown
+- Data-plane events: folders are read again on open, Refresh and recovery,
+  not pushed.
+- The M4 diff/recovery fixes (`c1f8f8b`) still have no completed
+  independent review. Manual two-machine and CI acceptance for M2–M5 are
+  still pending.
 
 ## M0 demo and handoff
 

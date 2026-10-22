@@ -1,6 +1,7 @@
 //! `skiff-host`: the Host's data-plane service (M4). It speaks the Host
 //! envelope on its own socket beside skiffd's and answers projects, Git
-//! status and diff text from the Host's own config and git, and is the
+//! status, diff text, worktree files (M5) and project backgrounds from the
+//! Host's own config, disk and git, and is the
 //! writer of the Host's `[[project]]` tables and project worktrees, through
 //! the same `skiff-core` code the app ran before. It holds no PTY and no session:
 //! restarting it never touches skiffd or a terminal (#62, M1f topology).
@@ -18,10 +19,11 @@ use std::{
     },
 };
 
-use skiff_core::{config::{self, ProjectConfig}, git, project, session::SessionInfo};
+use skiff_core::{config::{self, ProjectConfig}, files, git, project, session::SessionInfo};
 use skiff_host_api::{
-    Capability, ChangeStatus, Envelope, Error, Hello, Host, HostChange, HostDiff, HostFolder, HostId,
-    HostProject, HostWorktree, InstanceId, Limits, Message, ProjectEdit, Request, Response, API_MAJOR,
+    Capability, ChangeStatus, EntryKind, Envelope, Error, FileContent, Hello, Host, HostChange, HostDiff, HostEntry,
+    HostFile, HostFolder, HostId, HostImage, HostListing, HostProject, HostWorktree, InstanceId, Limits, Message,
+    ProjectEdit, ReadPurpose, Request, Response, API_MAJOR,
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
@@ -44,6 +46,8 @@ pub fn capabilities() -> Vec<Capability> {
         Capability::git_diff(),
         Capability::project_config(),
         Capability::worktrees(),
+        Capability::files(),
+        Capability::project_assets(),
     ]
 }
 
@@ -284,6 +288,33 @@ pub async fn answer(request: Request, hello: &Hello) -> Result<Response, Error> 
             let diff = git::diff_in(&root.map_err(failed)?, &worktree, file.as_deref()).map_err(failed)?;
             Ok(Response::Diff { diff: host_diff(diff) })
         }
+        Request::FileList { worktree, dir } => {
+            // As for GitChanges: held before the check, named after it.
+            let root = git::Root::open(Path::new(&worktree));
+            let worktree = known_worktree(&worktree)?;
+            let listing = files::list_in(&root.map_err(failed)?, &worktree, &dir).map_err(unread)?;
+            Ok(Response::Files { listing: host_listing(listing) })
+        }
+        Request::FileRead { worktree, file, purpose } => {
+            let root = git::Root::open(Path::new(&worktree));
+            let worktree = known_worktree(&worktree)?;
+            let purpose = match purpose {
+                ReadPurpose::Preview => files::Purpose::Preview,
+                ReadPurpose::Copy => files::Purpose::Copy,
+            };
+            let read = files::read_in(&root.map_err(failed)?, &worktree, &file, purpose).map_err(unread)?;
+            Ok(Response::File { file: Box::new(host_file(read)) })
+        }
+        Request::ProjectBackground { project } => {
+            let config = config()?;
+            let p = config.iter().find(|p| p.name == project).ok_or_else(|| Error::NotFound {
+                message: format!("no such project: {project}"),
+            })?;
+            let path = project::background_file(&p.path, p.background.as_deref())
+                .ok_or_else(|| Error::NotFound { message: format!("{project} has no background image on this Host") })?;
+            let (mime, bytes) = files::read_image(Path::new(&path)).map_err(unread)?;
+            Ok(Response::Image { image: HostImage { mime, bytes } })
+        }
         Request::ProjectInspect { path } => Ok(Response::Folder { folder: host_folder(config::inspect_folder(&host_folder_path(&path)?)) }),
         Request::ProjectAdd { path, revision, name, short, color } => {
             let path = host_folder_path(&path)?;
@@ -354,6 +385,16 @@ fn refused(e: anyhow::Error) -> Error {
             Error::Conflict { message }
         }
         _ => failed(e),
+    }
+}
+
+/// A refused file read as its typed error; anything else failed while it ran.
+fn unread(e: anyhow::Error) -> Error {
+    let message = format!("{e:#}");
+    match e.downcast_ref::<files::Refused>() {
+        Some(files::Refused::Missing(_)) => Error::NotFound { message },
+        Some(files::Refused::Invalid(_)) => Error::Invalid { message },
+        None => failed(e),
     }
 }
 
@@ -466,5 +507,41 @@ pub fn host_change(c: git::Change) -> HostChange {
         },
         added: c.added,
         removed: c.removed,
+    }
+}
+
+pub fn host_listing(l: files::Listing) -> HostListing {
+    HostListing {
+        entries: l
+            .entries
+            .into_iter()
+            .map(|e| HostEntry {
+                name: e.name,
+                kind: match e.kind {
+                    files::Kind::Dir => EntryKind::Dir,
+                    files::Kind::File => EntryKind::File,
+                    files::Kind::Link => EntryKind::Link,
+                    files::Kind::Other => EntryKind::Other,
+                },
+            })
+            .collect(),
+        truncated: l.truncated,
+    }
+}
+
+pub fn host_file(f: files::FileRead) -> HostFile {
+    HostFile {
+        content: match f.content {
+            files::Content::Text => FileContent::Text,
+            files::Content::Image => FileContent::Image,
+            files::Content::Binary => FileContent::Binary,
+            files::Content::Link => FileContent::Link,
+        },
+        size: f.size,
+        mime: f.mime,
+        text: f.text,
+        bytes: f.bytes,
+        truncated: f.truncated,
+        target: f.target,
     }
 }

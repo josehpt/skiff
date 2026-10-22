@@ -5,6 +5,7 @@ mod clipboard;
 mod connection;
 mod commands;
 mod config;
+mod copies;
 mod diagnostics;
 mod hosts;
 mod input;
@@ -53,7 +54,7 @@ const LOCAL_ONLY: &[&str] = &[
     "get_skiff_agent", "set_skiff_agent", "start_skiff_watch", "skiff_watch_log", "open_skiff_agent",
     "preview_skiff_folder", "change_skiff_folder", "ledger_rows",
     "init_repository", "set_project_icon", "set_project_background",
-    "read_image", "list_dir", "open_diff", "preview_file", "open_file", "reveal_file", "open_path",
+    "open_diff", "preview_file", "open_file", "reveal_file", "open_path",
     "list_agent_sessions", "set_agents", "set_agent_command", "rename_agent", "remove_agent",
     "restore_agents", "config_path", "open_config", "install_cli", "restart_daemon", "reload_daemon",
 ];
@@ -73,6 +74,8 @@ pub fn run() {
         .manage(quit::Guard::default())
         // The window starts hidden: GTK takes a header bar only before it shows.
         .setup(|app| {
+            // Copies of Host files left by an app that did not quit cleanly.
+            std::thread::spawn(copies::sweep);
             // Endpoint-local lifecycle: a remote Host's CLI is its own.
             if let Some(local) = app.state::<App>().selection().process_control() {
                 std::thread::spawn(move || cli_path::sync(&local));
@@ -145,8 +148,10 @@ pub fn run() {
             config::remove_project,
             config::set_project_background,
             config::set_project_background_opacity,
-            commands::read_image,
-            commands::list_dir,
+            commands::project_background,
+            commands::list_files,
+            commands::read_file,
+            commands::open_file_copy,
             commands::git_changes,
             commands::git_diff,
             connection::data_plane_status,
@@ -205,6 +210,9 @@ pub fn run() {
             if let tauri::RunEvent::ExitRequested { api, .. } = &_event {
                 quit::requested(_app, api);
             }
+            if let tauri::RunEvent::Exit = &_event {
+                copies::cleanup();
+            }
             // A workspace file opened from Finder while Skiff runs, or to start it.
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Opened { urls } = &_event {
@@ -249,20 +257,21 @@ mod tests {
         }
         // Session and terminal commands go through the selected Host, and are
         // gated by its capabilities instead.
-        for host in ["list_sessions", "subscribe_events", "subscribe_output", "pty_write", "pty_resize", "session_screen", "create_session", "kill_session", "rename_session", "list_groups", "save_group", "delete_group", "list_agents", "daemon_status", "host_capabilities", "list_hosts", "select_host", "list_projects", "get_project", "git_changes", "git_diff", "data_plane_status",
+        for host in ["list_sessions", "subscribe_events", "subscribe_output", "pty_write", "pty_resize", "session_screen", "create_session", "kill_session", "rename_session", "list_groups", "save_group", "delete_group", "list_agents", "daemon_status", "host_capabilities", "list_hosts", "select_host", "list_projects", "get_project", "git_changes", "git_diff", "data_plane_status", "list_files", "read_file", "open_file_copy", "project_background",
             "add_worktree", "remove_worktree", "add_project", "inspect_folder", "set_project_short", "set_project_fleet", "set_project_color", "set_project_closed", "remove_project", "set_project_background_opacity", "set_project_changes", "set_project_files", "set_project_theme", "reorder_projects"] {
             assert!(!super::LOCAL_ONLY.contains(&host), "{host}");
         }
         // M4: project reads and changes and Git status go to the selected
         // Host's data plane (`skiff-host`), never to this Mac's config or git.
-        // Image paths, `git init` and every opener of this Mac stay listed.
-        for local in ["open_path", "open_file", "reveal_file", "open_diff", "preview_file", "read_image", "list_dir", "set_project_icon", "set_project_background", "init_repository", "ledger_rows", "get_skiff_agent", "open_skiff_agent", "start_skiff_watch", "restart_daemon", "reload_daemon", "install_cli", "list_agent_sessions", "set_agents", "set_agent_command"] {
+        // M5: files and backgrounds come from the Host's data plane too.
+        // Icon and background paths, `git init` and every opener of this Mac stay listed.
+        for local in ["open_path", "open_file", "reveal_file", "open_diff", "preview_file", "set_project_icon", "set_project_background", "init_repository", "ledger_rows", "get_skiff_agent", "open_skiff_agent", "start_skiff_watch", "restart_daemon", "reload_daemon", "install_cli", "list_agent_sessions", "set_agents", "set_agent_command"] {
             assert!(super::LOCAL_ONLY.contains(&local), "{local}");
         }
         // A command added later must be placed on one side or the other.
         let allowed = ["set_menu", "quit_app", "guard_quit", "menu_layout", "set_menu_layout", "set_window_dark", "clipboard_write", "clipboard_read",
             "daemon_status", "host_capabilities", "list_hosts", "add_host", "remove_host", "select_host", "set_host_clipboard", "host_clipboard", "accept_host_identity",
-            "list_sessions", "create_session", "pty_write", "pty_resize", "session_seen", "kill_session", "rename_session", "set_session_theme", "list_agents", "list_projects", "get_project", "git_changes", "git_diff", "data_plane_status",
+            "list_sessions", "create_session", "pty_write", "pty_resize", "session_seen", "kill_session", "rename_session", "set_session_theme", "list_agents", "list_projects", "get_project", "git_changes", "git_diff", "data_plane_status", "list_files", "read_file", "open_file_copy", "project_background",
             "add_worktree", "remove_worktree", "add_project", "inspect_folder", "set_project_short", "set_project_fleet", "set_project_color", "set_project_closed", "remove_project", "set_project_background_opacity", "set_project_changes", "set_project_files", "set_project_theme", "reorder_projects",
             "open_settings", "set_open", "set_open_peek", "open_url", "list_themes", "import_themes", "open_theme_folder", "get_appearance",
             "memory_usage", "get_keys", "trace_info", "trace_write", "trace_set", "system_load", "set_appearance", "set_font_size", "set_mission_filter",

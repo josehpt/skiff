@@ -149,9 +149,9 @@ const COUNT_LIMIT: u64 = 1 << 20;
 /// The worktree folder held open, so a count reads the folder that was
 /// checked even if its path is swapped for another folder or a link.
 pub struct Root {
-    dir: std::fs::File,
+    pub(crate) dir: std::fs::File,
     #[cfg(not(unix))]
-    path: PathBuf,
+    pub(crate) path: PathBuf,
 }
 
 impl Root {
@@ -174,7 +174,7 @@ impl Root {
     }
 
     /// Fails unless `dir` still names this folder.
-    fn check(&self, dir: &Path) -> Result<()> {
+    pub(crate) fn check(&self, dir: &Path) -> Result<()> {
         if !same_file(&self.dir.metadata()?, &std::fs::metadata(dir)?) {
             bail!("{} was replaced while it was read", dir.display());
         }
@@ -471,13 +471,13 @@ fn git_in(root: &Root, dir: &Path) -> Command {
 
 /// When a run, or several that share it, must be done.
 #[derive(Clone, Copy)]
-struct Deadline {
+pub(crate) struct Deadline {
     at: Instant,
     after: Duration,
 }
 
 impl Deadline {
-    fn after(after: Duration) -> Deadline {
+    pub(crate) fn after(after: Duration) -> Deadline {
         Deadline { at: Instant::now() + after, after }
     }
 }
@@ -664,7 +664,7 @@ fn count_lines(root: &Root, rel: &str) -> Option<u32> {
     Some((n + last as usize) as u32)
 }
 
-enum Beneath {
+pub(crate) enum Beneath {
     File(std::fs::File),
     /// The last component is a symlink, with its target. It was not followed.
     Symlink(Vec<u8>),
@@ -676,7 +676,7 @@ enum Beneath {
 /// `root`. The file opens non-blocking: a FIFO that slipped in fails its
 /// type check, not a read.
 #[cfg(unix)]
-fn open_beneath(root: &Root, rel: &str) -> Option<Beneath> {
+pub(crate) fn open_beneath(root: &Root, rel: &str) -> Option<Beneath> {
     use std::{ffi::CString, os::fd::AsRawFd, os::unix::ffi::OsStrExt, os::fd::FromRawFd, path::Component};
     let parts: Vec<_> = Path::new(rel).components().collect();
     if parts.is_empty() || parts.iter().any(|c| !matches!(c, Component::Normal(_))) {
@@ -733,7 +733,7 @@ fn open_beneath(root: &Root, rel: &str) -> Option<Beneath> {
 }
 
 #[cfg(not(unix))]
-fn open_beneath(root: &Root, rel: &str) -> Option<Beneath> {
+pub(crate) fn open_beneath(root: &Root, rel: &str) -> Option<Beneath> {
     let path = root.path.join(rel);
     let meta = std::fs::symlink_metadata(&path).ok()?;
     if meta.file_type().is_symlink() {
@@ -741,6 +741,27 @@ fn open_beneath(root: &Root, rel: &str) -> Option<Beneath> {
         return Some(Beneath::Symlink(target));
     }
     meta.is_file().then(|| std::fs::File::open(path).ok().map(Beneath::File)).flatten()
+}
+
+/// Which of `paths`, relative to `root`, git ignores, as [`ignored`] finds
+/// them but run in the held folder and bounded by `deadline`. Any failure, such as no repository, ignores nothing.
+pub(crate) fn ignored_in(root: &Root, dir: &Path, paths: &[String], deadline: Deadline) -> HashSet<String> {
+    let mut found = HashSet::new();
+    // In batches, so no command line grows past the system's limit.
+    for batch in paths.chunks(256) {
+        let mut cmd = git_in(root, dir);
+        // `-z` needs stdin, which a bounded run closes: one path per line,
+        // unquoted. A name git still quotes (a control character, `"` or
+        // `\\`) does not match, so it is shown rather than hidden.
+        // `./` first, so a name that starts with `:` is not pathspec magic.
+        cmd.args(["-c", "core.quotePath=false", "check-ignore", "--"])
+            .args(batch.iter().map(|p| format!("./{p}")))
+            .env("GIT_OPTIONAL_LOCKS", "0");
+        // git exits 1 when nothing is ignored, and says nothing: no batch is lost to it.
+        let Ok((out, _)) = bounded(cmd, PREFLIGHT_LIMIT * 4, deadline) else { continue };
+        found.extend(String::from_utf8_lossy(&out).lines().filter_map(|s| s.strip_prefix("./")).map(str::to_string));
+    }
+    found
 }
 
 /// Which of `paths`, relative to `dir`, git ignores. A folder needs a

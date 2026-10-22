@@ -22,6 +22,14 @@
   font: 500 calc(11px * var(--zoom, 1)) var(--mono); cursor: pointer;
 }
 .peek-esc:hover { border-color: var(--text-3); color: var(--text); }
+/* A Host file's action, left of Esc: opens a local copy. Enter runs it. */
+.peek-open {
+  padding: 0 calc(6 * var(--u)); height: calc(20 * var(--u));
+  border: 1px solid var(--rule-strong); background: var(--bg-raised); color: var(--text-2);
+  font: 500 calc(11px * var(--zoom, 1)) var(--font); cursor: pointer;
+}
+.peek-open:hover { border-color: var(--text-3); color: var(--text); }
+.peek-open-key { font-family: var(--mono); color: var(--pc); }
 .peek-body { flex-grow: 1; min-height: 0; padding: calc(8 * var(--u)) 0 0 calc(12 * var(--u)); }
 .file-preview-body { flex-grow: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: calc(14 * var(--u)); }
 /* A clickable Enter keycap. Pressing it drops it 2px, the card's only motion. */
@@ -41,6 +49,8 @@ button.file-preview-key:active:not(:disabled) { background-image: none; box-shad
 .diff-view-body { flex-grow: 1; min-height: 0; overflow: auto; padding: calc(8 * var(--u)) calc(16 * var(--u)); outline: none; }
 .diff-view-note { padding: calc(4 * var(--u)) 0; color: var(--text-2); font-size: calc(12px * var(--zoom, 1)); }
 .diff-view-error { color: var(--error); white-space: pre-wrap; }
+/* A Host's image, from the bytes it sent: never wider or taller than the viewer. */
+.file-view-image { display: block; margin-top: calc(8 * var(--u)); max-width: 100%; max-height: calc(100% - calc(32 * var(--u))); object-fit: contain; }
 .diff-text { margin: calc(4 * var(--u)) 0 0; font: calc(13px * var(--zoom, 1)) / 1.4 var(--mono); color: var(--text); white-space: pre; tab-size: 4; }
 .diff-text .dl-file { color: var(--text); font-weight: 700; }
 .diff-text .dl-meta, .diff-text .dl-hunk { color: var(--text-3); }

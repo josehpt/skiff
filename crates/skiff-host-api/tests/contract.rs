@@ -504,3 +504,68 @@ fn m4_project_and_worktree_changes_have_their_own_capabilities_and_golden_shapes
         assert!(serde_json::from_value::<Request>(bad.clone()).is_err(), "{bad}");
     }
 }
+
+#[test]
+fn m5_files_and_assets_are_read_only_families_of_their_own() {
+    let fixture: Value = serde_json::from_str(include_str!("fixtures/m5.json")).unwrap();
+    let files = Capability::files();
+    let assets = Capability::project_assets();
+    assert_eq!(serde_json::to_value(&files).unwrap(), fixture["capabilities"]["files"]);
+    assert_eq!(serde_json::to_value(&assets).unwrap(), fixture["capabilities"]["project_assets"]);
+    let listing = Response::Files { listing: skiff_host_api::HostListing { entries: vec![], truncated: false } };
+    let file = Response::File {
+        file: Box::new(skiff_host_api::HostFile {
+            content: skiff_host_api::FileContent::Binary,
+            size: 0,
+            mime: None,
+            text: None,
+            bytes: None,
+            truncated: false,
+            target: None,
+        }),
+    };
+    let image = Response::Image { image: skiff_host_api::HostImage { mime: "image/png".into(), bytes: vec![] } };
+    for (key, cap) in [("file_requests", &files), ("asset_requests", &assets)] {
+        for value in fixture[key].as_array().unwrap() {
+            let request: Request = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(&request).unwrap(), *value);
+            assert_eq!(request.capability().as_ref(), Some(cap));
+            // Exactly one reply kind each, never Ok.
+            assert!(!request.accepts(&Response::Ok));
+            assert_eq!(request.accepts(&listing), matches!(request, Request::FileList { .. }), "{value}");
+            assert_eq!(request.accepts(&file), matches!(request, Request::FileRead { .. }), "{value}");
+            assert_eq!(request.accepts(&image), matches!(request, Request::ProjectBackground { .. }), "{value}");
+        }
+    }
+    for value in fixture["replies"].as_array().unwrap() {
+        let message: Message = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&message).unwrap(), *value);
+    }
+    // Neither family is granted by another, nor grants a write or Git.
+    for other in [Capability::projects(), Capability::git_status(), Capability::git_diff(), Capability::project_config(), Capability::worktrees()] {
+        assert!(other != files && other != assets);
+    }
+    assert_ne!(files, assets);
+    // Without `dir` the worktree itself; without `purpose`, a preview.
+    let top: Request = serde_json::from_value(json!({"cmd":"file_list","worktree":"/w"})).unwrap();
+    assert_eq!(top, Request::FileList { worktree: "/w".into(), dir: String::new() });
+    let read: Request = serde_json::from_value(json!({"cmd":"file_read","worktree":"/w","file":"a"})).unwrap();
+    assert_eq!(read, Request::FileRead { worktree: "/w".into(), file: "a".into(), purpose: skiff_host_api::ReadPurpose::Preview });
+    for bad in [
+        json!({"cmd":"file_read","worktree":"/w"}),
+        json!({"cmd":"file_read","worktree":"/w","file":"a","purpose":"write"}),
+        json!({"cmd":"file_list","dir":"a"}),
+        json!({"cmd":"project_background"}),
+    ] {
+        assert!(serde_json::from_value::<Request>(bad.clone()).is_err(), "{bad}");
+    }
+    for bad in [
+        json!({"kind":"file","file":{"content":"text","size":1}}),
+        json!({"kind":"file","file":{"content":"script","size":1,"truncated":false}}),
+        json!({"kind":"file","file":{"content":"image","size":1,"truncated":false,"bytes":"not base64!"}}),
+        json!({"kind":"files","listing":{"entries":[{"name":"a","kind":"socket"}],"truncated":false}}),
+        json!({"kind":"image","image":{"mime":"image/png"}}),
+    ] {
+        assert!(serde_json::from_value::<Response>(bad.clone()).is_err(), "{bad}");
+    }
+}

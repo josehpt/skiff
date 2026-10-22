@@ -43,8 +43,9 @@ import { FONT, TERM_THEME } from "./terminalRuntime";
 import { hostInvoke } from "../app/hostCaps";
 import { dataEpoch } from "../app/dataPlane";
 import { hostName } from "../app/hosts";
-import type { HostDiff } from "../platform/types";
+import type { HostDiff, HostFile } from "../platform/types";
 import { diffBody, diffState } from "./diffView";
+import { fileBody } from "./fileView";
 
 /** Where to find tools for a row that has none. */
 export const TOOLS_URL = "https://github.com/solutionscay/skiff/wiki/Open-with";
@@ -96,7 +97,9 @@ let gen = 0;
 /** The card over the panes. Under a shown command it is hidden. */
 let card: HTMLElement | null = null;
 /** The card's own action: the Enter keycap. Its Esc keycap is not one. */
-const cardAction = () => card?.querySelector<HTMLButtonElement>("button.file-preview-key") ?? null;
+const cardAction = () => card?.querySelector<HTMLButtonElement>("button.file-preview-key, button.peek-open") ?? null;
+/** The blob URL of a Host image on the card, revoked when the card goes. */
+let cardUrl: string | null = null;
 /** The command of the active preview. */
 let open: Peek | null = null;
 /** File tools kept running off screen while another row is current. */
@@ -181,12 +184,15 @@ export function syncPreview() {
 
 function begin(mine: number, t: Preview, fresh = false) {
   if (t.kind === "folder") {
-    showCard(mine, "folder", t.path, "Show in file manager", () => openPath(t.path));
+    if (t.local === false) showCard(mine, "folder", t.path);
+    else showCard(mine, "folder", t.path, "Show in file manager", () => openPath(t.path));
   } else if (t.kind === "host-diff" && t.wait && !fresh) {
     const key = active!.key;
     showCard(mine, "diff", `${t.wt}/${t.file ?? "All changes"}`, "Review all changes", () => startPreview(key, true, true));
   } else if (t.kind === "host-diff") {
     showHostDiff(mine, t);
+  } else if (t.kind === "host-file") {
+    showHostFile(mine, t);
   } else if (t.kind === "diff" && t.wait && !fresh) {
     // Landing on the row shows the card. Enter, or Review all changes, runs the diff.
     const key = active!.key;
@@ -365,6 +371,8 @@ function repaintPanes() {
 function clearCard() {
   card?.remove();
   card = null;
+  if (cardUrl) URL.revokeObjectURL(cardUrl);
+  cardUrl = null;
 }
 
 /** A card's frame: its head, with the kind, the name, its folder and Esc. */
@@ -454,11 +462,57 @@ function showHostDiff(mine: number, t: HostDiffPreview) {
     });
 }
 
-/** The data plane is back: a remote diff on screen is read again from it. */
+type HostFilePreview = Extract<Preview, { kind: "host-file" }>;
+
+/** Opens a local copy of a Host's file in this Mac's default app. The Host's path never reaches an opener. */
+export function openHostCopy(wt: string, file: string) {
+  hostInvoke("files", "open_file_copy", { worktree: wt, file }).catch(showError);
+}
+
+/**
+ * A Host's file: the viewer shows at once, says it loads, then shows the
+ * Host's bounded preview or why there is none. Enter opens a local copy.
+ * A reply for a row the user left shows nothing; one from an older data
+ * connection is asked again.
+ */
+function showHostFile(mine: number, t: HostFilePreview) {
+  if (!live(mine)) return;
+  const el = cardFrame("file", t.path, "peek diff-view file-view");
+  if (t.copy) {
+    const open = button("peek-open", "", () => openHostCopy(t.wt, t.file));
+    open.title = "Open a copy in this Mac's default app (Enter)";
+    open.setAttribute("aria-label", "Open a copy");
+    open.append(h("span", "peek-open-key", "Enter"), " Open a copy");
+    el.querySelector(".peek-esc")?.before(open);
+  }
+  el.append(diffState(`Loading the file from ${hostName()}…`));
+  mountCard(el);
+  const at = dataEpoch();
+  const shows = () => live(mine) && card === el;
+  const fill = (body: HTMLElement) => {
+    const hadKeys = el.contains(document.activeElement);
+    el.querySelector(".diff-view-body")?.replaceWith(body);
+    if (hadKeys || active?.keys) body.focus();
+  };
+  hostInvoke<HostFile>("files", "read_file", { worktree: t.wt, file: t.file })
+    .then((f) => {
+      if (!shows()) return;
+      if (at !== dataEpoch()) return showHostFile(mine, t);
+      fill(fileBody(f, (b) => (cardUrl = URL.createObjectURL(b))));
+    })
+    .catch((e) => {
+      if (!shows()) return console.error(e);
+      if (at !== dataEpoch()) return showHostFile(mine, t);
+      fill(diffState(`No preview: ${String(e)}`, true));
+    });
+}
+
+/** The data plane is back: a Host diff or file on screen is read again from it. */
 export function refreshHostDiff() {
   if (!active || active.closed || !card?.classList.contains("diff-view")) return;
   const t = rowActs(active.key)?.preview;
   if (t?.kind === "host-diff") showHostDiff(active.gen, t);
+  if (t?.kind === "host-file") showHostFile(active.gen, t);
 }
 
 // ── Commands ────────────────────────────────────────────────────────────────

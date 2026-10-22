@@ -228,7 +228,7 @@ export function projectMenu(p: Project, x: number, y: number) {
     edits && { icon: "tools-sparkles", label: "Project theme…", hint: keyLabel("theme"), run: () => void projectThemeMenu(p) },
     local && { icon: "playback-image", label: "Background…", sub: backgroundEntries(p) },
     edits && { icon: "code-git-branch", label: showsChanges(p) ? "Hide changes" : "Show changes", hint: keyLabel("project-changes"), run: run["project-changes"] },
-    local && edits && { icon: "documents-folder-open", label: showsFiles(p) ? "Hide files" : "Show files", hint: keyLabel("project-files"), run: run["project-files"] },
+    edits && hostCan("files") && { icon: "documents-folder-open", label: showsFiles(p) ? "Hide files" : "Show files", hint: keyLabel("project-files"), run: run["project-files"] },
     ...(local ? projectWorkspaceEntries(p) : []),
     ...(edits ? closeEntries(p) : []),
   ];

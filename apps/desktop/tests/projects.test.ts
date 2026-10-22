@@ -40,7 +40,7 @@ function page(o: { remote: boolean; caps: string[]; fail?: string; capsFail?: st
       "./dataPlane": o.dataPlane ?? {},
       "../terminal/peek": { refreshHostDiff() {} },
       "../diagnostics/stalls": { work() {} },
-      "../workspace/files": { filesFrom: (l: any[]) => void calls.push(`files ${l.filter((p) => p.files).map((p) => p.name)}`) },
+      "../workspace/files": { filesFrom: (l: any[]) => void calls.push(`files ${l.filter((p) => p.files).map((p) => p.name)}`), reloadFiles() {} },
       "../workspace/changes": { reloadChanges() {} },
       "../appearance/themes": { projectThemesFrom: (l: any[]) => void calls.push(`themes ${l.filter((p) => p.theme).map((p) => `${p.name}=${p.theme}`)}`) },
       "./skiffAgent": { loadSkiffAgent: async () => void calls.push("get_skiff_agent") },

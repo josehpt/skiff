@@ -16,8 +16,8 @@ use std::{
 };
 
 use skiff_host_api::{
-    Error, Hello, HostChange, HostDiff, HostFolder, HostId, HostProject, HostWorktree, ProjectEdit, ProjectFleet, Request,
-    Response,
+    Error, Hello, HostChange, HostDiff, HostFile, HostFolder, HostId, HostImage, HostListing, HostProject, HostWorktree,
+    ProjectEdit, ProjectFleet, ReadPurpose, Request, Response,
 };
 use tokio::net::UnixStream;
 
@@ -169,6 +169,30 @@ pub async fn git_changes(c: &HostConnection, worktree: &str) -> Result<Vec<HostC
 pub async fn git_diff(c: &HostConnection, worktree: &str, file: Option<&str>) -> Result<HostDiff, Error> {
     match c.request(Request::GitDiff { worktree: worktree.into(), file: file.map(Into::into) }).await? {
         Response::Diff { diff } => Ok(diff),
+        _ => unreachable!("checked by Request::accepts"),
+    }
+}
+
+/// The folder `dir` (relative; empty for the worktree itself) of `worktree`.
+pub async fn file_list(c: &HostConnection, worktree: &str, dir: &str) -> Result<HostListing, Error> {
+    match c.request(Request::FileList { worktree: worktree.into(), dir: dir.into() }).await? {
+        Response::Files { listing } => Ok(listing),
+        _ => unreachable!("checked by Request::accepts"),
+    }
+}
+
+/// `file` (relative) of `worktree`, read on the Host for `purpose`.
+pub async fn file_read(c: &HostConnection, worktree: &str, file: &str, purpose: ReadPurpose) -> Result<HostFile, Error> {
+    match c.request(Request::FileRead { worktree: worktree.into(), file: file.into(), purpose }).await? {
+        Response::File { file } => Ok(*file),
+        _ => unreachable!("checked by Request::accepts"),
+    }
+}
+
+/// The project's background image, as bytes the Host checked.
+pub async fn project_background(c: &HostConnection, project: &str) -> Result<HostImage, Error> {
+    match c.request(Request::ProjectBackground { project: project.into() }).await? {
+        Response::Image { image } => Ok(image),
         _ => unreachable!("checked by Request::accepts"),
     }
 }

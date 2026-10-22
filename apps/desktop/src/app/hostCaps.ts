@@ -16,7 +16,9 @@ export type HostCap =
   | "git_status"
   | "git_diff"
   | "project_config"
-  | "worktrees";
+  | "worktrees"
+  | "files"
+  | "project_assets";
 
 /** The major of each capability that this page speaks. */
 const MAJOR: Record<HostCap, number> = {
@@ -32,6 +34,8 @@ const MAJOR: Record<HostCap, number> = {
   git_diff: 1,
   project_config: 1,
   worktrees: 1,
+  files: 1,
+  project_assets: 1,
 };
 
 /** What each capability offers, for the refusal. */
@@ -48,6 +52,8 @@ const OFFERS: Record<HostCap, string> = {
   git_diff: "diffs",
   project_config: "changes to its projects",
   worktrees: "new or removed worktrees",
+  files: "its files",
+  project_assets: "project images",
 };
 
 /** `name@major` of the selected Host. `null` until the first answer. */

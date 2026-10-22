@@ -109,8 +109,8 @@ export function runAction(a: Action) {
     case "project-color":
     case "project-changes":
     case "project-files": {
-      // The Host keeps these settings. The Files tree reads this Mac's folders (M5).
-      if (!hostCan("project_config") || (a === "project-files" && isRemote())) return;
+      // The Host keeps these settings, and lists the Files tree (`files@1`).
+      if (!hostCan("project_config") || (a === "project-files" && !hostCan("files"))) return;
       const p = currentProject();
       return p ? projectRun(p)[a]() : undefined;
     }

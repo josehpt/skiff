@@ -20,8 +20,9 @@
  * A click on a row does the main action for its state: open the pane or the
  * result. Small icons at the right edge do the rest, only when they apply:
  * the pane or the result. The panel never writes: only Skipper changes rows.
- * No row has a menu. The rows come read-only from the backend, again on each
- * change to `ledger.db`.
+ * No row has a menu. The rows come read-only from the selected Host
+ * (`ledger@1`), again on each change to its ledger. A result shows in the
+ * page's own viewer, read by the Host from its row: no path opens here.
  *
  * An open workspace (#154) filters the rows by their project: its projects'
  * work, and work with no project. A plan shows by its own project or a visible
@@ -32,7 +33,6 @@
  * the tasks that need them. The fold stays in localStorage on this machine.
  * A fold or an unfold slides the width; a saved fold at start does not.
  */
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { keyLabel } from "../app/keys";
 import { render } from "../app/renderRequest";
@@ -40,7 +40,8 @@ import { skiffAgentSession } from "../app/skiffAgent";
 import { S, sessions } from "../app/state";
 import { shownIds } from "../app/stateQueries";
 import type { SessionInfo } from "../platform/types";
-import { openPath, previewToken } from "../terminal/peek";
+import { openLedgerResult, previewToken } from "../terminal/peek";
+import { hostInvoke } from "../app/hostCaps";
 import { holdFits, releaseFits } from "../terminal/terminal";
 import { panes } from "../terminal/terminalState";
 import type { Action } from "../app/keys";
@@ -66,12 +67,12 @@ interface Entry {
   /** The short title Skipper gave it. */
   title: string | null;
   state: "sent" | "pending" | "blocked" | "done";
-  result_path: string | null;
   updated_at: string;
   /** When the person closed the work. Only a plan, or a task with no plan, has it. */
   closed_at: string | null;
   /** The pane is on another daemon. */
   elsewhere?: boolean;
+  /** The Host can show the result. */
   result_exists: boolean;
 }
 
@@ -86,7 +87,7 @@ const URGENT: State[] = ["approval", "blocked", "interrupted", "gone", "exited"]
 /** The order in Open: needs the person, then done, then the rest. */
 const rank = (st: State) => (NEED[st] ? 0 : st === "done" ? 1 : 2);
 
-/** Finished keeps this many items. A plan counts as one. The backend reads no more. */
+/** Finished keeps this many items. A plan counts as one. The Host reads no more. */
 const KEEP = 100;
 
 /** A task as the panel shows it. */
@@ -117,7 +118,7 @@ let loaded = false;
 
 export async function loadLedger() {
   try {
-    rows = await invoke<Entry[]>("ledger_rows");
+    rows = await hostInvoke<Entry[]>("ledger", "ledger_rows");
     error = null;
   } catch (e) {
     rows = [];
@@ -351,9 +352,9 @@ interface Acts {
 let ours = 0;
 
 const result = (r: Entry) =>
-  r.result_exists && r.result_path
+  r.result_exists
     ? () => {
-        openPath(r.result_path!);
+        openLedgerResult(r.uid, titleOf(r));
         ours = previewToken();
       }
     : null;

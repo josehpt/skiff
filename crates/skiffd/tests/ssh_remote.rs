@@ -500,6 +500,24 @@ async fn remote_projects_and_git_status_come_from_the_hosts_data_plane_over_a_re
     std::fs::write(repo.join("a.txt"), "one\ntwo\n").unwrap();
     std::fs::create_dir_all(f.dir.join("config")).unwrap();
     f.write("config/projects.toml", &format!("[[project]]\nname = \"on the Host\"\npath = \"{}\"\nfleet = \"far\"\n", repo.display()));
+    // M6: a private ledger with one result inside its folder and one outside.
+    let ledger = f.dir.join("agent/ledger.db");
+    std::fs::create_dir_all(f.dir.join("agent/results")).unwrap();
+    std::fs::write(f.dir.join("agent/results/r.md"), "# Result\n").unwrap();
+    let inside = f.dir.join("agent/results/r.md").display().to_string();
+    let outside = f.dir.join("config/projects.toml").display().to_string();
+    let sql = format!(
+        "CREATE TABLE tasks (id INTEGER PRIMARY KEY, uid TEXT UNIQUE, kind TEXT, parent TEXT, pane_id TEXT, pane_gen INTEGER, project TEXT, task TEXT,
+           sent_at TEXT, state TEXT, result_path TEXT, ref TEXT, updated_at TEXT, type TEXT, socket TEXT, reported_at TEXT, title TEXT, closed_at TEXT);
+         INSERT INTO tasks (uid, kind, project, task, sent_at, state, result_path, updated_at) VALUES ('aaaa0001', 'task', '', 'in', 'x', 'done', '{inside}', 'x');
+         INSERT INTO tasks (uid, kind, project, task, sent_at, state, result_path, updated_at) VALUES ('aaaa0002', 'task', '', 'out', 'x', 'done', '{outside}', 'x');
+         PRAGMA user_version = 7;"
+    );
+    let made = Command::new("sqlite3").arg(&ledger).arg(sql).output();
+    let ledger_made = made.is_ok_and(|o| o.status.success());
+    if !ledger_made {
+        eprintln!("skipped the M6 ledger check: no sqlite3");
+    }
 
     let binary = std::env::var_os("SKIFF_HOST_BIN").map(PathBuf::from).unwrap_or_else(|| Path::new(env!("CARGO_BIN_EXE_skiffd")).with_file_name("skiff-host"));
     assert!(binary.is_file(), "build skiff-host first: cargo build -p skiff-host (or set SKIFF_HOST_BIN)");
@@ -508,6 +526,7 @@ async fn remote_projects_and_git_status_come_from_the_hosts_data_plane_over_a_re
             .arg("--session-socket")
             .arg(f.socket())
             .env("SKIFF_CONFIG", f.dir.join("config/projects.toml"))
+            .env("SKIFF_LEDGER", &ledger)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(std::fs::File::options().create(true).append(true).open(f.dir.join("skiff-host.log")).unwrap())
@@ -555,6 +574,16 @@ async fn remote_projects_and_git_status_come_from_the_hosts_data_plane_over_a_re
     let read = data::file_read(&c, &worktree, "a.txt", skiff_host_api::ReadPurpose::Copy).await.unwrap();
     assert_eq!(read.bytes.as_deref(), Some(b"one\ntwo\n".as_slice()));
     assert!(matches!(data::file_read(&c, &worktree, "../x", skiff_host_api::ReadPurpose::Preview).await, Err(skiff_host_api::Error::NotFound { .. })));
+    // M6: the Host's ledger rows and a result by its row, over the same forward;
+    // a result outside the ledger's folder is not served.
+    if ledger_made {
+        let rows = data::ledger_rows(&c).await.unwrap();
+        assert_eq!(rows.iter().map(|r| (r.uid.as_str(), r.result_exists)).collect::<Vec<_>>(), [("aaaa0001", true), ("aaaa0002", false)]);
+        assert_eq!(data::ledger_result(&c, "aaaa0001").await.unwrap().text.as_deref(), Some("# Result\n"));
+        assert!(matches!(data::ledger_result(&c, "aaaa0002").await, Err(skiff_host_api::Error::NotFound { .. })));
+        assert!(!data::ledger_stamp(&c).await.unwrap().is_empty());
+        assert!(data::skipper_settings(&c).await.is_ok());
+    }
 
     // A terminal on the session plane, then the data plane stops on the Host.
     let spec = SessionSpec { cwd: Some(repo.clone()), cols: 80, rows: 24, ..Default::default() };

@@ -203,6 +203,56 @@ pub fn rows(db: &Connection, where_: &str, arg: Option<&dyn rusqlite::ToSql>) ->
     Ok(out)
 }
 
+/// Finished in the app's Ledger panel shows this many closed items, newest
+/// first. Keep in step with `KEEP` in `apps/desktop/src/workspace/ledger.ts`.
+pub const PANEL_KEEP: i64 = 100;
+
+/// The rows the panel shows: all work not closed, and the last
+/// [`PANEL_KEEP`] closed work heads with their tasks. Older closed work stays
+/// in the file.
+const PANEL: &str = "WHERE coalesce(parent, uid) NOT IN (SELECT uid FROM tasks WHERE closed_at IS NOT NULL) \
+     OR coalesce(parent, uid) IN (SELECT uid FROM tasks WHERE closed_at IS NOT NULL ORDER BY closed_at DESC, id DESC LIMIT ?1)";
+
+/// The panel's rows from `file`, oldest first, plans rolled up. No file
+/// gives none; nothing is made or migrated.
+pub fn panel(file: &Path) -> Result<Vec<Row>> {
+    if !file.exists() {
+        return Ok(Vec::new());
+    }
+    let db = open_read(file)?;
+    let mut rows = rows(&db, PANEL, Some(&PANEL_KEEP))?;
+    roll_up(&mut rows);
+    Ok(rows)
+}
+
+/// One row by its uid, read-only. `None` when no row has it.
+pub fn by_uid(file: &Path, uid: &str) -> Result<Option<Row>> {
+    if !file.exists() {
+        return Ok(None);
+    }
+    let db = open_read(file)?;
+    Ok(rows(&db, "WHERE uid = ?1", Some(&uid))?.into_iter().next())
+}
+
+/// A value that changes when the ledger does: the size, change time and
+/// inode of the file and its WAL, and the file's name. Read from metadata
+/// only; the database is not opened.
+pub fn stamp(file: &Path) -> String {
+    use std::hash::{Hash, Hasher};
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    file.hash(&mut h);
+    for ext in ["db", "db-wal"] {
+        let m = std::fs::metadata(file.with_extension(ext)).ok();
+        let modified = m.as_ref().and_then(|m| m.modified().ok());
+        (m.as_ref().map(|m| m.len()), modified).hash(&mut h);
+        #[cfg(unix)]
+        m.map(|m| (m.ino(), m.ctime(), m.ctime_nsec())).hash(&mut h);
+    }
+    format!("{:016x}", h.finish())
+}
+
 /// A plan's state from its tasks in `rows`: `done` once every task is done,
 /// `sent` while one is open. `None` for a plan with no task: its own state
 /// stands.

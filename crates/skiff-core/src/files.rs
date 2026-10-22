@@ -388,6 +388,30 @@ pub fn read_background(project: &Path, configured: &str) -> Result<(String, Vec<
     read_image(open_background(project, configured)?)
 }
 
+/// `named`, a full path below `folder`, as a path relative to the held
+/// folder: a regular file reached component by component without following
+/// a link. Outside `folder`, `..`, through a link or anything but a regular
+/// file is [`Refused::Missing`]. A path that names `folder` by its resolved
+/// name is taken too.
+pub fn hold_beneath(folder: &Path, named: &Path) -> Result<(Root, String)> {
+    let outside = || missing!("{} is not a file in {}", named.display(), folder.display());
+    if !named.is_absolute() {
+        return Err(outside());
+    }
+    let rel = named
+        .strip_prefix(folder)
+        .ok()
+        .map(Path::to_path_buf)
+        .or_else(|| named.strip_prefix(folder.canonicalize().ok()?).ok().map(Path::to_path_buf))
+        .ok_or_else(outside)?;
+    let rel = rel.to_str().filter(|r| git::is_relative_file(r)).ok_or_else(outside)?.to_string();
+    let root = Root::open(folder).map_err(|_| outside())?;
+    match git::open_beneath(&root, &rel) {
+        Some(Beneath::File(f)) if f.metadata().is_ok_and(|m| m.is_file()) => Ok((root, rel)),
+        _ => Err(outside()),
+    }
+}
+
 /// An image file the Host's config names, opened without following a link:
 /// a regular file of at most [`BYTES_LIMIT`] whose first bytes are an
 /// image. Its type and bytes.

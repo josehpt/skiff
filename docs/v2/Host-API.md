@@ -1,4 +1,4 @@
-# Host API — M0 contract, local M1a–M1g seams, M2 remote terminals, M3 remote lifecycle, the M4 data plane (reads, then project and worktree writes) and M5 files
+# Host API — M0 contract, local M1a–M1g seams, M2 remote terminals, M3 remote lifecycle, the M4 data plane (reads, then project and worktree writes), M5 files and the M6 ledger and Skipper reads
 
 Tracking: [M0 #156](https://github.com/solutionscay/skiff/issues/156),
 [epic #155](https://github.com/solutionscay/skiff/issues/155).
@@ -1779,6 +1779,155 @@ Host.
 - The M4 diff/recovery fixes (`c1f8f8b`) still have no completed
   independent review. Manual two-machine and CI acceptance for M2–M5 are
   still pending.
+
+## M6 (first slice): the ledger, results and Skipper settings through the Host
+
+Tracking: [#162](https://github.com/solutionscay/skiff/issues/162), child of
+[epic #155](https://github.com/solutionscay/skiff/issues/155). `skiff-host`
+serves Skipper's ledger, a row's result and Skipper's settings and task types
+from the Host's own `ledger.db` and config. The app's Ledger panel, its
+result viewer, the Skipper row and Settings › Skiff agent read them from the
+selected Host: This Mac and an SSH Host alike. `skiff ledger` and the CLI on
+the Host stay the only ledger writers. No schema or ledger semantics change.
+
+### Contract (additive, API major 1)
+
+- **`ledger@1`**:
+  - `ledger_rows` answers `ledger { rows }`. Each `HostLedgerRow` is the
+    panel's view of a row: ids, kind, parent, pane id and generation,
+    project, task, title, state (a plan's from its tasks), times, type,
+    ref, close stamp, `elsewhere` (the pane is on another skiffd than the
+    Host's) and `result_exists`. The rows are the panel's: all work not
+    closed, and the newest 100 closed items with their tasks, oldest
+    first. A Host with no `ledger.db` answers no rows and makes none. A
+    ledger older than version 7 is `invalid` and is not migrated.
+  - `ledger_stamp` answers `ledger_stamp { stamp }`: an opaque value from
+    the size, times and inode of `ledger.db` and its WAL. It changes when
+    the ledger does. The database is not opened.
+  - `ledger_result { uid }` answers `file { file }` (a `HostFile`, as
+    `file_read` with `preview`). The request names a row, never a path.
+- **`skipper@1`**: `skipper_settings` answers `skipper { skipper }`, a
+  `HostSkipper`: name, agent, on/off, folder (or why it is refused), the
+  configured folder, folder status, continue on restore and the task types
+  with the command each starts on the Host.
+- Neither family is granted by another or by `files`, and neither grants
+  a write, a launch or watcher control. Golden shapes:
+  `tests/fixtures/m6.json`.
+
+### How the Host reads
+
+- **Rows** come from the CLI's read code (`skiff_client::ledger::panel`):
+  `ledger.db` opened read-only, the same query and plan roll-up the app
+  ran before. `elsewhere` compares each row's socket with the Host's own
+  skiffd socket.
+- **Results.** The Host reads the row by its uid and takes the
+  `result_path` the row records. It serves that file only when it is below
+  the folder that holds `ledger.db` (where `skiff ledger` puts results).
+  `skiff_core::files::hold_beneath` holds that folder and opens each
+  component with `O_NOFOLLOW`. A path outside the folder, with `..`,
+  relative, through a link, a link itself, a FIFO, a folder or missing is
+  `not_found`, and `result_exists` is false for it. The read is a preview:
+  512 KiB of text at most, cut at a line end, an image up to 5 MiB as
+  bytes, and no bytes for a binary file.
+- **Settings** come from `skiff_client::skipper::settings`, the code the
+  app ran before, on the Host's config and agent list.
+
+### The app
+
+- **Ledger panel** (`workspace/ledger.ts`): `ledger_rows` through
+  `hostInvoke("ledger", …)`, on This Mac too. It starts after the Host's
+  capabilities load. A Host without `ledger` shows why, with no rows.
+  Ownership, plan grouping, task states, the workspace filter and All work
+  are unchanged: they act on the same rows.
+- **Change watch** (`src-tauri/src/ledger.rs`): the app asks the selected
+  Host for `ledger_stamp` every 1 s (This Mac) or 3 s (a remote Host), only
+  over a live session plane. It reloads the panel when the stamp changes or
+  a new data connection comes up (reconnect, Host switch, restarted
+  `skiff-host`). The app no longer reads `ledger.db` or its WAL.
+- **Results** open in the page's own viewer (`openLedgerResult` in
+  `terminal/peek.ts`), which shows the Host's bounded preview, as for a
+  remote file. This is on This Mac too: no result path reaches Open with,
+  an opener or a file call here.
+- **Skipper row and Settings:** `get_skiff_agent` reads `skipper@1`. On a
+  remote Host the Skipper row shows the Host's coordinator session (marked
+  by its skiffd), and Settings › Skiff agent lists the Host's settings and
+  task types read-only, with "Change it on that Host."
+- **Watcher status** comes from the Host's session inventory: the watchers
+  that registered with its skiffd. On a remote Host the app never starts,
+  replaces or signals a watcher. It never starts or restores Skipper, and it
+  hides Start watcher, Open watch log and Show in file manager. "Missing"
+  says that Skiff starts watchers only on This Mac. No Host-side supervisor
+  exists, and the app does not claim one: a remote watcher runs only when
+  someone starts `skiff watch` on that Host.
+- `ledger_rows` and `get_skiff_agent` left `LOCAL_ONLY`. `ledger_result` is
+  new. The desktop `ledger.rs` has no ledger, file or env access left (the
+  boundary baseline shrank).
+
+### Demo
+
+1. This Mac: run the dev app. Open Skipper's pane. The Ledger panel lists
+   rows from `skiff-host`. A `skiff ledger` write on this Mac shows within
+   a second. A done task's click shows its result in the viewer.
+2. SSH Host with `skiffd` and `skiff-host` running and a Skipper session
+   started there (`skiff skipper`): pick it. The Skipper row and the Ledger
+   panel show that Host's coordinator and rows. Results open in the viewer.
+   Settings › Skiff agent lists its task types. Nothing starts on either
+   machine.
+
+The automated equivalent is `cargo test -p skiff-host --test ledger` and
+the loopback `ssh_remote` data-plane test (below).
+
+### Tests
+
+- **Contract:** `m6.json` round trip, capability per request, one reply
+  kind each, no path in `ledger_result`, families distinct from `files`.
+- **Service** (`skiff-host/tests/ledger.rs`, private state and ledger,
+  over this Mac's socket and a fake SSH forward):
+  - no ledger: no rows, nothing made
+  - rows equal the CLI read code: plan roll-up, `elsewhere`, Finished
+    capped at 100
+  - results: inside, a plan's, cut at 512 KiB; and refused at once: a link,
+    through a folder link, a FIFO, outside, `..`, relative, missing, a
+    folder, and an unknown or injected uid
+  - reads leave `ledger.db` and its WAL byte for byte
+  - the stamp is stable, then changes after a write
+  - settings equal `skipper::settings`
+  - a v6 ledger is `invalid` and unchanged
+  - a restarted service is reconnected as a new instance
+  - a Host without the families is refused by the client before sending
+- **Real SSH** (`skiffd/tests/ssh_remote.rs`, loopback sshd, the actual
+  `skiff-host` binary with a private `SKIFF_LEDGER`): rows, a result,
+  an outside result refused, stamp and settings over the data forward.
+- **Page** (`tests/ledger.test.ts`): rows only through `ledger`; a Host
+  without it shows why; a result opens by uid in the viewer, never a path;
+  settings through `skipper` on both Hosts; a remote Host never invokes
+  `start_skiff_watch` or `open_skiff_agent`, and its watcher copy says who
+  starts it; This Mac keeps starting its watcher and restoring Skipper.
+- **Desktop:** the command classification test places `ledger_rows`,
+  `ledger_result` and `get_skiff_agent` on the Host side.
+
+### Not yet: requirements before M6 is complete
+
+- **Settings writes:** `set_skiff_agent` (name, agent, on/off, continue on
+  restore, task type rows) and the folder change (`preview_skiff_folder`,
+  `change_skiff_folder`) still write This Mac's `projects.toml` and folder,
+  and are refused on a remote Host. They need `skipper_config` writes with
+  a revision, as `project_config` has.
+- **Skipper launch and restore** (`open_skiff_agent`) on a remote Host.
+- **Watcher service ownership:** there is no Host-side watcher supervisor.
+  On This Mac the app still starts and replaces `skiff watch` (endpoint-
+  local `ProcessControl`). Before M6 is complete, the Host must own the
+  watcher's lifecycle (a supervised service or `skiff-host` itself), and
+  the app must only read its status.
+- **Watch log** through the Host (today This Mac only).
+- **The skill sync** (`skipper::sync_skill`) stays a This Mac start step.
+- **Results outside the ledger's folder** (set with `--result` elsewhere)
+  are no longer viewable from the app, on This Mac too. `skiff ledger` on
+  the Host still shows the path. This is a behavior change.
+- **Change events** are polled stamps, not pushed.
+- Manual two-machine and CI acceptance for M2–M6 is pending. The
+  interrupted independent verification of the M4 diff/recovery fixes
+  (`c1f8f8b`) is still incomplete.
 
 ## M0 demo and handoff
 

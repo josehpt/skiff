@@ -9,6 +9,7 @@ import { keepRow } from "../workspace/selection";
 import { revealSession } from "../workspace/view";
 import { openPath } from "../terminal/peek";
 import { hostInvoke } from "./hostCaps";
+import { hostName, isRemote } from "./hosts";
 
 /** The name until Settings has one. skiffd's setup keeps the same default. */
 export const DEFAULT_NAME = "Skipper";
@@ -16,7 +17,7 @@ export const DEFAULT_NAME = "Skipper";
 /** The row key while no Skiff agent session runs. */
 export const SKIFF_AGENT_KEY = "skiff-agent";
 
-/** `[skiff_agent]` in projects.toml. */
+/** `[skiff_agent]` in the selected Host's projects.toml (`skipper@1`). */
 export interface SkiffAgentSettings {
   name: string | null;
   agent: string | null;
@@ -52,9 +53,9 @@ export function skiffAgentFolder(): string | null {
   return S.skiffAgent?.enabled ? S.skiffAgent.folder : null;
 }
 
-/** Reads `[skiff_agent]` again. loadProjects calls it, so an edit from Settings or the CLI shows at once. */
+/** Reads `[skiff_agent]` again from the selected Host. loadProjects calls it, so an edit from Settings or the CLI shows at once. */
 export async function loadSkiffAgent() {
-  const a = await invoke<SkiffAgentSettings>("get_skiff_agent").catch(() => null);
+  const a = await hostInvoke<SkiffAgentSettings>("skipper", "get_skiff_agent").catch(() => null);
   S.skiffAgent = a;
   setSkiffAgentName(skiffAgentName());
 }
@@ -96,12 +97,17 @@ interface Opened {
 /**
  * The row and the key: show the Skiff agent's pane, or start it. skiffd finds
  * or starts it in one guarded step, so two quick opens start one. A pane that
- * is a bare shell gets its agent again.
+ * is a bare shell gets its agent again. On a remote Host the row only shows
+ * the pane: Skipper starts there, with `skiff skipper`.
  */
 export function openSkiffAgent() {
   if (!skiffAgentFolder()) return;
   const s = skiffAgentSession();
   if (s) show(s.id);
+  if (isRemote()) {
+    if (!s) showError(`${skiffAgentName()} does not run on ${hostName()}. Start it there with skiff skipper.`);
+    return;
+  }
   if (s && agentKind(s) !== "shell") return;
   if (!s && !skiffAgentChoice()) return showError("No agent is on. Turn one on in Settings › Agents.");
   invoke<Opened | null>("open_skiff_agent", { restore: null })
@@ -157,6 +163,8 @@ function noteAsk(id: string, error: string | null) {
  * so this asks again now and then. `now` skips the 30 s wait and shows a failure.
  */
 function watch(id: string, now = false) {
+  // A remote Host's watcher is that Host's: this app never starts one there.
+  if (isRemote()) return;
   if (!now && watchAsked.id === id && Date.now() - watchAsked.at < 30_000) return;
   noteAsk(id, startError);
   invoke<boolean>("start_skiff_watch", { session: id })
@@ -210,6 +218,7 @@ export function watchText(state: WatchState, s: SessionInfo, name: string, error
     case "runs":
       return `skiff watch runs for ${name} since ${clock(s.watch!.since)}.`;
     case "missing":
+      if (isRemote()) return `No watcher runs for ${name} on ${hostName()}. ${name} does not hear when its panes finish. Skiff starts watchers only on This Mac: start skiff watch on that Host.`;
       return `No watcher runs for ${name}. ${name} does not hear when its panes finish. Skiff tries to start it every 30 seconds.` +
         (error ? ` Last start failed: ${error}.` : "");
     case "failed":
@@ -249,7 +258,7 @@ export function syncSkiffAgent() {
   shownName = name;
   if (!s) return;
   watch(s.id);
-  if (!S.skiffAgent.continue_on_restore || !s.resume || continued.has(s.id) || agentKind(s) !== "shell") return;
+  if (isRemote() || !S.skiffAgent.continue_on_restore || !s.resume || continued.has(s.id) || agentKind(s) !== "shell") return;
   continued.add(s.id);
   // skiffd types the continue line, the same as for `skiff skipper`. Refused
   // when the person typed in the pane first: their line stays theirs.

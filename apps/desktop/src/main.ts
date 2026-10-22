@@ -56,8 +56,6 @@ async function boot() {
   await startWorkspaceQuitGuard();
   // Which Host this window shows decides everything below.
   await loadHosts().catch(showError);
-  // The ledger is this Mac's; a remote Host's is not reachable yet (M6).
-  if (!isRemote()) startLedger();
   // `tauri dev` build: a badge in the status bar tells it apart from an installed Skiff.
   if (import.meta.env.DEV) {
     const badge = document.createElement("span");
@@ -108,6 +106,8 @@ async function boot() {
 
   // What the selected Host offers decides which session surfaces it gets.
   await loadHostCaps().catch(console.error);
+  // The selected Host's ledger (M6), This Mac's or a remote one's.
+  startLedger();
   await subscribeEvents();
 
   await refreshSessions();

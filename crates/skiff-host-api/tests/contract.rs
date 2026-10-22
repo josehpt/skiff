@@ -569,3 +569,57 @@ fn m5_files_and_assets_are_read_only_families_of_their_own() {
         assert!(serde_json::from_value::<Response>(bad.clone()).is_err(), "{bad}");
     }
 }
+
+#[test]
+fn m6_ledger_and_skipper_are_read_only_families_of_their_own() {
+    let fixture: Value = serde_json::from_str(include_str!("fixtures/m6.json")).unwrap();
+    let ledger = Capability::ledger_read();
+    let skipper = Capability::skipper_settings();
+    assert_eq!(serde_json::to_value(&ledger).unwrap(), fixture["capabilities"]["ledger"]);
+    assert_eq!(serde_json::to_value(&skipper).unwrap(), fixture["capabilities"]["skipper"]);
+    let rows = Response::Ledger { rows: vec![] };
+    let stamp = Response::LedgerStamp { stamp: "s".into() };
+    let file = Response::File {
+        file: Box::new(skiff_host_api::HostFile {
+            content: skiff_host_api::FileContent::Text,
+            size: 0,
+            mime: None,
+            text: None,
+            bytes: None,
+            truncated: false,
+            target: None,
+        }),
+    };
+    let settings: Response = serde_json::from_value(fixture["replies"][4]["result"]["Ok"].clone()).unwrap();
+    for (key, cap) in [("ledger_requests", &ledger), ("skipper_requests", &skipper)] {
+        for value in fixture[key].as_array().unwrap() {
+            let request: Request = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(&request).unwrap(), *value);
+            assert_eq!(request.capability().as_ref(), Some(cap));
+            // Exactly one reply kind each, never Ok.
+            assert!(!request.accepts(&Response::Ok));
+            assert_eq!(request.accepts(&rows), matches!(request, Request::LedgerRows), "{value}");
+            assert_eq!(request.accepts(&stamp), matches!(request, Request::LedgerStamp), "{value}");
+            assert_eq!(request.accepts(&file), matches!(request, Request::LedgerResult { .. }), "{value}");
+            assert_eq!(request.accepts(&settings), matches!(request, Request::SkipperSettings), "{value}");
+        }
+    }
+    for value in fixture["replies"].as_array().unwrap() {
+        let message: Message = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&message).unwrap(), *value);
+    }
+    // Neither family is granted by another, nor by files: a result is read
+    // by its row, never as a worktree file.
+    for other in [Capability::projects(), Capability::project_config(), Capability::files(), Capability::project_assets()] {
+        assert!(other != ledger && other != skipper);
+    }
+    assert_ne!(ledger, skipper);
+    // A result is named by its row only: a path is not part of the request.
+    for bad in [
+        json!({"cmd":"ledger_result"}),
+        json!({"cmd":"ledger_result","path":"/etc/hosts"}),
+        json!({"cmd":"ledger_write","uid":"a1b2c3d4"}),
+    ] {
+        assert!(serde_json::from_value::<Request>(bad.clone()).is_err(), "{bad}");
+    }
+}

@@ -18,7 +18,9 @@ export type HostCap =
   | "project_config"
   | "worktrees"
   | "files"
-  | "project_assets";
+  | "project_assets"
+  | "ledger"
+  | "skipper";
 
 /** The major of each capability that this page speaks. */
 const MAJOR: Record<HostCap, number> = {
@@ -36,6 +38,8 @@ const MAJOR: Record<HostCap, number> = {
   worktrees: 1,
   files: 1,
   project_assets: 1,
+  ledger: 1,
+  skipper: 1,
 };
 
 /** What each capability offers, for the refusal. */
@@ -54,6 +58,8 @@ const OFFERS: Record<HostCap, string> = {
   worktrees: "new or removed worktrees",
   files: "its files",
   project_assets: "project images",
+  ledger: "the ledger",
+  skipper: "Skiff agent settings",
 };
 
 /** `name@major` of the selected Host. `null` until the first answer. */

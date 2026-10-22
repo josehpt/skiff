@@ -8,6 +8,7 @@ pub mod agents;
 pub mod files;
 pub mod groups;
 pub mod inventory;
+pub mod coordinator;
 pub mod lifecycle;
 pub mod projects;
 pub mod terminal;
@@ -16,6 +17,7 @@ pub use agents::HostAgent;
 pub use files::{EntryKind, FileContent, HostEntry, HostFile, HostImage, HostListing, ReadPurpose};
 pub use groups::Group;
 pub use inventory::InventorySession;
+pub use coordinator::{HostLedgerRow, HostSkipper, HostTaskType};
 pub use lifecycle::SessionSpec;
 pub use projects::{ChangeStatus, HostChange, HostDiff, HostFolder, HostProject, HostWorktree, ProjectEdit, ProjectFleet};
 pub use terminal::{EchoTimes, TerminalFrame};
@@ -38,6 +40,8 @@ pub const PROJECT_CONFIG: &str = "project_config";
 pub const WORKTREES: &str = "worktrees";
 pub const FILES: &str = "files";
 pub const PROJECT_ASSETS: &str = "project_assets";
+pub const LEDGER: &str = "ledger";
+pub const SKIPPER: &str = "skipper";
 
 macro_rules! identity {
     ($name:ident) => {
@@ -191,6 +195,24 @@ impl Capability {
     pub fn project_assets() -> Self {
         Self {
             name: PROJECT_ASSETS.into(),
+            version: 1,
+        }
+    }
+    /// Read the Host's ledger as the Ledger panel shows it, a stamp that
+    /// changes with it, and a row's result as bounded text or bytes. Data
+    /// plane; grants no ledger write, no path the client may open and no
+    /// file outside the ledger's folder.
+    pub fn ledger_read() -> Self {
+        Self {
+            name: LEDGER.into(),
+            version: 1,
+        }
+    }
+    /// Read the Host's `[skiff_agent]` settings and task types. Data plane;
+    /// grants no settings change, no Skipper launch and no watcher control.
+    pub fn skipper_settings() -> Self {
+        Self {
+            name: SKIPPER.into(),
             version: 1,
         }
     }
@@ -540,6 +562,19 @@ pub enum Request {
     ProjectBackground {
         project: String,
     },
+    /// Answers `ledger`: the panel's rows, oldest first. No `ledger.db` on
+    /// the Host is no rows; one older than the readers take is `invalid`.
+    LedgerRows,
+    /// Answers `ledger_stamp`: a value that changes when the ledger does.
+    LedgerStamp,
+    /// Answers `file`: the result of the row `uid`, read as a preview. A
+    /// row with no result, or one outside the ledger's folder, through a
+    /// link or not a regular file, is `not_found`.
+    LedgerResult {
+        uid: String,
+    },
+    /// Answers `skipper`.
+    SkipperSettings,
 }
 impl Request {
     pub fn capability(&self) -> Option<Capability> {
@@ -566,6 +601,8 @@ impl Request {
             Self::GitDiff { .. } => Some(Capability::git_diff()),
             Self::FileList { .. } | Self::FileRead { .. } => Some(Capability::files()),
             Self::ProjectBackground { .. } => Some(Capability::project_assets()),
+            Self::LedgerRows | Self::LedgerStamp | Self::LedgerResult { .. } => Some(Capability::ledger_read()),
+            Self::SkipperSettings => Some(Capability::skipper_settings()),
             Self::ProjectInspect { .. }
             | Self::ProjectAdd { .. }
             | Self::ProjectEdit { .. }
@@ -614,6 +651,10 @@ impl Request {
                 | (Self::FileList { .. }, Response::Files { .. })
                 | (Self::FileRead { .. }, Response::File { .. })
                 | (Self::ProjectBackground { .. }, Response::Image { .. })
+                | (Self::LedgerRows, Response::Ledger { .. })
+                | (Self::LedgerStamp, Response::LedgerStamp { .. })
+                | (Self::LedgerResult { .. }, Response::File { .. })
+                | (Self::SkipperSettings, Response::Skipper { .. })
         ) || (!matches!(
             self,
             Self::Hello
@@ -640,6 +681,10 @@ impl Request {
                 | Self::FileList { .. }
                 | Self::FileRead { .. }
                 | Self::ProjectBackground { .. }
+                | Self::LedgerRows
+                | Self::LedgerStamp
+                | Self::LedgerResult { .. }
+                | Self::SkipperSettings
         ) && matches!(reply, Response::Ok))
     }
 }
@@ -678,6 +723,13 @@ pub enum Response {
     /// Boxed, as `Project`. Same JSON.
     File { file: Box<HostFile> },
     Image { image: HostImage },
+    Ledger { rows: Vec<HostLedgerRow> },
+    LedgerStamp { stamp: String },
+    /// Boxed, as `Project`. Same JSON.
+    Skipper {
+        #[serde(rename = "skipper")]
+        settings: Box<HostSkipper>,
+    },
     SessionInventory { sessions: Vec<InventorySession> },
     SessionScreen { lines: Vec<String> },
     ConnectionStatus { version: String, protocol: u32 },

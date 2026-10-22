@@ -1,7 +1,8 @@
 //! `skiff-host`: the Host's data-plane service (M4). It speaks the Host
 //! envelope on its own socket beside skiffd's and answers projects, Git
-//! status, diff text, worktree files (M5) and project backgrounds from the
-//! Host's own config, disk and git, and is the
+//! status, diff text, worktree files (M5), project backgrounds, and
+//! Skipper's ledger, results and settings (M6, read-only) from the Host's
+//! own config, disk and git, and is the
 //! writer of the Host's `[[project]]` tables and project worktrees, through
 //! the same `skiff-core` code the app ran before. It holds no PTY and no session:
 //! restarting it never touches skiffd or a terminal (#62, M1f topology).
@@ -22,7 +23,7 @@ use std::{
 use skiff_core::{config::{self, ProjectConfig}, files, git, project, session::SessionInfo};
 use skiff_host_api::{
     Capability, ChangeStatus, EntryKind, Envelope, Error, FileContent, Hello, Host, HostChange, HostDiff, HostEntry,
-    HostFile, HostFolder, HostId, HostImage, HostListing, HostProject, HostWorktree, InstanceId, Limits, Message,
+    HostFile, HostFolder, HostId, HostImage, HostLedgerRow, HostListing, HostProject, HostWorktree, InstanceId, Limits, Message,
     ProjectEdit, ReadPurpose, Request, Response, API_MAJOR,
 };
 use tokio::{
@@ -48,6 +49,8 @@ pub fn capabilities() -> Vec<Capability> {
         Capability::worktrees(),
         Capability::files(),
         Capability::project_assets(),
+        Capability::ledger_read(),
+        Capability::skipper_settings(),
     ]
 }
 
@@ -316,6 +319,16 @@ pub async fn answer(request: Request, hello: &Hello) -> Result<Response, Error> 
             let (mime, bytes) = files::read_background(&p.path, configured).map_err(unread)?;
             Ok(Response::Image { image: HostImage { mime, bytes } })
         }
+        Request::LedgerRows => Ok(Response::Ledger { rows: ledger_rows()? }),
+        Request::LedgerStamp => {
+            let file = skiff_client::ledger::path().map_err(failed)?;
+            Ok(Response::LedgerStamp { stamp: skiff_client::ledger::stamp(&file) })
+        }
+        Request::LedgerResult { uid } => Ok(Response::File { file: Box::new(host_file(ledger_result(&uid)?)) }),
+        Request::SkipperSettings => {
+            let cfg = config::load().map_err(failed)?;
+            Ok(Response::Skipper { settings: Box::new(skiff_client::skipper::settings(&cfg).map_err(failed)?) })
+        }
         Request::ProjectInspect { path } => Ok(Response::Folder { folder: host_folder(config::inspect_folder(&host_folder_path(&path)?)) }),
         Request::ProjectAdd { path, revision, name, short, color } => {
             let path = host_folder_path(&path)?;
@@ -397,6 +410,73 @@ fn unread(e: anyhow::Error) -> Error {
         Some(files::Refused::Invalid(_)) => Error::Invalid { message },
         None => failed(e),
     }
+}
+
+/// The Ledger panel's rows from this Host's `ledger.db`, read-only. A pane
+/// is `elsewhere` when its socket is not this Host's skiffd; a result
+/// exists only when [`ledger_result`] would serve it.
+fn ledger_rows() -> Result<Vec<HostLedgerRow>, Error> {
+    let file = skiff_client::ledger::path().map_err(failed)?;
+    let rows = skiff_client::ledger::panel(&file).map_err(ledger_unread)?;
+    let here = skiff_core::state::socket();
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            let elsewhere = r.socket_other_than(&here).is_some();
+            let result_exists = r.result_path.as_deref().is_some_and(|p| result_file(&file, p).is_ok());
+            HostLedgerRow {
+                id: r.id,
+                uid: r.uid,
+                kind: r.kind,
+                parent: r.parent,
+                pane_id: r.pane_id,
+                pane_gen: r.pane_gen,
+                project: r.project,
+                task: r.task,
+                sent_at: r.sent_at,
+                title: r.title,
+                state: r.state,
+                updated_at: r.updated_at,
+                task_type: r.task_type,
+                reference: r.reference,
+                reported_at: r.reported_at,
+                closed_at: r.closed_at,
+                elsewhere,
+                result_exists,
+            }
+        })
+        .collect())
+}
+
+/// A ledger older than the readers take is `invalid`: any `skiff ledger`
+/// command on the Host updates it. Anything else failed while it ran.
+fn ledger_unread(e: anyhow::Error) -> Error {
+    let message = format!("{e:#}");
+    if message.contains("skiff ledger") {
+        return Error::Invalid { message };
+    }
+    failed(e)
+}
+
+/// The result of the row `uid`, read on this Host as a preview. Only the
+/// path the row records is read, never one the client names, and only inside
+/// the ledger's own folder: see [`result_file`].
+fn ledger_result(uid: &str) -> Result<files::FileRead, Error> {
+    let file = skiff_client::ledger::path().map_err(failed)?;
+    let none = || Error::NotFound { message: format!("row {uid} has no result this Host can show") };
+    let row = skiff_client::ledger::by_uid(&file, uid).map_err(ledger_unread)?.ok_or_else(none)?;
+    let path = row.result_path.ok_or_else(none)?;
+    let (root, folder, rel) = result_file(&file, &path)?;
+    files::read_in(&root, &folder, &rel, files::Purpose::Preview).map_err(unread)
+}
+
+/// Where a result may be read: below the folder that holds `ledger`, where
+/// `skiff ledger` puts results, as [`files::hold_beneath`] allows. Answers
+/// the held folder, its path and the result relative to it.
+fn result_file(ledger: &Path, result: &str) -> Result<(git::Root, std::path::PathBuf, String), Error> {
+    let folder = ledger.parent().filter(|f| !f.as_os_str().is_empty()).unwrap_or(Path::new("/")).to_path_buf();
+    let (root, rel) = files::hold_beneath(&folder, Path::new(result)).map_err(unread)?;
+    Ok((root, folder, rel))
 }
 
 /// A folder the client names on this Host: absolute, or under its home as

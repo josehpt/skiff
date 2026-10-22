@@ -439,14 +439,16 @@ export function paneMenu(id: string, x: number, y: number) {
  */
 export function skiffAgentMenu(s: SessionInfo | null, x: number, y: number) {
   const folder = skiffAgentFolder();
-  const entries: MenuEntry[] = folder
+  // A remote Host's folder, watcher and log are that Host's: none opens or starts here.
+  const local = !isRemote();
+  const entries: MenuEntry[] = folder && local
     ? [{ icon: "indicators-square-arrow-out-up-right", label: "Show in file manager", run: () => void openPath(folder).catch(showError) }]
     : [];
   if (s) {
     // Only while the row's icon is red: no watcher runs, or its last line failed.
     const watch = skiffWatch(s).state;
-    if (watch === "missing") entries.push({ icon: "schedule-refresh-cw", label: "Start watcher", run: startSkiffWatch });
-    if (watch === "missing" || watch === "failed") entries.push({ icon: "indicators-square-arrow-out-up-right", label: "Open watch log", run: openWatchLog });
+    if (watch === "missing" && local) entries.push({ icon: "schedule-refresh-cw", label: "Start watcher", run: startSkiffWatch });
+    if ((watch === "missing" || watch === "failed") && local) entries.push({ icon: "indicators-square-arrow-out-up-right", label: "Open watch log", run: openWatchLog });
     entries.push(
       { icon: "view-focus", label: S.focusMode ? "Leave focus mode" : "Focus mode", hint: keyLabel("focus-mode"), run: toggleFocusMode },
     );

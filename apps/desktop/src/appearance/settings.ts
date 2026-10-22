@@ -7,7 +7,7 @@ import { agentNameList, setAgentNameList } from "./agentNames";
 import { nextCard, themeGrid, type ThemeFilters } from "./themeCards";
 import { type Action, actionFor, isMac } from "../app/keys";
 import { editField, fieldEditKey, textField } from "../ui/fieldClipboard";
-import type { SkiffAgentSettings } from "../app/skiffAgent";
+import { DEFAULT_NAME, type SkiffAgentSettings } from "../app/skiffAgent";
 import { type SkiffAgentEdit, skiffAgentSection, taskTypesSection } from "./skiffAgentSettings";
 import { changeSkiffFolder } from "./skiffFolderDialog";
 import { rowTable, tableState } from "./rowTable";
@@ -90,7 +90,7 @@ export function createSettings(onAgents: (a: AgentInfo[]) => void, onClose: () =
       return String(e);
     }
     // A renamed agent takes its task types with it.
-    agentSet = await invoke<SkiffAgentSettings>("get_skiff_agent").catch(() => agentSet);
+    agentSet = await hostInvoke<SkiffAgentSettings>("skipper", "get_skiff_agent").catch(() => agentSet);
     return null;
   }
 
@@ -387,7 +387,7 @@ export function createSettings(onAgents: (a: AgentInfo[]) => void, onClose: () =
     changeSkiffFolder({
       current: agentSet.configured,
       changed: async () => {
-        agentSet = await invoke<SkiffAgentSettings>("get_skiff_agent").catch(() => agentSet);
+        agentSet = await hostInvoke<SkiffAgentSettings>("skipper", "get_skiff_agent").catch(() => agentSet);
         render();
       },
     });
@@ -402,6 +402,23 @@ export function createSettings(onAgents: (a: AgentInfo[]) => void, onClose: () =
       h("div", "set-sub", "One agent for all projects."),
     );
     main.append(intro);
+    // A remote Host's Skiff agent is its own: shown here, changed on that Host.
+    if (isRemote()) {
+      main.append(h("div", "set-note", agentSet
+        ? `The Skiff agent on ${hostName()}, from its projects.toml. Change it on that Host.`
+        : `${hostName()} does not offer Skiff agent settings.`));
+      if (agentSet) {
+        const a = agentSet;
+        main.append(
+          h("div", "set-note mono", `Name: ${a.name?.trim() || DEFAULT_NAME} · ${a.enabled ? "on" : "off"} · agent: ${a.agent ?? "default"}`),
+          h("div", "set-note mono", `Folder: ${a.folder ?? a.configured}${a.folder_error ? ` (refused: ${a.folder_error})` : ""}`),
+          ...(a.tasks.length
+            ? a.tasks.map((t) => h("div", "set-note mono", `${t.type}: ${t.command ?? t.agent}${t.error ? ` (${t.error})` : ""}`))
+            : [h("div", "set-note", "No task types.")]),
+        );
+      }
+      return main;
+    }
     if (agentSet) main.append(...skiffAgentSection(agentSet, agents, (e) => void setSkiffAgent(e), changeFolder));
     if (error) {
       const err = h("div", "set-error", error);
@@ -581,7 +598,7 @@ export function createSettings(onAgents: (a: AgentInfo[]) => void, onClose: () =
       await look.load();
       openSet = await invoke<OpenSettings>("open_settings").catch(() => null);
       menuSet = await invoke<MenuLayout>("menu_layout").catch(() => null);
-      agentSet = await invoke<SkiffAgentSettings>("get_skiff_agent").catch(() => null);
+      agentSet = await hostInvoke<SkiffAgentSettings>("skipper", "get_skiff_agent").catch(() => null);
       agents = await hostInvoke<AgentInfo[]>("session_agents", "list_agents").catch((e) => {
         error = String(e);
         return [];

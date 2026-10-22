@@ -476,10 +476,16 @@ export function openHostCopy(wt: string, file: string) {
  * connection is asked again.
  */
 function showHostFile(mine: number, t: HostFilePreview) {
+  const copy = t.copy ? () => openHostCopy(t.wt, t.file) : null;
+  showHostRead(mine, t.path, () => hostInvoke<HostFile>("files", "read_file", { worktree: t.wt, file: t.file }), copy);
+}
+
+/** The Host's bounded read `read` in the page's viewer, under `title`. `copy`: the Open a copy button. */
+function showHostRead(mine: number, title: string, read: () => Promise<HostFile>, copy: (() => void) | null) {
   if (!live(mine)) return;
-  const el = cardFrame("file", t.path, "peek diff-view file-view");
-  if (t.copy) {
-    const open = button("peek-open", "", () => openHostCopy(t.wt, t.file));
+  const el = cardFrame("file", title, "peek diff-view file-view");
+  if (copy) {
+    const open = button("peek-open", "", copy);
     open.title = "Open a copy in this Mac's default app (Enter)";
     open.setAttribute("aria-label", "Open a copy");
     open.append(h("span", "peek-open-key", "Enter"), " Open a copy");
@@ -494,17 +500,36 @@ function showHostFile(mine: number, t: HostFilePreview) {
     el.querySelector(".diff-view-body")?.replaceWith(body);
     if (hadKeys || active?.keys) body.focus();
   };
-  hostInvoke<HostFile>("files", "read_file", { worktree: t.wt, file: t.file })
+  read()
     .then((f) => {
       if (!shows()) return;
-      if (at !== dataEpoch()) return showHostFile(mine, t);
+      if (at !== dataEpoch()) return showHostRead(mine, title, read, copy);
       fill(fileBody(f, (b) => (cardUrl = URL.createObjectURL(b))));
     })
     .catch((e) => {
       if (!shows()) return console.error(e);
-      if (at !== dataEpoch()) return showHostFile(mine, t);
+      if (at !== dataEpoch()) return showHostRead(mine, title, read, copy);
       fill(diffState(`No preview: ${String(e)}`, true));
     });
+}
+
+/**
+ * A ledger row's result over the current row, in the page's own viewer: the
+ * selected Host reads the path its row records (`ledger@1`). No path is
+ * named or opened on this Mac. `title` names the work.
+ */
+export function openLedgerResult(uid: string, title: string) {
+  if (!active || active.closed) {
+    endPreview();
+    active = { key: currentKey(), gen: 0, keys: true, closed: false };
+  }
+  active.gen = ++gen;
+  active.keys = true;
+  // A tool on screen gives way to the result.
+  const p = open;
+  open = null;
+  if (p) retire(p);
+  showHostRead(active.gen, `Result: ${title}`, () => hostInvoke<HostFile>("ledger", "ledger_result", { uid }), null);
 }
 
 /** The data plane is back: a Host diff or file on screen is read again from it. */

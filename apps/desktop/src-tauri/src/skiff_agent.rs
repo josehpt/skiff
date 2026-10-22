@@ -4,17 +4,16 @@
 
 use std::path::PathBuf;
 
-use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use skiff_client::{
-    agent_folder::{self, Kind, Mode},
+    agent_folder::{self, Mode},
     skipper,
 };
 use skiff_core::{
     config::{self, SkiffAgentKey},
     session::SessionInfo,
-    tasks::{self, TaskType},
 };
+use skiff_host_api::HostSkipper;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::{
@@ -132,56 +131,6 @@ pub async fn open_skiff_agent(app: State<'_, App>, restore: Option<u64>) -> Resu
     Ok(Some(Opened { session: found.session, created: found.created, typed: found.typed, watch_error }))
 }
 
-/// `[skiff_agent]` as the page reads it: the folder without `~`.
-#[derive(Serialize)]
-pub struct SkiffAgent {
-    name: Option<String>,
-    agent: Option<String>,
-    enabled: bool,
-    /// `~/skiff-agent`, or the override. Absent when the override is refused.
-    folder: Option<String>,
-    /// Why the override in projects.toml is refused.
-    folder_error: Option<String>,
-    /// The folder projects.toml names, refused or not, for the Folder row.
-    configured: String,
-    /// `ready` (a Skiff folder), `new` (setup makes it at On), `other` (it
-    /// holds other files) or `refused`.
-    folder_status: &'static str,
-    continue_on_restore: bool,
-    /// `[skiff_agent.tasks]` in file order, with the command each row starts.
-    tasks: Vec<TaskType>,
-}
-
-fn read() -> anyhow::Result<SkiffAgent> {
-    let cfg = config::load().context("read projects.toml")?;
-    let (folder, folder_error) = match skipper::folder(&cfg) {
-        Ok(f) => (Some(f.display().to_string()), None),
-        Err(e) => (None, Some(format!("{e:#}"))),
-    };
-    let configured = skipper::configured(&cfg)?;
-    let folder_status = match (&folder, agent_folder::kind(&configured)) {
-        (None, _) => "refused",
-        (_, Ok(Kind::Skiff)) => "ready",
-        (_, Ok(Kind::New | Kind::Empty)) => "new",
-        _ => "other",
-    };
-    let configured = configured.display().to_string();
-    let a = cfg.skiff_agent;
-    // The command lines come from projects.toml, so the local list builds the same ones skiffd would.
-    let tasks = tasks::resolve(&a.tasks, &skiff_core::project::agents());
-    Ok(SkiffAgent {
-        name: a.name,
-        agent: a.agent,
-        enabled: a.enabled,
-        folder,
-        folder_error,
-        configured,
-        folder_status,
-        continue_on_restore: a.continue_on_restore,
-        tasks,
-    })
-}
-
 /// One edit from Settings › Skiff agent. `null` or empty takes the default.
 #[derive(Deserialize)]
 #[serde(tag = "key", content = "value", rename_all = "snake_case")]
@@ -214,16 +163,24 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> anyhow::Result<T> + Sen
         .map_err(|e| format!("{e:#}"))
 }
 
+/// `[skiff_agent]` and its task types, from the selected Host (`skipper@1`):
+/// This Mac's and an SSH Host's alike. Nothing is read from a config here.
 #[tauri::command]
-pub async fn get_skiff_agent() -> Result<SkiffAgent, String> {
-    blocking(read).await
+pub async fn get_skiff_agent(app: State<'_, App>) -> Result<HostSkipper, String> {
+    read(&app).await
 }
 
-/// Saves one setting and answers with all of them. The page reloads its
-/// projects on the event, so the row follows at once.
+async fn read(app: &App) -> Result<HostSkipper, String> {
+    crate::connection::data_read(app, |c| async move { skiff_client::host::data::skipper_settings(&c).await }).await
+}
+
+/// Saves one setting on This Mac (the Host's config is this Mac's: the
+/// command is local-only) and answers with all of them, read again through
+/// the Host. The page reloads its projects on the event, so the row follows
+/// at once.
 #[tauri::command]
-pub async fn set_skiff_agent(app: AppHandle, edit: Edit) -> Result<SkiffAgent, String> {
-    let out = blocking(move || {
+pub async fn set_skiff_agent(app: State<'_, App>, handle: AppHandle, edit: Edit) -> Result<HostSkipper, String> {
+    blocking(move || {
         match edit {
             Edit::Name(v) => config::set_skiff_agent(SkiffAgentKey::Name(v.as_deref()))?,
             Edit::Agent(v) => config::set_skiff_agent(SkiffAgentKey::Agent(v.as_deref()))?,
@@ -240,11 +197,11 @@ pub async fn set_skiff_agent(app: AppHandle, edit: Edit) -> Result<SkiffAgent, S
                 config::set_skiff_agent(SkiffAgentKey::Enabled(on))?
             }
         }
-        read()
+        Ok(())
     })
     .await?;
-    let _ = app.emit(PROJECTS_CHANGED, ());
-    Ok(out)
+    let _ = handle.emit(PROJECTS_CHANGED, ());
+    read(&app).await
 }
 
 /// A preview for the Change… dialog, with Skipper's session when it runs.

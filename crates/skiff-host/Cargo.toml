@@ -13,7 +13,8 @@ path = "src/main.rs"
 [dependencies]
 skiff-core.workspace = true
 skiff-host-api.workspace = true
-# Reads the paired skiffd's sessions before a worktree is removed.
+# Reads the paired skiffd's sessions before a worktree is removed, and the
+# ledger and Skipper settings with the CLI's read code (M6).
 skiff-client.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
@@ -23,3 +24,5 @@ libc = "0.2"
 
 [dev-dependencies]
 libc = "0.2"
+# Writes private fixture ledgers, as `skiff ledger` would.
+rusqlite = { version = "0.40.2", features = ["bundled"] }

@@ -771,6 +771,41 @@ pub fn detach(cmd: &mut std::process::Command) {
     }
 }
 
+/// `[skiff_agent]` as Settings and the app's Skipper row read it, with the
+/// folder's state and the command each task type starts. Reads the config
+/// and the folder; changes nothing. The Host serves it (`skipper@1`).
+pub fn settings(cfg: &Config) -> Result<skiff_host_api::HostSkipper> {
+    use crate::agent_folder::{self, Kind};
+    let (folder, folder_error) = match folder(cfg) {
+        Ok(f) => (Some(f.display().to_string()), None),
+        Err(e) => (None, Some(format!("{e:#}"))),
+    };
+    let configured = configured(cfg)?;
+    let folder_status = match (&folder, agent_folder::kind(&configured)) {
+        (None, _) => "refused",
+        (_, Ok(Kind::Skiff)) => "ready",
+        (_, Ok(Kind::New | Kind::Empty)) => "new",
+        _ => "other",
+    };
+    let a = &cfg.skiff_agent;
+    // The command lines come from this config, so the list builds the same ones skiffd would.
+    let tasks = skiff_core::tasks::resolve(&a.tasks, &skiff_core::project::agents())
+        .into_iter()
+        .map(|t| skiff_host_api::HostTaskType { name: t.name, agent: t.agent, model: t.model, command: t.command, error: t.error })
+        .collect();
+    Ok(skiff_host_api::HostSkipper {
+        name: a.name.clone(),
+        agent: a.agent.clone(),
+        enabled: a.enabled,
+        folder,
+        folder_error,
+        configured: configured.display().to_string(),
+        folder_status: folder_status.into(),
+        continue_on_restore: a.continue_on_restore,
+        tasks,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

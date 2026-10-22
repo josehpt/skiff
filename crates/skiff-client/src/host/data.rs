@@ -16,8 +16,8 @@ use std::{
 };
 
 use skiff_host_api::{
-    Error, Hello, HostChange, HostDiff, HostFile, HostFolder, HostId, HostImage, HostListing, HostProject, HostWorktree,
-    ProjectEdit, ProjectFleet, ReadPurpose, Request, Response,
+    Error, Hello, HostChange, HostDiff, HostFile, HostFolder, HostId, HostImage, HostLedgerRow, HostListing, HostProject,
+    HostSkipper, HostWorktree, ProjectEdit, ProjectFleet, ReadPurpose, Request, Response,
 };
 use tokio::net::UnixStream;
 
@@ -193,6 +193,39 @@ pub async fn file_read(c: &HostConnection, worktree: &str, file: &str, purpose: 
 pub async fn project_background(c: &HostConnection, project: &str) -> Result<HostImage, Error> {
     match c.request(Request::ProjectBackground { project: project.into() }).await? {
         Response::Image { image } => Ok(image),
+        _ => unreachable!("checked by Request::accepts"),
+    }
+}
+
+/// The Host's Ledger panel rows, oldest first (`ledger@1`).
+pub async fn ledger_rows(c: &HostConnection) -> Result<Vec<HostLedgerRow>, Error> {
+    match c.request(Request::LedgerRows).await? {
+        Response::Ledger { rows } => Ok(rows),
+        _ => unreachable!("checked by Request::accepts"),
+    }
+}
+
+/// A value that changes when the Host's ledger does.
+pub async fn ledger_stamp(c: &HostConnection) -> Result<String, Error> {
+    match c.request(Request::LedgerStamp).await? {
+        Response::LedgerStamp { stamp } => Ok(stamp),
+        _ => unreachable!("checked by Request::accepts"),
+    }
+}
+
+/// The result of the row `uid`, read on the Host as a bounded preview. The
+/// Host reads the path its row records; this side never names one.
+pub async fn ledger_result(c: &HostConnection, uid: &str) -> Result<HostFile, Error> {
+    match c.request(Request::LedgerResult { uid: uid.into() }).await? {
+        Response::File { file } => Ok(*file),
+        _ => unreachable!("checked by Request::accepts"),
+    }
+}
+
+/// The Host's `[skiff_agent]` settings and task types (`skipper@1`).
+pub async fn skipper_settings(c: &HostConnection) -> Result<HostSkipper, Error> {
+    match c.request(Request::SkipperSettings).await? {
+        Response::Skipper { settings } => Ok(*settings),
         _ => unreachable!("checked by Request::accepts"),
     }
 }

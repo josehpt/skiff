@@ -584,8 +584,18 @@ fn spawn_data_service(_local: &ProcessControl, session: &std::path::Path) -> any
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
-    cmd.spawn()?;
+    reap(cmd.spawn()?);
     Ok(())
+}
+
+/// Waits for the data service on a thread of its own, so one that exits or
+/// is stopped leaves no zombie under the app. Waiting changes nothing else:
+/// the service keeps its own process group, outlives the app and is never
+/// signalled from here.
+fn reap(mut child: std::process::Child) {
+    let _ = std::thread::Builder::new().name("skiff-host reaper".into()).spawn(move || {
+        let _ = child.wait();
+    });
 }
 
 fn capability_names(c: &HostConnection) -> Vec<String> {
@@ -899,7 +909,8 @@ pub(crate) async fn status_now(app: &App) -> DaemonStatus {
 
 #[cfg(test)]
 mod tests {
-    use super::{compare_versions, stop_daemon, App, ProcessControl};
+    use super::{compare_versions, spawn_data_service, stop_daemon, App, ProcessControl};
+    use std::{path::PathBuf, time::Duration};
     use std::cmp::Ordering::*;
 
     #[tokio::test]
@@ -1206,6 +1217,43 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(200));
         let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
         assert!(rt.block_on(stop_daemon(&local_control(), child.id() as i32, true)));
+    }
+
+    /// A data service that exits, or is stopped to restart, is reaped: no
+    /// zombie stays under the app. The service runs from a private fake
+    /// binary; no live service is started or signalled.
+    #[test]
+    fn a_data_service_that_ends_leaves_no_zombie() {
+        let _env = crate::reload::tests::ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = PathBuf::from("/tmp").join(format!("reap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).unwrap();
+        let old = std::env::var_os("SKIFF_HOST_BIN");
+        // Gone: no such process, and not a zombie, which kill(0) still finds.
+        let gone = |pid: i32| unsafe { libc::kill(pid, 0) != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) };
+        let until_gone = |pid: i32| (0..50).any(|_| gone(pid) || (std::thread::sleep(Duration::from_millis(100)), false).1);
+        for (name, body) in [("exits", "exit 0"), ("stopped", "exec sleep 30")] {
+            let bin = dir.join(name);
+            let pidfile = dir.join(format!("{name}.pid"));
+            std::fs::write(&bin, format!("#!/bin/sh\necho $$ > {}\n{body}\n", pidfile.display())).unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::env::set_var("SKIFF_HOST_BIN", &bin);
+            spawn_data_service(&local_control(), &dir.join(format!("{name}.sock"))).unwrap();
+            let pid = (0..50)
+                .find_map(|_| std::fs::read_to_string(&pidfile).ok().and_then(|p| p.trim().parse::<i32>().ok()).or_else(|| (std::thread::sleep(Duration::from_millis(100)), None).1))
+                .expect("the fake service started");
+            if name == "stopped" {
+                assert!(!gone(pid), "it runs until stopped");
+                unsafe { libc::kill(pid, libc::SIGTERM) };
+            }
+            assert!(until_gone(pid), "{name}: the service stays a zombie");
+        }
+        match old {
+            Some(v) => std::env::set_var("SKIFF_HOST_BIN", v),
+            None => std::env::remove_var("SKIFF_HOST_BIN"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The automatic stop sends SIGTERM only. A process that ignores it
